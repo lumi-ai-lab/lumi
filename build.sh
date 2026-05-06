@@ -13,6 +13,6 @@ npm run build
 
 echo "Building backend binary..."
 cd "$SCRIPT_DIR/backend"
-go build -o lumi ./cmd/lumi
+go build -buildvcs=false -o lumi ./cmd/lumi
 
 echo "Build complete: $SCRIPT_DIR/backend/lumi"

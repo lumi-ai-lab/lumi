@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/lumi-16-9.png" alt="Lumi Logo" width="720">
+</p>
+
 # Lumi
 
 基于 [ACP](https://agentclientprotocol.com/protocol/overview) 协议 - 同时调度多个 AI Agent 的 ChatBot。
