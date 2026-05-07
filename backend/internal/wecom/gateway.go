@@ -228,8 +228,6 @@ func deriveSessionMode(agentID string) string {
 	switch {
 	case agentID == "codex":
 		return "auto"
-	case strings.HasPrefix(agentID, "claude"):
-		return "bypassPermissions"
 	default:
 		return "default"
 	}

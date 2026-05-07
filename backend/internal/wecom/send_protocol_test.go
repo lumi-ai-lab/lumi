@@ -13,7 +13,7 @@ func TestParseSendProtocolSupportsBlocksAndRejectsInvalidPaths(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(okFile), 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	if err := os.WriteFile(okFile, []byte("png"), 0o644); err != nil {
+	if err := os.WriteFile(okFile, []byte("pngdata"), 0o644); err != nil {
 		t.Fatalf("WriteFile(okFile) error = %v", err)
 	}
 
@@ -35,6 +35,11 @@ func TestParseSendProtocolSupportsBlocksAndRejectsInvalidPaths(t *testing.T) {
 	}
 	file.Close()
 
+	smallFile := filepath.Join(root, "small.txt")
+	if err := os.WriteFile(smallFile, []byte("aaaaa"), 0o644); err != nil {
+		t.Fatalf("WriteFile(smallFile) error = %v", err)
+	}
+
 	content := strings.Join([]string{
 		"done",
 		"[LUMI_WECOM_SEND]",
@@ -45,6 +50,9 @@ func TestParseSendProtocolSupportsBlocksAndRejectsInvalidPaths(t *testing.T) {
 		"[/LUMI_WECOM_SEND]",
 		"[LUMI_WECOM_SEND]",
 		`{"type":"file","path":"too-large.bin"}`,
+		"[/LUMI_WECOM_SEND]",
+		"[LUMI_WECOM_SEND]",
+		`{"type":"file","path":"small.txt"}`,
 		"[/LUMI_WECOM_SEND]",
 		"[LUMI_WECOM_SEND]",
 		`not-json`,
@@ -65,7 +73,10 @@ func TestParseSendProtocolSupportsBlocksAndRejectsInvalidPaths(t *testing.T) {
 	if parsed.Actions[0].ResolvedPath != canonicalOKFile {
 		t.Fatalf("ResolvedPath = %q, want %q", parsed.Actions[0].ResolvedPath, canonicalOKFile)
 	}
-	if len(parsed.Failures) != 3 {
-		t.Fatalf("len(Failures) = %d, want 3 (%v)", len(parsed.Failures), parsed.Failures)
+	if len(parsed.Failures) != 4 {
+		t.Fatalf("len(Failures) = %d, want 4 (%v)", len(parsed.Failures), parsed.Failures)
+	}
+	if !strings.Contains(strings.Join(parsed.Failures, "\n"), "small.txt（file must be larger than 5 bytes）") {
+		t.Fatalf("Failures missing small file error: %v", parsed.Failures)
 	}
 }

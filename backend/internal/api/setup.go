@@ -3,47 +3,13 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
-	"sync"
-	"time"
 
 	"github.com/pengmide/lumi/internal/setupcheck"
-	"github.com/pengmide/lumi/internal/sysutil"
 )
 
 type DependencyItem = setupcheck.DependencyItem
 type SetupStatus = setupcheck.SetupStatus
-
-// Install instructions for common tools
-var installInstructions = map[string]string{
-	"npm":    "https://nodejs.org/en/download",
-	"npx":    "https://nodejs.org/en/download",
-	"node":   "https://nodejs.org/en/download",
-	"claude": "npm install -g @anthropic-ai/claude-code",
-	"codex":  "npm install -g @openai/codex",
-}
-
-// Agent command to npm package mapping (for auto-install)
-var agentNpmPackages = map[string]string{
-	"claude": "@anthropic-ai/claude-code",
-	"codex":  "@openai/codex",
-}
-
-// ACP package to agent command mapping
-var acpToAgentCommand = map[string]struct {
-	Name    string
-	Command string
-}{
-	"@agentclientprotocol/claude-agent-acp": {Name: "Claude", Command: "claude"},
-	"@zed-industries/claude-agent-acp":      {Name: "Claude", Command: "claude"},
-	"@zed-industries/claude-code-acp":       {Name: "Claude", Command: "claude"},
-	"@zed-industries/codex-acp":             {Name: "Codex", Command: "codex"},
-}
 
 // initSetupStatus initializes status with all checks in "checking" state
 func (s *Server) initSetupStatus() {
@@ -177,7 +143,8 @@ func (s *Server) handleSetupInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check environment first
-	if !commandExists("npm") || !commandExists("npx") {
+	current := setupcheck.Check(s.config.Agents)
+	if !current.Ready && hasMissingEnvironment(current.Environment) {
 		sendEvent("done", map[string]any{
 			"success": false,
 			"error":   "npm and npx are required. Please install Node.js first.",
@@ -185,461 +152,49 @@ func (s *Server) handleSetupInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allSuccess := true
-
-	// Phase 1: Install missing agent commands (claude, codex)
-	s.setupMu.RLock()
-	agentCount := len(s.setupStatus.Agents)
-	s.setupMu.RUnlock()
-
-	for i := 0; i < agentCount; i++ {
-		s.setupMu.RLock()
-		item := s.setupStatus.Agents[i]
-		s.setupMu.RUnlock()
-
-		if item.Status == "ready" {
-			sendEvent("progress", map[string]any{
-				"index":   i,
-				"type":    "agent",
-				"status":  "ready",
-				"message": "Already installed",
-			})
-			continue
+	result := setupcheck.InstallMissing(*s.setupStatus, func(event setupcheck.InstallEvent) {
+		switch event.Type {
+		case "agent":
+			s.setupMu.Lock()
+			s.setupStatus.Agents[event.Index].Status = event.Status
+			s.setupStatus.Agents[event.Index].Message = event.Message
+			s.setupMu.Unlock()
+		case "acp":
+			s.setupMu.Lock()
+			s.setupStatus.ACPPackages[event.Index].Status = event.Status
+			s.setupStatus.ACPPackages[event.Index].Message = event.Message
+			s.setupMu.Unlock()
 		}
-
-		// Check if we can install this agent
-		npmPkg, canInstall := agentNpmPackages[item.Command]
-		if !canInstall {
-			sendEvent("progress", map[string]any{
-				"index":   i,
-				"type":    "agent",
-				"status":  "error",
-				"message": "Cannot auto-install",
-			})
-			allSuccess = false
-			continue
-		}
-
-		// Update to installing
-		s.setupMu.Lock()
-		s.setupStatus.Agents[i].Status = "installing"
-		s.setupStatus.Agents[i].Message = "Installing..."
-		s.setupMu.Unlock()
 		s.broadcastSetupStatus()
 
 		sendEvent("progress", map[string]any{
-			"index":   i,
-			"type":    "agent",
-			"status":  "installing",
-			"message": fmt.Sprintf("Installing %s...", npmPkg),
+			"index":   event.Index,
+			"type":    event.Type,
+			"status":  event.Status,
+			"message": event.Message,
 		})
-
-		err := installGlobalPackage(npmPkg, func(msg string) {
-			sendEvent("log", map[string]any{
-				"index":   i,
-				"type":    "agent",
-				"message": msg,
-			})
+	}, func(msg string) {
+		sendEvent("log", map[string]any{
+			"message": msg,
 		})
+	})
 
-		if err != nil {
-			s.setupMu.Lock()
-			s.setupStatus.Agents[i].Status = "error"
-			s.setupStatus.Agents[i].Message = err.Error()
-			s.setupMu.Unlock()
-			s.broadcastSetupStatus()
-
-			sendEvent("progress", map[string]any{
-				"index":   i,
-				"type":    "agent",
-				"status":  "error",
-				"message": err.Error(),
-			})
-			allSuccess = false
-		} else {
-			s.setupMu.Lock()
-			s.setupStatus.Agents[i].Status = "ready"
-			s.setupStatus.Agents[i].Message = "Installed"
-			s.setupMu.Unlock()
-			s.broadcastSetupStatus()
-
-			sendEvent("progress", map[string]any{
-				"index":   i,
-				"type":    "agent",
-				"status":  "ready",
-				"message": "Installed",
-			})
-		}
-	}
-
-	// Phase 2: Install ACP packages
-	s.setupMu.RLock()
-	acpCount := len(s.setupStatus.ACPPackages)
-	s.setupMu.RUnlock()
-
-	for i := 0; i < acpCount; i++ {
-		s.setupMu.RLock()
-		item := s.setupStatus.ACPPackages[i]
-		s.setupMu.RUnlock()
-
-		if item.Status == "ready" {
-			sendEvent("progress", map[string]any{
-				"index":   i,
-				"type":    "acp",
-				"status":  "ready",
-				"message": "Already installed",
-			})
-			continue
-		}
-
-		// Update to installing
-		s.setupMu.Lock()
-		s.setupStatus.ACPPackages[i].Status = "installing"
-		s.setupStatus.ACPPackages[i].Message = "Installing..."
-		s.setupMu.Unlock()
-		s.broadcastSetupStatus()
-
-		sendEvent("progress", map[string]any{
-			"index":   i,
-			"type":    "acp",
-			"status":  "installing",
-			"message": fmt.Sprintf("Installing %s...", item.Package),
-		})
-
-		err := installPackageWithProgress(item.Package, func(msg string) {
-			sendEvent("log", map[string]any{
-				"index":   i,
-				"type":    "acp",
-				"message": msg,
-			})
-		})
-
-		if err != nil {
-			s.setupMu.Lock()
-			s.setupStatus.ACPPackages[i].Status = "error"
-			s.setupStatus.ACPPackages[i].Message = err.Error()
-			s.setupMu.Unlock()
-			s.broadcastSetupStatus()
-
-			sendEvent("progress", map[string]any{
-				"index":   i,
-				"type":    "acp",
-				"status":  "error",
-				"message": err.Error(),
-			})
-			allSuccess = false
-		} else {
-			s.setupMu.Lock()
-			s.setupStatus.ACPPackages[i].Status = "ready"
-			s.setupStatus.ACPPackages[i].Message = "Installed"
-			s.setupMu.Unlock()
-			s.broadcastSetupStatus()
-
-			sendEvent("progress", map[string]any{
-				"index":   i,
-				"type":    "acp",
-				"status":  "ready",
-				"message": "Installed",
-			})
-		}
-	}
-
-	// Update final ready state
 	s.setupMu.Lock()
-	s.setupStatus.Ready = allSuccess
+	s.setupStatus.Environment = result.Environment
+	s.setupStatus.Agents = result.Agents
+	s.setupStatus.ACPPackages = result.ACPPackages
+	s.setupStatus.Ready = result.Success
 	s.setupMu.Unlock()
 	s.broadcastSetupStatus()
 
-	sendEvent("done", map[string]any{"success": allSuccess})
+	sendEvent("done", map[string]any{"success": result.Success})
 }
 
-func extractPackageName(command string, args []string) string {
-	if command != "npx" || len(args) == 0 {
-		return ""
-	}
-	for _, arg := range args {
-		if !strings.HasPrefix(arg, "-") {
-			return arg
-		}
-	}
-	return ""
-}
-
-func isPackageCached(packageName string) bool {
-	packageName = normalizePackageName(packageName)
-	if packageName == "" {
-		return false
-	}
-
-	// 检查全局安装
-	cmd := exec.Command("npm", "list", "-g", "--depth=0", packageName)
-	sysutil.HideWindow(cmd)
-	if err := cmd.Run(); err == nil {
-		return true
-	}
-
-	// 检查 npx 缓存
-	home, _ := os.UserHomeDir()
-	var npxCacheDirs []string
-
-	if isWindows() {
-		// Windows: %LOCALAPPDATA%\npm-cache\_npx 或 %APPDATA%\npm-cache\_npx
-		localAppData := os.Getenv("LOCALAPPDATA")
-		appData := os.Getenv("APPDATA")
-		if localAppData != "" {
-			npxCacheDirs = append(npxCacheDirs, filepath.Join(localAppData, "npm-cache", "_npx"))
-		}
-		if appData != "" {
-			npxCacheDirs = append(npxCacheDirs, filepath.Join(appData, "npm-cache", "_npx"))
-		}
-		// 也检查用户目录下的 .npm
-		npxCacheDirs = append(npxCacheDirs, filepath.Join(home, ".npm", "_npx"))
-	} else {
-		// macOS/Linux
-		npxCacheDirs = append(npxCacheDirs, filepath.Join(home, ".npm", "_npx"))
-	}
-
-	for _, npxCacheDir := range npxCacheDirs {
-		entries, err := os.ReadDir(npxCacheDir)
-		if err != nil {
-			continue
-		}
-
-		for _, entry := range entries {
-			if entry.IsDir() {
-				pkgPath := filepath.Join(npxCacheDir, entry.Name(), "node_modules", packageName, "package.json")
-				if _, err := os.Stat(pkgPath); err == nil {
-					return true
-				}
-			}
+func hasMissingEnvironment(items []DependencyItem) bool {
+	for _, item := range items {
+		if item.Status != "ready" {
+			return true
 		}
 	}
 	return false
-}
-
-func normalizePackageName(packageSpec string) string {
-	if packageSpec == "" {
-		return ""
-	}
-
-	if strings.HasPrefix(packageSpec, "@") {
-		slashIndex := strings.Index(packageSpec, "/")
-		if slashIndex == -1 {
-			return packageSpec
-		}
-		versionIndex := strings.Index(packageSpec[slashIndex+1:], "@")
-		if versionIndex == -1 {
-			return packageSpec
-		}
-		return packageSpec[:slashIndex+1+versionIndex]
-	}
-
-	versionIndex := strings.Index(packageSpec, "@")
-	if versionIndex == -1 {
-		return packageSpec
-	}
-	return packageSpec[:versionIndex]
-}
-
-func isWindows() bool {
-	return os.PathSeparator == '\\' && os.PathListSeparator == ';'
-}
-
-func commandExists(command string) bool {
-	_, err := exec.LookPath(command)
-	return err == nil
-}
-
-// npm registry URLs
-var npmRegistries = []struct {
-	Name string
-	URL  string
-}{
-	{"China (npmmirror)", "https://registry.npmmirror.com"},
-	{"Official (npmjs)", "https://registry.npmjs.org"},
-}
-
-// cachedRegistry stores the fastest registry URL
-var (
-	cachedRegistry   string
-	registryOnce     sync.Once
-	registryTestOnce sync.Once
-)
-
-// selectFastestRegistry tests registries and returns the fastest one
-func selectFastestRegistry() string {
-	registryOnce.Do(func() {
-		log.Println("[Setup] Testing npm registry speeds...")
-
-		type result struct {
-			url      string
-			name     string
-			duration time.Duration
-			err      error
-		}
-
-		results := make(chan result, len(npmRegistries))
-
-		for _, reg := range npmRegistries {
-			go func(name, url string) {
-				start := time.Now()
-				client := &http.Client{Timeout: 5 * time.Second}
-				resp, err := client.Get(url + "/-/ping")
-				duration := time.Since(start)
-
-				if err != nil {
-					results <- result{url: url, name: name, duration: duration, err: err}
-					return
-				}
-				resp.Body.Close()
-
-				results <- result{url: url, name: name, duration: duration, err: nil}
-			}(reg.Name, reg.URL)
-		}
-
-		var fastest result
-		fastest.duration = time.Hour // Start with a very long duration
-
-		for i := 0; i < len(npmRegistries); i++ {
-			r := <-results
-			if r.err != nil {
-				log.Printf("[Setup]   %s: failed (%v)", r.name, r.err)
-				continue
-			}
-			log.Printf("[Setup]   %s: %v", r.name, r.duration.Round(time.Millisecond))
-			if r.duration < fastest.duration {
-				fastest = r
-			}
-		}
-
-		if fastest.url != "" {
-			cachedRegistry = fastest.url
-			log.Printf("[Setup] Selected registry: %s (%s)", fastest.name, fastest.url)
-		} else {
-			cachedRegistry = npmRegistries[1].URL // Fallback to official
-			log.Printf("[Setup] All registries failed, using official: %s", cachedRegistry)
-		}
-	})
-
-	return cachedRegistry
-}
-
-func installPackageWithProgress(packageName string, logFn func(string)) error {
-	registry := selectFastestRegistry()
-
-	cmdStr := fmt.Sprintf("npx -y --registry=%s %s --help", registry, packageName)
-	log.Printf("[Setup] Installing ACP package: %s", packageName)
-	log.Printf("[Setup] Command: %s", cmdStr)
-	logFn(fmt.Sprintf("Running: %s", cmdStr))
-
-	cmd := exec.Command("npx", "-y", "--registry="+registry, packageName, "--help")
-	sysutil.HideWindow(cmd)
-	output, err := cmd.CombinedOutput()
-	outputStr := string(output)
-
-	if outputStr != "" {
-		for _, line := range strings.Split(outputStr, "\n") {
-			if line = strings.TrimSpace(line); line != "" {
-				log.Printf("[Setup]   %s", line)
-			}
-		}
-	}
-
-	if strings.Contains(outputStr, "npm ERR!") || strings.Contains(outputStr, "404 Not Found") {
-		log.Printf("[Setup] Failed to install %s", packageName)
-		return fmt.Errorf("failed to install: %s", strings.TrimSpace(outputStr))
-	}
-
-	if err != nil && strings.Contains(outputStr, "npm ERR!") {
-		log.Printf("[Setup] Failed to install %s: %v", packageName, err)
-		return fmt.Errorf("install failed: %w", err)
-	}
-
-	log.Printf("[Setup] Successfully installed %s", packageName)
-	logFn("Installation completed")
-	return nil
-}
-
-func installGlobalPackage(packageName string, logFn func(string)) error {
-	registry := selectFastestRegistry()
-
-	// First, try to uninstall existing package to avoid ENOTEMPTY errors
-	log.Printf("[Setup] Uninstalling existing %s (if any)...", packageName)
-	uninstallCmd := exec.Command("npm", "uninstall", "-g", packageName)
-	sysutil.HideWindow(uninstallCmd)
-	uninstallCmd.Run() // Ignore errors, package may not exist
-
-	// Clean up leftover temp directories that cause ENOTEMPTY errors
-	cleanupNpmTempDirs(packageName)
-
-	// Install the package
-	cmdStr := fmt.Sprintf("npm install -g --registry=%s %s", registry, packageName)
-	log.Printf("[Setup] Installing global package: %s", packageName)
-	log.Printf("[Setup] Command: %s", cmdStr)
-	logFn(fmt.Sprintf("Running: %s", cmdStr))
-
-	cmd := exec.Command("npm", "install", "-g", "--registry="+registry, packageName)
-	sysutil.HideWindow(cmd)
-	output, err := cmd.CombinedOutput()
-	outputStr := string(output)
-
-	if outputStr != "" {
-		for _, line := range strings.Split(outputStr, "\n") {
-			if line = strings.TrimSpace(line); line != "" {
-				log.Printf("[Setup]   %s", line)
-			}
-		}
-	}
-
-	if err != nil {
-		log.Printf("[Setup] Failed to install %s: %v", packageName, err)
-		if strings.Contains(outputStr, "npm ERR!") {
-			return fmt.Errorf("failed to install: %s", strings.TrimSpace(outputStr))
-		}
-		return fmt.Errorf("install failed: %w", err)
-	}
-
-	log.Printf("[Setup] Successfully installed %s", packageName)
-	logFn("Installation completed")
-	return nil
-}
-
-// cleanupNpmTempDirs removes leftover npm temp directories that cause ENOTEMPTY errors
-func cleanupNpmTempDirs(packageName string) {
-	// Get npm global prefix
-	cmd := exec.Command("npm", "config", "get", "prefix")
-	sysutil.HideWindow(cmd)
-	output, err := cmd.Output()
-	if err != nil {
-		return
-	}
-
-	prefix := strings.TrimSpace(string(output))
-	nodeModulesPath := filepath.Join(prefix, "lib", "node_modules")
-
-	// Parse package scope and name (e.g., "@anthropic-ai/claude-code" -> scope="@anthropic-ai", name="claude-code")
-	parts := strings.Split(packageName, "/")
-	if len(parts) != 2 || !strings.HasPrefix(parts[0], "@") {
-		return
-	}
-
-	scope := parts[0]
-	name := parts[1]
-	scopeDir := filepath.Join(nodeModulesPath, scope)
-
-	// Find and remove temp directories like ".claude-code-2DTsDk1V"
-	entries, err := os.ReadDir(scopeDir)
-	if err != nil {
-		return
-	}
-
-	for _, entry := range entries {
-		entryName := entry.Name()
-		// Match patterns like ".claude-code-xxxxx" or "claude-code"
-		if strings.HasPrefix(entryName, "."+name+"-") || entryName == name {
-			targetPath := filepath.Join(scopeDir, entryName)
-			log.Printf("[Setup] Cleaning up: %s", targetPath)
-			os.RemoveAll(targetPath)
-		}
-	}
 }

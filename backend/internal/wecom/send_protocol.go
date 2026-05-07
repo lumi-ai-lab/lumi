@@ -118,6 +118,9 @@ func parseAndResolveSendAction(jsonText, workspaceRoot string) (*SendAction, str
 	if !statTarget.Mode().IsRegular() {
 		return nil, failureText(raw.Path, "path is not a regular file")
 	}
+	if statTarget.Size() <= 5 {
+		return nil, failureText(raw.Path, "file must be larger than 5 bytes")
+	}
 	if statTarget.Size() > maxMediaBytes {
 		return nil, failureText(raw.Path, "file exceeds 20MB")
 	}

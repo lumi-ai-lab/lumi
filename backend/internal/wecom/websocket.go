@@ -582,6 +582,9 @@ func (rt *wsRuntime) uploadMedia(ctx context.Context, action SendAction) (string
 	if err != nil {
 		return "", err
 	}
+	if len(data) <= 5 {
+		return "", fmt.Errorf("file must be larger than 5 bytes")
+	}
 	totalChunks := (len(data) + wsChunkSize - 1) / wsChunkSize
 	if totalChunks > 100 {
 		return "", fmt.Errorf("file too large: exceeds 100 chunks")

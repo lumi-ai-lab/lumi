@@ -104,7 +104,7 @@ func TestGatewayHandlesPureTextReply(t *testing.T) {
 func TestGatewayHandlesMediaSendProtocol(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, "chart.png")
-	if err := os.WriteFile(out, []byte("png"), 0o644); err != nil {
+	if err := os.WriteFile(out, []byte("pngdata"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 

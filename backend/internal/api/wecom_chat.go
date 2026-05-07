@@ -427,7 +427,10 @@ func (r *wecomChatRuntime) handleWeComNotification(
 }
 
 func (r *wecomChatRuntime) emitError(sink wecom.ChatEventSink, message string) error {
-	return sink.Emit(wecom.ChatEvent{Name: "error", Data: map[string]string{"message": message}})
+	if err := sink.Emit(wecom.ChatEvent{Name: "error", Data: map[string]string{"message": message}}); err != nil {
+		return err
+	}
+	return errors.New(message)
 }
 
 func toWeComUpdate(update sessionUpdate) map[string]any {

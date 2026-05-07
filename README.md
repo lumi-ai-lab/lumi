@@ -198,6 +198,23 @@ cd ../backend && go build -o lumi ./cmd/lumi
 
 访问 http://localhost:3000
 
+### 5. Linux 上的 Claude ACP 运行注意事项
+
+如果你在 Linux 服务器上通过 `@agentclientprotocol/claude-agent-acp@0.30.0` 使用 Claude，且系统自带的 `glibc` 版本较老（例如部分 CentOS 7 / RHEL 7 环境），SDK 默认下载的 Linux native `claude` binary 可能无法启动。
+
+这种情况下，需要在启动 Lumi 之前显式指定系统里已安装可用的 Claude 可执行文件：
+
+```bash
+export CLAUDE_CODE_EXECUTABLE=/opt/nodejs/bin/claude
+```
+
+适用场景：
+
+- Linux 服务器上 `session/new` 阶段报 `write EPIPE`
+- 或手动执行 npx cache 中的 `@anthropic-ai/claude-agent-sdk-linux-x64/claude` 时提示 `GLIBC_xxx not found`
+
+如果本机通过默认安装链路已经能正常启动 Claude，则通常不需要设置这个变量。
+
 ## 配置说明
 
 ### 配置文件位置
@@ -221,11 +238,6 @@ cd ../backend && go build -o lumi ./cmd/lumi
         "@agentclientprotocol/claude-agent-acp@0.30.0"
       ],
       "command": "npx",
-      "env": {
-        "ANTHROPIC_AUTH_TOKEN": "aicoding-xxxxx",
-        "ANTHROPIC_BASE_URL": "https://api.aicoding.sh",
-        "API_TIMEOUT_MS": "600000"
-      },
       "id": "claude",
       "name": "Claude Code",
       "permissionMode": "default"
@@ -255,6 +267,11 @@ cd ../backend && go build -o lumi ./cmd/lumi
   }
 }
 ```
+
+说明：
+
+- `claude` 这类 agent 默认会继承当前 shell 环境变量；sample 配置里不再内置 Claude/Codex 的占位鉴权信息。
+- 如果在 Linux 服务器上使用 `@agentclientprotocol/claude-agent-acp@0.30.0`，并且系统的 `glibc` 版本不足以运行 SDK 自带的 native `claude` binary，需要在启动前设置 `CLAUDE_CODE_EXECUTABLE` 指向系统中可用的 `claude` 可执行文件。
 
 `publicServerURL` 是可选项。配置后，远程设备配对命令会优先使用这个地址；未配置时，系统会自动尝试使用当前服务机器的局域网 IP，而不是默认写成 `localhost`。
 

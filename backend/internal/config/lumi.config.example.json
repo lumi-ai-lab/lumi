@@ -7,11 +7,6 @@
         "@agentclientprotocol/claude-agent-acp@0.30.0"
       ],
       "command": "npx",
-      "env": {
-        "ANTHROPIC_AUTH_TOKEN": "sk-xxxxx",
-        "ANTHROPIC_BASE_URL": "https://api.aicoding.sh",
-        "API_TIMEOUT_MS": "600000"
-      },
       "id": "claude",
       "name": "Claude Code",
       "sessionMode": "default"
@@ -22,10 +17,6 @@
         "@zed-industries/codex-acp"
       ],
       "command": "npx",
-      "env": {
-        "OPENAI_API_KEY": "sk-xxxx",
-        "OPENAI_BASE_URL": "https://api.aicoding.sh/v1"
-      },
       "id": "codex",
       "name": "Codex CLI",
       "sessionMode": "default"
