@@ -9,6 +9,8 @@ import { Button } from '@/components/ui/button'
 import { ChatPanel } from '@/features/chat/components/chat-panel'
 import { Sidebar } from '@/features/chat/components/sidebar'
 import { useChatController } from '@/features/chat/use-chat-controller'
+import { CronClockButton } from '@/features/cron/cron-clock-button'
+import { ScheduledTasksPage } from '@/features/cron/scheduled-tasks-page'
 import { SettingsButton } from '@/features/settings/settings-button'
 import { ShareButton } from '@/features/share/share-button'
 import { WorkspacePreviewPane } from '@/features/workspace-preview'
@@ -16,6 +18,11 @@ import type { Message } from '@/lib/types'
 
 function getRouteSessionId(pathname: string) {
   return pathname.startsWith('/c/') ? pathname.replace('/c/', '') : null
+}
+
+function getScheduledJobId(pathname: string) {
+  if (pathname === '/scheduled') return null
+  return pathname.startsWith('/scheduled/') ? pathname.replace('/scheduled/', '') : undefined
 }
 
 function canShareConversation(messages: Message[]) {
@@ -39,10 +46,12 @@ export function ChatShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [setupReady, setSetupReady] = useState<boolean | null>(null)
   const [routeSessionId, setRouteSessionId] = useState<string | null | undefined>(undefined)
+  const [scheduledJobId, setScheduledJobId] = useState<string | null | undefined>(undefined)
 
   useEffect(() => {
     const syncFromLocation = () => {
       setRouteSessionId(getRouteSessionId(window.location.pathname))
+      setScheduledJobId(getScheduledJobId(window.location.pathname))
     }
 
     syncFromLocation()
@@ -88,9 +97,26 @@ export function ChatShell() {
       startTransition(() => {
         window.history.pushState(null, '', nextPath)
         setRouteSessionId(sessionId)
+        setScheduledJobId(undefined)
       })
     },
   })
+
+  const navigatePath = (path: string) => {
+    if (window.location.pathname === path) return
+    startTransition(() => {
+      window.history.pushState(null, '', path)
+      setRouteSessionId(getRouteSessionId(path))
+      setScheduledJobId(getScheduledJobId(path))
+    })
+  }
+
+  useEffect(() => {
+    if (scheduledJobId === undefined) return
+    void controller.refreshCronJobs()
+    // Refresh only when entering/changing the scheduled route; the controller object is intentionally not a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scheduledJobId])
 
   if (setupReady === false) {
     return null
@@ -118,6 +144,7 @@ export function ChatShell() {
         <Sidebar
           agents={controller.agents}
           currentSessionId={controller.currentSessionId}
+          cronJobs={controller.cronJobs}
           currentWorkspaceId={controller.currentWorkspace}
           onAddWorkspace={controller.addWorkspace}
           onCollapse={() => setSidebarCollapsed(true)}
@@ -127,6 +154,7 @@ export function ChatShell() {
           onRemoveSession={controller.removeSession}
           onSelectSession={controller.selectSession}
           onSetWorkspace={controller.setWorkspace}
+          onShowScheduled={() => navigatePath('/scheduled')}
           sessions={controller.filteredSessions}
           workspaces={controller.workspaces}
         />
@@ -147,48 +175,80 @@ export function ChatShell() {
 
       <main className="flex min-w-0 flex-1 overflow-hidden bg-background">
         <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
-          <div className="absolute right-4 top-4 z-30 flex items-center gap-2">
-            {showShareButton && controller.currentSessionId ? (
-              <ShareButton
-                conversationId={controller.currentSessionId}
+          {scheduledJobId !== undefined ? (
+            <ScheduledTasksPage
+              agents={controller.agents}
+              currentSessionId={controller.currentSessionId}
+              currentWorkspace={controller.currentWorkspace}
+              jobs={controller.cronJobs}
+              onJobsChange={controller.setCronJobs}
+              onNavigate={navigatePath}
+              onSelectSession={controller.selectSession}
+              routeJobId={scheduledJobId}
+              sessions={controller.sessions}
+              workspaces={controller.workspaces}
+            />
+          ) : (
+            <>
+              <div className="absolute right-4 top-4 z-30 flex items-center gap-2">
+                {showShareButton && controller.currentSessionId ? (
+                  <ShareButton
+                    conversationId={controller.currentSessionId}
+                    currentWorkspace={controller.currentWorkspace}
+                    workspace={controller.currentWorkspaceInfo}
+                    onRetryWorkspaceAccess={() => {
+                      controller.requestWorkspaceTreeRefresh({ immediate: true })
+                      void controller.refreshWorkspaces()
+                    }}
+                  />
+                ) : null}
+                <CronClockButton
+                  agents={controller.agents}
+                  currentSessionId={controller.currentSessionId}
+                  currentWorkspace={controller.currentWorkspace}
+                  jobs={controller.cronJobs}
+                  onNavigate={navigatePath}
+                  onSaved={(job) =>
+                    controller.setCronJobs([
+                      job,
+                      ...controller.cronJobs.filter((item) => item.id !== job.id),
+                    ])
+                  }
+                  sessions={controller.sessions}
+                  workspaces={controller.workspaces}
+                />
+                <SettingsButton
+                  agents={controller.agents}
+                  defaultAgent={controller.defaultAgent}
+                  onUpdateAgentEnv={controller.saveAgentEnv}
+                  onUpdateAgentMode={controller.saveAgentMode}
+                />
+              </div>
+
+              <ChatPanel
+                agents={controller.agents}
+                commands={controller.commands}
+                currentAgent={controller.currentAgent}
+                currentMessages={controller.currentMessages}
+                currentSessionId={controller.currentSessionId}
                 currentWorkspace={controller.currentWorkspace}
-                workspace={controller.currentWorkspaceInfo}
+                currentWorkspaceInfo={controller.currentWorkspaceInfo}
+                isSending={controller.isSending}
+                onCancel={controller.cancelCurrentChat}
+                onConfirmPermission={controller.handlePermissionConfirmed}
                 onRetryWorkspaceAccess={() => {
                   controller.requestWorkspaceTreeRefresh({ immediate: true })
                   void controller.refreshWorkspaces()
                 }}
+                onSend={controller.sendCurrentMessage}
+                onWorkspaceFilesChanged={() => {
+                  controller.requestWorkspaceTreeRefresh({ immediate: true })
+                }}
+                pendingPermission={controller.pendingPermission}
+                streamItems={controller.streamItems}
               />
-            ) : null}
-            <SettingsButton
-              agents={controller.agents}
-              defaultAgent={controller.defaultAgent}
-              onUpdateAgentEnv={controller.saveAgentEnv}
-              onUpdateAgentMode={controller.saveAgentMode}
-            />
-          </div>
-
-          <ChatPanel
-            agents={controller.agents}
-            commands={controller.commands}
-            currentAgent={controller.currentAgent}
-            currentMessages={controller.currentMessages}
-            currentSessionId={controller.currentSessionId}
-            currentWorkspace={controller.currentWorkspace}
-            currentWorkspaceInfo={controller.currentWorkspaceInfo}
-            isSending={controller.isSending}
-            onCancel={controller.cancelCurrentChat}
-            onConfirmPermission={controller.handlePermissionConfirmed}
-            onRetryWorkspaceAccess={() => {
-              controller.requestWorkspaceTreeRefresh({ immediate: true })
-              void controller.refreshWorkspaces()
-            }}
-            onSend={controller.sendCurrentMessage}
-            onWorkspaceFilesChanged={() => {
-              controller.requestWorkspaceTreeRefresh({ immediate: true })
-            }}
-            pendingPermission={controller.pendingPermission}
-            streamItems={controller.streamItems}
-          />
+            </>
+          )}
         </div>
 
         <WorkspacePreviewPane

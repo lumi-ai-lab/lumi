@@ -1,6 +1,8 @@
 import type {
   Agent,
   ConversationShare,
+  CronJob,
+  CronSchedule,
   DeviceDTO,
   FileInfo,
   MessageFile,
@@ -486,6 +488,102 @@ export async function deleteSession(id: string) {
   await fetch(`${API_BASE}/sessions/${id}`, {
     method: "DELETE",
   });
+}
+
+function cronScopeParams(conversationId: string) {
+  return new URLSearchParams({ conversationId });
+}
+
+export async function fetchCronJobs(filters?: { channel?: string; conversationId?: string | null } | string | null): Promise<CronJob[]> {
+  const params = new URLSearchParams();
+  if (typeof filters === "string") {
+    if (filters) params.set("conversationId", filters);
+  } else if (filters) {
+    if (filters.channel) params.set("channel", filters.channel);
+    if (filters.conversationId) params.set("conversationId", filters.conversationId);
+  }
+  const query = params.toString();
+  const response = await fetch(`${API_BASE}/cron/jobs${query ? `?${query}` : ""}`, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+  const data = await readJson<{ jobs?: CronJob[] }>(response);
+  return data.jobs || [];
+}
+
+export async function fetchCronJob(id: string, conversationId: string): Promise<CronJob | null> {
+  const response = await fetch(`${API_BASE}/cron/jobs/${encodeURIComponent(id)}?${cronScopeParams(conversationId)}`, {
+    cache: "no-store",
+  });
+  if (!response.ok) return null;
+  const data = await readJson<{ job?: CronJob }>(response);
+  return data.job || null;
+}
+
+export async function createCronJob(input: {
+  name: string;
+  prompt: string;
+  agentId: string;
+  workspaceId: string;
+  conversationId?: string;
+  schedule: CronSchedule;
+}): Promise<CronJob> {
+  const response = await fetch(`${API_BASE}/cron/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+  const data = await readJson<{ job: CronJob }>(response);
+  return data.job;
+}
+
+export async function updateCronJob(
+  id: string,
+  input: Partial<{
+    name: string;
+    prompt: string;
+    agentId: string;
+    workspaceId: string;
+    conversationId: string;
+    enabled: boolean;
+    schedule: CronSchedule;
+  }>,
+): Promise<CronJob> {
+  if (!input.conversationId) {
+    throw new Error("conversationId is required");
+  }
+  const response = await fetch(`${API_BASE}/cron/jobs/${encodeURIComponent(id)}?${cronScopeParams(input.conversationId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+  const data = await readJson<{ job: CronJob }>(response);
+  return data.job;
+}
+
+export async function deleteCronJob(id: string, conversationId: string) {
+  const response = await fetch(`${API_BASE}/cron/jobs/${encodeURIComponent(id)}?${cronScopeParams(conversationId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+}
+
+export async function runCronJobNow(id: string, conversationId: string): Promise<{ conversationId?: string }> {
+  const response = await fetch(`${API_BASE}/cron/jobs/${encodeURIComponent(id)}/run?${cronScopeParams(conversationId)}`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+  return readJson<{ conversationId?: string }>(response);
 }
 
 export async function confirmPermission(

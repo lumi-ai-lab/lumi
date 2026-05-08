@@ -175,6 +175,8 @@ func (s *Service) runWebSocketLoop(ctx context.Context, cfg Config, done chan st
 	}()
 
 	rt := newWebSocketRuntime(s, cfg)
+	s.setRuntime(rt)
+	defer s.setRuntime(nil)
 	backoff := time.Second
 	for {
 		select {

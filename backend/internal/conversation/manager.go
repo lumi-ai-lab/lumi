@@ -27,17 +27,26 @@ type MessageFile struct {
 	Size int64  `json:"size"`
 }
 
+type CronMessageMeta struct {
+	JobID       string `json:"jobId"`
+	JobName     string `json:"jobName"`
+	TriggeredAt int64  `json:"triggeredAt"`
+}
+
 // Message in conversation history
 type Message struct {
-	Role      string        `json:"role"` // user, assistant
-	Type      string        `json:"type,omitempty"`
-	Content   string        `json:"content"`
-	Agent     string        `json:"agent,omitempty"`
-	Status    string        `json:"status,omitempty"`
-	Duration  int64         `json:"duration,omitempty"`
-	ToolCall  *ToolCallInfo `json:"toolCall,omitempty"`
-	Files     []MessageFile `json:"files,omitempty"`
-	Timestamp int64         `json:"timestamp"`
+	Role      string           `json:"role"` // user, assistant
+	Type      string           `json:"type,omitempty"`
+	Content   string           `json:"content"`
+	Agent     string           `json:"agent,omitempty"`
+	Status    string           `json:"status,omitempty"`
+	Duration  int64            `json:"duration,omitempty"`
+	ToolCall  *ToolCallInfo    `json:"toolCall,omitempty"`
+	Files     []MessageFile    `json:"files,omitempty"`
+	Kind      string           `json:"kind,omitempty"`
+	Hidden    bool             `json:"hidden,omitempty"`
+	Cron      *CronMessageMeta `json:"cron,omitempty"`
+	Timestamp int64            `json:"timestamp"`
 }
 
 // Conversation with full history
@@ -105,15 +114,21 @@ func (m *Manager) SetWorkspace(id, workspaceID string) {
 
 // AddUserMessage adds a user message with optional files
 func (m *Manager) AddUserMessage(id, content string, files []MessageFile) {
+	m.AddMessage(id, Message{
+		Role:    "user",
+		Content: content,
+		Files:   files,
+	})
+}
+
+func (m *Manager) AddMessage(id string, message Message) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if conv, ok := m.conversations[id]; ok {
-		conv.Messages = append(conv.Messages, Message{
-			Role:      "user",
-			Content:   content,
-			Files:     files,
-			Timestamp: time.Now().UnixMilli(),
-		})
+		if message.Timestamp == 0 {
+			message.Timestamp = time.Now().UnixMilli()
+		}
+		conv.Messages = append(conv.Messages, message)
 	}
 }
 

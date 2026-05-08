@@ -15,6 +15,7 @@ import (
 	"github.com/pengmide/lumi/internal/agent"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/conversation"
+	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/device"
 	"github.com/pengmide/lumi/internal/router"
 	"github.com/pengmide/lumi/internal/sandbox"
@@ -43,6 +44,11 @@ type Server struct {
 	wechatChat     *wechatChatRuntime
 	wecom          *wecom.Service
 	wecomChat      *wecomChatRuntime
+	cron           *lumicron.Service
+	cronSubs       map[chan lumicron.Event]struct{}
+	cronSubsMu     sync.RWMutex
+	cronRuns       map[string]struct{}
+	cronRunsMu     sync.Mutex
 
 	// Per-conversation agent sessions: convID -> agentID -> sessionID
 	agentSessions map[string]map[string]string
@@ -97,10 +103,13 @@ func NewServer(cfg *config.Config, staticFS fs.FS) *Server {
 		remoteAgentSessions: make(map[string]map[string]map[string]string),
 		agentCommands:       make(map[string][]SlashCommand),
 		setupSubs:           make(map[chan setupcheck.SetupStatus]struct{}),
+		cronSubs:            make(map[chan lumicron.Event]struct{}),
+		cronRuns:            make(map[string]struct{}),
 	}
-	s.wechatChat = newWeChatChatRuntime(cfg)
+	s.cron = lumicron.NewService(lumicron.NewStore(""), s, s.broadcastCronEvent)
+	s.wechatChat = newWeChatChatRuntime(cfg, s.cron)
 	s.wechat = wechat.NewService(cfg, s.wechatChat)
-	s.wecomChat = newWeComChatRuntime(cfg)
+	s.wecomChat = newWeComChatRuntime(cfg, s.cron)
 	s.wecom = wecom.NewService(cfg, s.wecomChat)
 	s.devices.SetDeviceResetHook(s.clearRemoteSessionsForDevice)
 
@@ -108,6 +117,9 @@ func NewServer(cfg *config.Config, staticFS fs.FS) *Server {
 	s.initSetupStatus()
 	s.wechat.AutoStartIfEnabled()
 	s.wecom.AutoStartIfEnabled()
+	if err := s.cron.Start(); err != nil {
+		log.Printf("failed to start cron service: %v", err)
+	}
 	go s.checkDependenciesAsync()
 	return s
 }
@@ -161,6 +173,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/sessions/", s.handleSessionByID)
 	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/api/chat/cancel", s.handleChatCancel)
+	mux.HandleFunc("/api/cron/jobs", s.handleCronJobs)
+	mux.HandleFunc("/api/cron/jobs/", s.handleCronJobByID)
+	mux.HandleFunc("/api/cron/events", s.handleCronEvents)
 	mux.HandleFunc("/api/permission/confirm", s.handlePermissionConfirm)
 	mux.HandleFunc("/api/upload", s.handleFileUpload)
 	mux.HandleFunc("/api/upload/cleanup", s.handleFileCleanup)
@@ -225,6 +240,9 @@ func (s *Server) Shutdown() error {
 	}
 	if err := s.sandbox.Shutdown(); err != nil {
 		return err
+	}
+	if s.cron != nil {
+		s.cron.Stop()
 	}
 
 	return s.agents.Shutdown()

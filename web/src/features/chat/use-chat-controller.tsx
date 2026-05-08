@@ -6,6 +6,7 @@ import * as api from '@/lib/api'
 import { getReadableSandboxErrorMessage, isWorkspaceInteractionBlocked } from '@/lib/sandbox'
 import type {
   Agent,
+  CronJob,
   Message,
   MessageFile,
   PermissionRequest,
@@ -85,6 +86,7 @@ function normalizeWorkspace(workspace: Workspace): Workspace {
 
 export function useChatController({ routeSessionId, pushRoute }: UseChatControllerOptions) {
   const [sessions, setSessions] = useState<SessionMeta[]>([])
+  const [cronJobs, setCronJobs] = useState<CronJob[]>([])
   const [sessionDetails, setSessionDetails] = useState<Record<string, Session>>({})
   const [agents, setAgents] = useState<Agent[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
@@ -102,7 +104,9 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   const [pendingStreamAgentBySession, setPendingStreamAgentBySession] = useState<Record<string, string>>({})
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   const [workspaceTreeRefreshToken, setWorkspaceTreeRefreshToken] = useState(0)
+  const [initialized, setInitialized] = useState(false)
   const initializedRef = useRef(false)
+  const cronEventsSubscribedRef = useRef(false)
   const lastPushedRouteRef = useRef<string | null | undefined>(undefined)
   const sessionDetailsRef = useRef(sessionDetails)
   const currentSessionIdRef = useRef<string | null>(null)
@@ -476,16 +480,27 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     }
   }
 
+  const loadCronJobs = async () => {
+    try {
+      const jobs = await api.fetchCronJobs()
+      setCronJobs(jobs)
+    } catch (error) {
+      console.warn('Failed to load scheduled tasks', error)
+      setCronJobs([])
+    }
+  }
+
   const initialize = async (nextRouteSessionId: string | null) => {
     if (initializedRef.current) return
 
     initializedRef.current = true
-    await Promise.all([loadAgents(), loadWorkspaces()])
+    await Promise.all([loadAgents(), loadWorkspaces(), loadCronJobs()])
+    setInitialized(true)
     await loadSessions(Boolean(nextRouteSessionId))
 
-    if (nextRouteSessionId) {
-      await selectSession(nextRouteSessionId, false)
-    }
+	if (nextRouteSessionId) {
+	  await selectSession(nextRouteSessionId, false)
+	}
   }
 
   const syncRoute = async (nextRouteSessionId: string | null) => {
@@ -659,7 +674,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       }
       return null
     })
-    await loadSessions(true)
+    await Promise.all([loadSessions(true), loadCronJobs()])
   }
 
   const handleStreamEvent = (
@@ -731,7 +746,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       setAgentSessionId(event.sessionId)
     }
 
-    if (event.message && !event.update && !event.error) {
+    if (event.message && !event.update && !event.error && !event.stopReason) {
       return
     }
 
@@ -773,6 +788,82 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       }
     }
   }
+
+  useEffect(() => {
+    if (!initialized || cronEventsSubscribedRef.current) return
+    cronEventsSubscribedRef.current = true
+
+    const eventSource = new EventSource('/api/cron/events')
+
+    const updateJob = (event: MessageEvent<string>) => {
+      const payload = JSON.parse(event.data) as { channel?: string; conversationId?: string; job?: CronJob }
+      if (!payload.job) return
+      setCronJobs((current) => {
+        const next = current.filter((job) => job.id !== payload.job!.id)
+        return [payload.job!, ...next]
+      })
+    }
+
+    const deleteJob = (event: MessageEvent<string>) => {
+      const payload = JSON.parse(event.data) as { channel?: string; conversationId?: string; jobId?: string }
+      if (!payload.jobId) return
+      setCronJobs((current) => current.filter((job) => job.id !== payload.jobId))
+    }
+
+    const updateSession = (event: MessageEvent<string>) => {
+      const payload = JSON.parse(event.data) as { conversationId?: string }
+      void loadSessions(true)
+      if (payload.conversationId && sessionDetailsRef.current[payload.conversationId]) {
+        void api.fetchSession(payload.conversationId).then((session) => {
+          if (session) upsertSessionDetail(session)
+        })
+      }
+    }
+
+    const chatEvent = (event: MessageEvent<string>) => {
+      const payload = JSON.parse(event.data) as {
+        conversationId?: string
+        event?: string
+        data?: Record<string, unknown>
+      }
+      if (!payload.conversationId || !payload.event || !payload.data) return
+      if (payload.conversationId !== currentSessionIdRef.current && !sessionDetailsRef.current[payload.conversationId]) return
+
+      if (payload.event === 'cron_trigger') {
+        const message = payload.data.message as Message | undefined
+        if (message) {
+          if (sessionDetailsRef.current[payload.conversationId]) {
+            updateSessionMessages(payload.conversationId, (messages) => [...messages, message])
+          } else {
+            void api.fetchSession(payload.conversationId).then((session) => {
+              if (session) upsertSessionDetail(session)
+            })
+          }
+        }
+        void loadSessions(true)
+        return
+      }
+
+      handleStreamEvent(
+        {
+          ...(payload.data as StreamEvent & Record<string, unknown>),
+          _eventType: payload.event,
+        },
+        payload.conversationId,
+      )
+    }
+
+    eventSource.addEventListener('job_created', updateJob as EventListener)
+    eventSource.addEventListener('job_updated', updateJob as EventListener)
+    eventSource.addEventListener('job_deleted', deleteJob as EventListener)
+    eventSource.addEventListener('session_updated', updateSession as EventListener)
+    eventSource.addEventListener('chat_event', chatEvent as EventListener)
+
+    return () => {
+      cronEventsSubscribedRef.current = false
+      eventSource.close()
+    }
+  }, [initialized, routeSessionId])
 
   const sendCurrentMessage = async (message: string, files: MessageFile[] = []) => {
     setIsSending(true)
@@ -856,6 +947,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
 
   return {
     agents,
+    cronJobs,
     commands,
     currentAgent,
     currentSession,
@@ -881,11 +973,13 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     currentMessages: currentSession?.messages || [],
     handlePermissionConfirmed: () => setPendingPermission(null),
     loadSessions,
+    refreshCronJobs: loadCronJobs,
     removeSession,
     selectSession,
     sendCurrentMessage,
     requestWorkspaceTreeRefresh,
     setCommands,
+    setCronJobs,
     setCurrentAgent,
     setWorkspace,
     setPendingPermission,

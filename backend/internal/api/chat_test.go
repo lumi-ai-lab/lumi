@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/pengmide/lumi/internal/agentmode"
@@ -54,8 +55,30 @@ func TestPrepareChatLeavesLocalWorkspaceMentionsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareChat() error = %v", err)
 	}
-	if prepared.PromptText != "Review @README.md" {
-		t.Fatalf("prepared.PromptText = %q, want original message", prepared.PromptText)
+	if !strings.Contains(prepared.PromptText, "User: Review @README.md") {
+		t.Fatalf("prepared.PromptText = %q, want original message preserved", prepared.PromptText)
+	}
+	if strings.Contains(prepared.PromptText, "Content of @README.md") {
+		t.Fatalf("prepared.PromptText = %q, want local mention left unexpanded", prepared.PromptText)
+	}
+}
+
+func TestPrepareChatInjectsCronProtocolForNaturalLanguage(t *testing.T) {
+	server := newTestAPIServer(t)
+
+	prepared, err := server.prepareChat(context.Background(), chatRequest{
+		Message:        "现在我们有哪些定时任务?",
+		ConversationID: "conv-1",
+		WorkspaceID:    "default",
+	})
+	if err != nil {
+		t.Fatalf("prepareChat() error = %v", err)
+	}
+	if !strings.Contains(prepared.PromptText, "Lumi scheduled task protocol:") {
+		t.Fatalf("prepared.PromptText missing cron protocol: %q", prepared.PromptText)
+	}
+	if !strings.Contains(prepared.PromptText, "User: 现在我们有哪些定时任务?") {
+		t.Fatalf("prepared.PromptText missing original user prompt: %q", prepared.PromptText)
 	}
 }
 
@@ -65,15 +88,16 @@ func TestHandleNotificationSeparatesThinkingFromAssistantText(t *testing.T) {
 	items := make([]streamItem, 0)
 	accumulator := &streamAccumulator{}
 	toolMap := make(map[string]int)
+	cronStream := &cronCommandStreamState{}
 	events := make([]string, 0)
 
 	send := func(event string, data any) {
 		events = append(events, event)
 	}
 
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello "}}}`), send, &items, accumulator, toolMap, "claude")
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"secret"}}}`), send, &items, accumulator, toolMap, "claude")
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"world"}}}`), send, &items, accumulator, toolMap, "claude")
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello "}}}`), send, &items, accumulator, toolMap, "claude", cronStream)
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"secret"}}}`), send, &items, accumulator, toolMap, "claude", cronStream)
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"world"}}}`), send, &items, accumulator, toolMap, "claude", cronStream)
 
 	server.finalizeAssistantStream("conv", "claude", items, accumulator)
 

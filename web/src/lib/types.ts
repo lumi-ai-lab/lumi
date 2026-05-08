@@ -185,6 +185,54 @@ export interface SessionMeta {
   updatedAt: number;
 }
 
+export type CronSchedule =
+  | { type: "once"; runAt: number }
+  | { type: "interval"; everySeconds: number };
+
+export interface CronJobState {
+  lastRunAt?: number;
+  nextRunAt?: number;
+  lastStatus?: "success" | "error" | "skipped" | string;
+  lastError?: string;
+  runCount: number;
+}
+
+export interface CronTarget {
+  wechat?: {
+    conversationKey?: string;
+    contextToken?: string;
+  };
+  wecom?: {
+    reqId?: string;
+    chatId?: string;
+    chatType?: string;
+    userId?: string;
+  };
+}
+
+export interface CronJob {
+  id: string;
+  name: string;
+  enabled: boolean;
+  channel?: "web" | "wechat" | "wecom" | string;
+  workspaceId: string;
+  agentId: string;
+  conversationId?: string;
+  schedule: CronSchedule;
+  prompt: string;
+  target?: CronTarget;
+  state: CronJobState;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type CronEvent =
+  | { type: "job_created"; job: CronJob }
+  | { type: "job_updated"; job: CronJob }
+  | { type: "job_deleted"; jobId: string }
+  | { type: "session_updated"; conversationId: string }
+  | { type: "chat_event"; conversationId: string; event: string; data: Record<string, unknown> };
+
 export interface MessageFile {
   name: string;
   path: string;
@@ -219,6 +267,9 @@ export interface Message {
   timestamp?: number;
   isError?: boolean;
   files?: MessageFile[];
+  kind?: "text" | "cron_trigger";
+  hidden?: boolean;
+  cron?: { jobId: string; jobName: string; triggeredAt: number };
 }
 
 export interface Session {

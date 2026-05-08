@@ -45,8 +45,13 @@ function buildVisibleItems(messages: Message[]) {
   }
 
   messages.forEach((message) => {
+    if (message.hidden) return
     const isVisible =
-      Boolean(message.content) || Boolean(message.toolCall) || Boolean(message.isError) || message.role !== 'assistant'
+      Boolean(message.content) ||
+      Boolean(message.toolCall) ||
+      Boolean(message.isError) ||
+      message.kind === 'cron_trigger' ||
+      message.role !== 'assistant'
     if (!isVisible) return
 
     if (message.toolCall) {

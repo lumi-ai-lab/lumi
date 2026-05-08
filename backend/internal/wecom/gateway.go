@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	lumicron "github.com/pengmide/lumi/internal/cron"
 )
 
 const (
@@ -174,6 +176,12 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 		PromptPrefix:        wecomSourceInstruction,
 		SessionModeOverride: deriveSessionMode(cfg.AgentID),
 		ConversationStore:   s.convStore,
+		CronTarget: lumicron.Target{WeCom: &lumicron.WeComTarget{
+			ReqID:    msg.ReplyContext.ReqID,
+			ChatID:   msg.ReplyContext.ChatID,
+			ChatType: msg.ReplyContext.ChatType,
+			UserID:   msg.ReplyContext.UserID,
+		}},
 	}, sink)
 	if runErr != nil && ctx.Err() != nil {
 		return runErr

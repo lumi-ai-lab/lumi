@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	lumicron "github.com/pengmide/lumi/internal/cron"
 )
 
 const (
@@ -164,6 +166,10 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCh
 		PromptPrefix:        wechatSourceInstruction,
 		SessionModeOverride: deriveSessionMode(cfg.AgentID),
 		ConversationStore:   s.convStore,
+		CronTarget: lumicron.Target{WeChat: &lumicron.WeChatTarget{
+			ConversationKey: msg.ConversationKey,
+			ContextToken:    msg.ContextToken,
+		}},
 	}, sink)
 	if runErr != nil && ctx.Err() != nil {
 		return runErr

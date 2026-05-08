@@ -52,6 +52,7 @@ func (s *Server) handleNotification(
 	accumulator *streamAccumulator,
 	toolCallMap map[string]int,
 	agentID string,
+	cronCommandStream *cronCommandStreamState,
 ) {
 	if msg.Method != "session/update" {
 		return
@@ -73,10 +74,14 @@ func (s *Server) handleNotification(
 			for _, item := range thinkingItems {
 				sendEvent("thinking", item.Thinking)
 			}
-			if visibleText != "" {
-				params.Update.Content = map[string]any{"type": "text", "text": visibleText}
-				sendEvent("update", params)
+			if visibleText == "" {
+				return
 			}
+			if cronCommandStream.shouldSuppress(accumulator.Text()) {
+				return
+			}
+			params.Update.Content = map[string]any{"type": "text", "text": visibleText}
+			sendEvent("update", params)
 		}
 		return
 

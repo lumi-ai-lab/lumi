@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pengmide/lumi/internal/config"
+	lumicron "github.com/pengmide/lumi/internal/cron"
 )
 
 type Status struct {
@@ -168,6 +169,85 @@ func (s *Service) GetStatus() (Status, error) {
 	}
 	status.Configured = true
 	return status, nil
+}
+
+func (s *Service) RunCronJob(ctx context.Context, job lumicron.Job) (string, error) {
+	target := job.Target.WeChat
+	if target == nil || strings.TrimSpace(target.ConversationKey) == "" {
+		return job.ConversationID, errors.New("wechat cron target is missing")
+	}
+	cfg, err := s.configStore.Load()
+	if err != nil {
+		return job.ConversationID, err
+	}
+	cfg = normalizeConfig(cfg)
+	workspace := s.config.FindWorkspace(job.WorkspaceID)
+	if workspace == nil {
+		return job.ConversationID, errors.New("workspace not found")
+	}
+	if workspace.Kind != "" && workspace.Kind != "local" {
+		return job.ConversationID, errors.New("workspace must be local")
+	}
+	if s.config.FindAgent(job.AgentID) == nil {
+		return job.ConversationID, errors.New("agent not found")
+	}
+
+	unlock, ok := s.locks.TryLock(job.ConversationID)
+	if !ok {
+		return job.ConversationID, lumicron.SkippedError{Reason: "conversation busy"}
+	}
+	defer unlock()
+
+	client := NewClient(cfg)
+	sink := &gatewayEventSink{}
+	runErr := s.runner.RunWeChatChat(ctx, ChatRunInput{
+		Message:             job.Prompt,
+		ConversationID:      job.ConversationID,
+		WorkspaceID:         workspace.ID,
+		WorkspacePath:       workspace.Path,
+		AgentID:             job.AgentID,
+		PromptPrefix:        wechatSourceInstruction,
+		SessionModeOverride: deriveSessionMode(job.AgentID),
+		ConversationStore:   s.convStore,
+		CronTarget:          job.Target,
+	}, sink)
+	if runErr != nil && ctx.Err() != nil {
+		return job.ConversationID, runErr
+	}
+
+	finalText := sink.FinalText()
+	if sink.lastError != "" && finalText == "" {
+		return job.ConversationID, client.SendText(ctx, target.ConversationKey, sink.lastError, target.ContextToken)
+	}
+	parsed := ParseSendProtocol(finalText, workspace.Path)
+	sentMedia := false
+	failures := append([]string(nil), parsed.Failures...)
+	for _, action := range parsed.Actions {
+		if action.Caption != "" {
+			if err := client.SendText(ctx, target.ConversationKey, action.Caption, target.ContextToken); err != nil {
+				failures = append(failures, failureText(action.Path, err.Error()))
+				continue
+			}
+		}
+		if err := client.UploadAndSendMedia(ctx, target.ConversationKey, action, target.ContextToken); err != nil {
+			failures = append(failures, failureText(action.Path, err.Error()))
+			continue
+		}
+		sentMedia = true
+	}
+	visibleText := parsed.VisibleText
+	if len(failures) > 0 {
+		failureTextBlock := strings.Join(failures, "\n")
+		if visibleText == "" {
+			visibleText = failureTextBlock
+		} else {
+			visibleText += "\n\n" + failureTextBlock
+		}
+	}
+	if visibleText == "" && !sentMedia {
+		visibleText = fallbackDoneText
+	}
+	return job.ConversationID, client.SendText(ctx, target.ConversationKey, visibleText, target.ContextToken)
 }
 
 func (s *Service) TestConnection(ctx context.Context) error {

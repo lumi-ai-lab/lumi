@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/storage"
 )
 
@@ -67,6 +68,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"session": session})
 
 	case "DELETE":
+		if s.cron != nil {
+			_, _ = s.cron.DeleteByScope(lumicron.ChannelWeb, id)
+		}
 		s.sessionStore.Delete(id)
 		_ = s.shareStore.RemoveByConversation(id)
 		s.conversations.Delete(id)
@@ -84,15 +88,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 func (s *Server) restoreConversation(session *storage.StoredSession) {
 	s.conversations.Create(session.ID, session.ActiveAgent, session.WorkspaceID)
 	for _, msg := range session.Messages {
-		if msg.Role == "user" {
-			s.conversations.AddUserMessage(session.ID, msg.Content, msg.Files)
-		} else if msg.Type == "thinking" {
-			s.conversations.AddThinkingMessage(session.ID, msg.Content, msg.Agent, msg.Status, msg.Duration)
-		} else if msg.ToolCall != nil {
-			s.conversations.AddToolCall(session.ID, msg.ToolCall, msg.Agent)
-		} else {
-			s.conversations.AddAssistantMessage(session.ID, msg.Content, msg.Agent)
-		}
+		s.conversations.AddMessage(session.ID, msg)
 	}
 	s.agentSessions[session.ID] = make(map[string]string)
 	s.remoteSessionsMu.Lock()

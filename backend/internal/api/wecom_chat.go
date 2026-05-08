@@ -12,6 +12,7 @@ import (
 	"github.com/pengmide/lumi/internal/agent"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/conversation"
+	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 	"github.com/pengmide/lumi/internal/storage"
 	"github.com/pengmide/lumi/internal/wecom"
@@ -24,16 +25,18 @@ type wecomChatRuntime struct {
 
 	agentSessions map[string]map[string]string
 	initialized   map[string]bool
+	cron          *lumicron.Service
 	mu            sync.Mutex
 }
 
-func newWeComChatRuntime(cfg *config.Config) *wecomChatRuntime {
+func newWeComChatRuntime(cfg *config.Config, cronService *lumicron.Service) *wecomChatRuntime {
 	return &wecomChatRuntime{
 		config:        cfg,
 		agents:        agent.NewManager(cfg),
 		conversations: conversation.NewManager(),
 		agentSessions: make(map[string]map[string]string),
 		initialized:   make(map[string]bool),
+		cron:          cronService,
 	}
 }
 
@@ -95,10 +98,11 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 	streamItems := make([]streamItem, 0)
 	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
+	cronCommandStream := &cronCommandStreamState{}
 	autoPermissionErr := ""
 
 	cleanupNotification := agentProc.OnNotification(func(msg *jsonrpc.Message) {
-		_ = r.handleWeComNotification(msg, sink, &streamItems, accumulator, toolCallMap)
+		_ = r.handleWeComNotification(msg, sink, &streamItems, accumulator, toolCallMap, cronCommandStream)
 	})
 	defer cleanupNotification()
 
@@ -131,6 +135,7 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 	defer close(stopCancelWatcher)
 
 	promptText := input.Message
+	promptText = lumicron.WithConversationInstructionAndJobs(promptText, r.currentCronJobsForPrompt(input.ConversationID))
 	if input.PromptPrefix != "" {
 		promptText = input.PromptPrefix + "\n\n" + promptText
 	}
@@ -146,6 +151,9 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 		return r.emitError(sink, err.Error())
 	}
 
+	if err := r.executeCronCommands(input, &streamItems, &accumulator.currentText); err != nil {
+		return r.emitError(sink, err.Error())
+	}
 	r.finalizeAssistantStream(conv.ID, input.AgentID, streamItems, accumulator)
 	if err := r.persistConversation(conv.ID, input.ConversationStore); err != nil {
 		return err
@@ -327,12 +335,31 @@ func (r *wecomChatRuntime) finalizeAssistantStream(convID, agentID string, strea
 	}
 }
 
+func (r *wecomChatRuntime) executeCronCommands(input wecom.ChatRunInput, streamItems *[]streamItem, currentText *string) error {
+	_, err := executeCronCommandsWithService(r.cron, cronCommandContext{
+		Channel:        lumicron.ChannelWeCom,
+		ConversationID: input.ConversationID,
+		AgentID:        input.AgentID,
+		WorkspaceID:    input.WorkspaceID,
+		Target:         input.CronTarget,
+	}, streamItems, currentText)
+	return err
+}
+
+func (r *wecomChatRuntime) currentCronJobsForPrompt(conversationID string) []lumicron.Job {
+	if r.cron == nil {
+		return nil
+	}
+	return r.cron.ListByScope(lumicron.ChannelWeCom, conversationID)
+}
+
 func (r *wecomChatRuntime) handleWeComNotification(
 	msg *jsonrpc.Message,
 	sink wecom.ChatEventSink,
 	streamItems *[]streamItem,
 	accumulator *streamAccumulator,
 	toolCallMap map[string]int,
+	cronCommandStream *cronCommandStreamState,
 ) error {
 	if msg.Method != "session/update" {
 		return nil
@@ -351,6 +378,9 @@ func (r *wecomChatRuntime) handleWeComNotification(
 		if text := extractTextContent(update.Content); text != "" {
 			visibleText, _ := accumulator.AddMessageChunk(text, streamItems)
 			if visibleText == "" {
+				return nil
+			}
+			if cronCommandStream.shouldSuppress(accumulator.Text()) {
 				return nil
 			}
 			update.Content = map[string]any{"type": "text", "text": visibleText}

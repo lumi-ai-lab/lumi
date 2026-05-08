@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pengmide/lumi/internal/config"
+	lumicron "github.com/pengmide/lumi/internal/cron"
 )
 
 type Status struct {
@@ -30,6 +31,7 @@ type Service struct {
 	running       bool
 	monitorCancel context.CancelFunc
 	monitorDone   chan struct{}
+	runtime       *wsRuntime
 	locks         *conversationLocks
 }
 
@@ -82,6 +84,7 @@ func (s *Service) Start() error {
 	s.running = true
 	s.monitorCancel = cancel
 	s.monitorDone = done
+	s.runtime = nil
 	if err := s.updateRuntime(func(state *RuntimeState) {
 		state.Running = true
 		state.LastError = ""
@@ -89,6 +92,7 @@ func (s *Service) Start() error {
 		s.running = false
 		s.monitorCancel = nil
 		s.monitorDone = nil
+		s.runtime = nil
 		cancel()
 		return err
 	}
@@ -109,6 +113,7 @@ func (s *Service) Stop() error {
 	done := s.monitorDone
 	s.monitorCancel = nil
 	s.monitorDone = nil
+	s.runtime = nil
 	s.running = false
 	s.mu.Unlock()
 
@@ -125,6 +130,18 @@ func (s *Service) IsRunning() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.running
+}
+
+func (s *Service) setRuntime(rt *wsRuntime) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runtime = rt
+}
+
+func (s *Service) currentRuntime() *wsRuntime {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.runtime
 }
 
 func (s *Service) GetStatus() (Status, error) {
@@ -150,6 +167,91 @@ func (s *Service) GetStatus() (Status, error) {
 	}
 	status.Configured = true
 	return status, nil
+}
+
+func (s *Service) RunCronJob(ctx context.Context, job lumicron.Job) (string, error) {
+	target := job.Target.WeCom
+	if target == nil || strings.TrimSpace(target.ChatID) == "" {
+		return job.ConversationID, errors.New("wecom cron target is missing")
+	}
+	cfg, err := s.configStore.Load()
+	if err != nil {
+		return job.ConversationID, err
+	}
+	cfg = normalizeConfig(cfg)
+	workspace := s.config.FindWorkspace(job.WorkspaceID)
+	if workspace == nil {
+		return job.ConversationID, errors.New("workspace not found")
+	}
+	if workspace.Kind != "" && workspace.Kind != "local" {
+		return job.ConversationID, errors.New("workspace must be local")
+	}
+	if s.config.FindAgent(job.AgentID) == nil {
+		return job.ConversationID, errors.New("agent not found")
+	}
+	sender := s.currentRuntime()
+	if sender == nil {
+		return job.ConversationID, errors.New("wecom websocket is not connected")
+	}
+	unlock, ok := s.locks.TryLock(job.ConversationID)
+	if !ok {
+		return job.ConversationID, lumicron.SkippedError{Reason: "conversation busy"}
+	}
+	defer unlock()
+
+	sink := &gatewayEventSink{}
+	runErr := s.runner.RunWeComChat(ctx, ChatRunInput{
+		Message:             job.Prompt,
+		ConversationID:      job.ConversationID,
+		WorkspaceID:         workspace.ID,
+		WorkspacePath:       workspace.Path,
+		AgentID:             job.AgentID,
+		PromptPrefix:        wecomSourceInstruction,
+		SessionModeOverride: deriveSessionMode(job.AgentID),
+		ConversationStore:   s.convStore,
+		CronTarget:          job.Target,
+	}, sink)
+	if runErr != nil && ctx.Err() != nil {
+		return job.ConversationID, runErr
+	}
+
+	rctx := replyContext{ReqID: target.ReqID, ChatID: target.ChatID, ChatType: target.ChatType, UserID: target.UserID}
+	finalText := sink.FinalText()
+	if sink.lastError != "" && finalText == "" {
+		return job.ConversationID, sender.Send(ctx, rctx, sink.lastError)
+	}
+	parsed := ParseSendProtocol(finalText, workspace.Path)
+	sentMedia := false
+	failures := append([]string(nil), parsed.Failures...)
+	for _, action := range parsed.Actions {
+		if action.Caption != "" {
+			if err := sender.Send(ctx, rctx, action.Caption); err != nil {
+				failures = append(failures, failureText(action.Path, err.Error()))
+				continue
+			}
+		}
+		if err := sender.SendMedia(ctx, rctx, action); err != nil {
+			failures = append(failures, failureText(action.Path, err.Error()))
+			continue
+		}
+		sentMedia = true
+	}
+	visibleText := parsed.VisibleText
+	if len(failures) > 0 {
+		failureTextBlock := strings.Join(failures, "\n")
+		if visibleText == "" {
+			visibleText = failureTextBlock
+		} else {
+			visibleText += "\n\n" + failureTextBlock
+		}
+	}
+	if visibleText == "" && !sentMedia {
+		visibleText = fallbackDoneText
+	}
+	if visibleText == "" {
+		return job.ConversationID, nil
+	}
+	return job.ConversationID, sender.Send(ctx, rctx, visibleText)
 }
 
 func (s *Service) TestConnection(ctx context.Context) error {

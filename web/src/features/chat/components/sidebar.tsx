@@ -1,6 +1,6 @@
 'use client'
 
-import { Plus } from 'lucide-react'
+import { AlarmClock, Plus } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -13,25 +13,28 @@ import {
 } from '@/components/ui/dialog'
 import { WorkspaceSelector } from '@/features/chat/components/workspace-selector'
 import type { CreateWorkspaceOptions } from '@/lib/api'
-import type { Agent, SessionMeta, Workspace } from '@/lib/types'
+import type { Agent, CronJob, SessionMeta, Workspace } from '@/lib/types'
 import { useI18n } from '@/features/i18n/i18n-provider'
 import { formatTime } from '@/utils/format'
 
 export function Sidebar({
   agents,
   currentSessionId,
+  cronJobs,
   currentWorkspaceId,
   onAddWorkspace,
   onCollapse,
   onCreateSession,
   onRemoveSession,
   onSetWorkspace,
+  onShowScheduled,
   onSelectSession,
   sessions,
   workspaces,
 }: {
   agents: Agent[]
   currentSessionId: string | null
+  cronJobs: CronJob[]
   currentWorkspaceId: string
   onAddWorkspace: (
     name: string,
@@ -42,12 +45,16 @@ export function Sidebar({
   onCreateSession: () => Promise<void>
   onRemoveSession: (sessionId: string) => Promise<void>
   onSetWorkspace: (workspaceId: string) => void
+  onShowScheduled?: () => void
   onSelectSession: (sessionId: string) => Promise<void>
   sessions: SessionMeta[]
   workspaces: Workspace[]
 }) {
   const { t } = useI18n()
   const [deleteTarget, setDeleteTarget] = useState<SessionMeta | null>(null)
+  const deleteTaskCount = deleteTarget
+    ? cronJobs.filter((job) => (job.channel || 'web') === 'web' && job.conversationId === deleteTarget.id).length
+    : 0
 
   return (
     <aside className="flex h-full w-[260px] flex-shrink-0 flex-col border-r border-border bg-card">
@@ -121,11 +128,26 @@ export function Sidebar({
         )}
       </div>
 
+      <div className="border-t border-border p-2">
+        <button
+          className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-[13px] text-[rgb(var(--color-text-secondary))] transition hover:bg-accent hover:text-foreground"
+          onClick={onShowScheduled}
+          type="button"
+        >
+          <AlarmClock className="h-4 w-4" />
+          <span>Scheduled Tasks</span>
+        </button>
+      </div>
+
       <Dialog onOpenChange={(open) => !open && setDeleteTarget(null)} open={Boolean(deleteTarget)}>
         <DialogContent className="border-border bg-[rgb(var(--color-bg-muted))] p-6">
           <DialogHeader className="space-y-2">
             <DialogTitle>Delete Chat</DialogTitle>
-            <DialogDescription>Are you sure you want to delete this chat?</DialogDescription>
+            <DialogDescription>
+              {deleteTaskCount > 0
+                ? `This chat has ${deleteTaskCount} scheduled ${deleteTaskCount === 1 ? 'task' : 'tasks'}. Deleting this chat will also delete ${deleteTaskCount === 1 ? 'that task' : 'those tasks'}.`
+                : 'Are you sure you want to delete this chat?'}
+            </DialogDescription>
           </DialogHeader>
           <div className="mt-5 flex justify-end gap-3">
             <Button className="rounded-md" onClick={() => setDeleteTarget(null)} type="button" variant="outline">
@@ -142,7 +164,7 @@ export function Sidebar({
               type="button"
               variant="destructive"
             >
-              Delete
+              {deleteTaskCount > 0 ? 'Delete Chat & Tasks' : 'Delete'}
             </Button>
           </div>
         </DialogContent>

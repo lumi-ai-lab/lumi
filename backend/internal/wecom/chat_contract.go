@@ -3,6 +3,7 @@ package wecom
 import (
 	"context"
 
+	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/storage"
 )
 
@@ -27,6 +28,7 @@ type ChatRunInput struct {
 	PromptPrefix        string
 	SessionModeOverride string
 	ConversationStore   HiddenConversationStore
+	CronTarget          lumicron.Target
 }
 
 type ChatEvent struct {

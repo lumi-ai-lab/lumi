@@ -16,6 +16,7 @@ import (
 	"github.com/pengmide/lumi/internal/agentmode"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/conversation"
+	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/device"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 	workspacepreview "github.com/pengmide/lumi/internal/workspace"
@@ -33,6 +34,10 @@ type chatRequest struct {
 	WorkspaceID    string         `json:"workspaceId"`
 	Files          []chatFileInfo `json:"files"`
 	DeviceID       string         `json:"deviceId,omitempty"`
+	AgentID        string         `json:"agentId,omitempty"`
+	Hidden         bool           `json:"hidden,omitempty"`
+	CronJobID      string         `json:"cronJobId,omitempty"`
+	CronJobName    string         `json:"cronJobName,omitempty"`
 }
 
 type streamItem struct {
@@ -40,6 +45,10 @@ type streamItem struct {
 	Text     string
 	Tool     *conversation.ToolCallInfo
 	Thinking *thinkingData
+}
+
+type chatRunResult struct {
+	Err error
 }
 
 const maxRemoteMentionedFiles = 5
@@ -63,6 +72,8 @@ type chatRuntimeContext struct {
 	Prepared    *chatPrepared
 	SendEvent   func(string, any)
 	HTTPRequest *http.Request
+	Context     context.Context
+	Result      *chatRunResult
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -94,6 +105,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Prepared:    prepared,
 		SendEvent:   sendEvent,
 		HTTPRequest: r,
+		Context:     r.Context(),
+		Result:      &chatRunResult{},
+	}
+	if !req.Hidden {
+		if !s.acquireCronRun(prepared.ConvID) {
+			ctx.setError(fmt.Errorf("conversation busy"))
+			sendEvent("error", map[string]string{"message": "Conversation is busy"})
+			return
+		}
+		defer s.releaseCronRun(prepared.ConvID)
 	}
 
 	if req.DeviceID == "" {
@@ -143,7 +164,9 @@ func (s *Server) prepareChat(ctx context.Context, req chatRequest) (*chatPrepare
 
 	previousAgent := conv.ActiveAgent
 	agentID := previousAgent
-	if mentionedAgent := s.router.DetectMention(req.Message); mentionedAgent != "" {
+	if req.AgentID != "" && s.router.HasAgent(req.AgentID) {
+		agentID = req.AgentID
+	} else if mentionedAgent := s.router.DetectMention(req.Message); mentionedAgent != "" {
 		agentID = mentionedAgent
 	}
 	if agentID == "" {
@@ -179,6 +202,9 @@ func (s *Server) prepareChat(ctx context.Context, req chatRequest) (*chatPrepare
 		if context != "" {
 			promptText = context + "User: " + promptText
 		}
+	}
+	if !req.Hidden {
+		promptText = lumicron.WithConversationInstructionAndJobs(promptText, s.currentCronJobsForPrompt(lumicron.ChannelWeb, convID))
 	}
 
 	messageFiles := make([]conversation.MessageFile, 0, len(req.Files))
@@ -290,6 +316,7 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 	if !s.initialized[ctx.Prepared.AgentID] {
 		ctx.SendEvent("status", map[string]string{"message": fmt.Sprintf("Initializing %s...", ctx.Prepared.AgentID)})
 		if err := s.initializeAgent(ctx.Prepared.AgentID); err != nil {
+			ctx.setError(err)
 			ctx.SendEvent("error", map[string]string{"message": err.Error()})
 			return
 		}
@@ -298,6 +325,7 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 
 	agentProc, err := s.agents.Get(ctx.Prepared.AgentID)
 	if err != nil {
+		ctx.setError(err)
 		ctx.SendEvent("error", map[string]string{"message": "Failed to get agent: " + err.Error()})
 		return
 	}
@@ -306,9 +334,10 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 	streamItems := make([]streamItem, 0)
 	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
+	cronCommandStream := &cronCommandStreamState{}
 
 	cleanupNotification := agentProc.OnNotification(func(msg *jsonrpc.Message) {
-		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID)
+		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID, cronCommandStream)
 	})
 	defer cleanupNotification()
 
@@ -333,13 +362,14 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 	if sessionID == "" {
 		sessionID, err = s.createAgentSession(ctx.Prepared.AgentID, ctx.Prepared.WorkspacePath)
 		if err != nil {
+			ctx.setError(err)
 			ctx.SendEvent("error", map[string]string{"message": err.Error()})
 			return
 		}
 		sessionsMap[ctx.Prepared.AgentID] = sessionID
 	}
 
-	s.conversations.AddUserMessage(ctx.Prepared.ConvID, ctx.Request.Message, ctx.Prepared.MessageFiles)
+	s.addChatUserMessage(ctx)
 	s.conversations.SetSessionID(ctx.Prepared.ConvID, sessionID)
 
 	ctx.SendEvent("session", map[string]any{
@@ -355,10 +385,16 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 		"prompt":    []map[string]string{{"type": "text", "text": ctx.Prepared.PromptText}},
 	})
 	if err != nil {
+		ctx.setError(err)
 		ctx.SendEvent("error", map[string]string{"message": err.Error()})
 		return
 	}
 
+	if err := s.executeCronCommandsForChat(ctx, &streamItems, &accumulator.currentText); err != nil {
+		ctx.setError(err)
+		ctx.SendEvent("error", map[string]string{"message": err.Error()})
+		return
+	}
 	s.finalizeAssistantStream(ctx.Prepared.ConvID, ctx.Prepared.AgentID, streamItems, accumulator)
 
 	var result map[string]any
@@ -375,18 +411,22 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 func (s *Server) handleDeviceChat(ctx chatRuntimeContext) {
 	deviceInfo, ok := s.devices.GetDevice(ctx.Request.DeviceID)
 	if !ok {
+		ctx.setError(fmt.Errorf("device not found"))
 		ctx.SendEvent("error", map[string]string{"message": "Device not found"})
 		return
 	}
 	if deviceInfo.Status == device.StatusOffline {
+		ctx.setError(fmt.Errorf("device is offline"))
 		ctx.SendEvent("error", map[string]string{"message": "Device is offline"})
 		return
 	}
 	if !deviceInfo.SetupReady {
+		ctx.setError(fmt.Errorf("device setup is not ready"))
 		ctx.SendEvent("error", map[string]string{"message": "Device setup is not ready"})
 		return
 	}
 	if !deviceHasAgent(deviceInfo, ctx.Prepared.AgentID) {
+		ctx.setError(errors.New(deviceAgentUnavailableMessage(deviceInfo, ctx.Prepared.AgentID)))
 		ctx.SendEvent("error", map[string]string{"message": deviceAgentUnavailableMessage(deviceInfo, ctx.Prepared.AgentID)})
 		return
 	}
@@ -404,6 +444,7 @@ func (s *Server) handleDeviceChat(ctx chatRuntimeContext) {
 	)
 	task.SessionID = remoteSessionID
 	if err := s.devices.StartTask(task); err != nil {
+		ctx.setError(err)
 		ctx.SendEvent("error", map[string]string{"message": deviceErrorMessage(err)})
 		return
 	}
@@ -419,13 +460,47 @@ func (s *Server) handleDeviceChat(ctx chatRuntimeContext) {
 		Files:          toTaskFiles(ctx.Request.Files),
 	}
 
-	if err := s.devices.SendToDevice(ctx.HTTPRequest.Context(), ctx.Request.DeviceID, device.MsgTaskExecute, task.ID, payload); err != nil {
+	if err := s.devices.SendToDevice(ctx.requestContext(), ctx.Request.DeviceID, device.MsgTaskExecute, task.ID, payload); err != nil {
+		ctx.setError(err)
 		ctx.SendEvent("error", map[string]string{"message": err.Error()})
 		return
 	}
 
-	s.conversations.AddUserMessage(ctx.Prepared.ConvID, ctx.Request.Message, ctx.Prepared.MessageFiles)
+	s.addChatUserMessage(ctx)
 	s.consumeDeviceTaskEvents(ctx, task)
+}
+
+func (s *Server) addChatUserMessage(ctx chatRuntimeContext) {
+	msg := conversation.Message{
+		Role:    "user",
+		Content: ctx.Request.Message,
+		Files:   ctx.Prepared.MessageFiles,
+		Hidden:  ctx.Request.Hidden,
+	}
+	if ctx.Request.CronJobID != "" {
+		msg.Cron = &conversation.CronMessageMeta{
+			JobID:       ctx.Request.CronJobID,
+			JobName:     ctx.Request.CronJobName,
+			TriggeredAt: time.Now().UnixMilli(),
+		}
+	}
+	s.conversations.AddMessage(ctx.Prepared.ConvID, msg)
+}
+
+func (ctx chatRuntimeContext) requestContext() context.Context {
+	if ctx.Context != nil {
+		return ctx.Context
+	}
+	if ctx.HTTPRequest != nil {
+		return ctx.HTTPRequest.Context()
+	}
+	return context.Background()
+}
+
+func (ctx chatRuntimeContext) setError(err error) {
+	if err != nil && ctx.Result != nil && ctx.Result.Err == nil {
+		ctx.Result.Err = err
+	}
 }
 
 func (s *Server) applyPreparedAgentSwitch(prepared *chatPrepared) {
@@ -441,6 +516,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 	streamItems := make([]streamItem, 0)
 	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
+	cronCommandStream := &cronCommandStreamState{}
 	pendingNotifications := make([]device.DeviceEvent, 0)
 	sessionReady := task.SessionID != ""
 	sessionAnnounced := false
@@ -451,6 +527,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 		payload, err := device.DecodePayload[device.TaskEventPayload](device.Envelope{Payload: event.Payload})
 		if err != nil {
 			ctx.SendEvent("error", map[string]string{"message": "Invalid device event"})
+			ctx.setError(fmt.Errorf("invalid device event"))
 			return false
 		}
 		msg := &jsonrpc.Message{
@@ -458,7 +535,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 			Method:  payload.Notification.Method,
 			Params:  payload.Notification.Params,
 		}
-		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID)
+		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID, cronCommandStream)
 		return true
 	}
 
@@ -480,7 +557,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 	}
 
 	sendCancel := func(reason string) {
-		_ = s.devices.SendToDevice(contextWithoutCancel(ctx.HTTPRequest.Context()), task.DeviceID, device.MsgTaskCancel, task.ID, device.TaskCancelPayload{
+		_ = s.devices.SendToDevice(contextWithoutCancel(ctx.requestContext()), task.DeviceID, device.MsgTaskCancel, task.ID, device.TaskCancelPayload{
 			SessionID: task.SessionID,
 			Reason:    reason,
 		})
@@ -488,13 +565,14 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 
 	for {
 		select {
-		case <-ctx.HTTPRequest.Context().Done():
+		case <-ctx.requestContext().Done():
 			sendCancel("client_disconnected")
 			return
 
 		case <-sessionTimer.C:
 			if !sessionReady {
 				ctx.SendEvent("error", map[string]string{"message": "Device did not create session"})
+				ctx.setError(fmt.Errorf("device did not create session"))
 				sendCancel("session_timeout")
 				return
 			}
@@ -505,6 +583,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 				payload, err := device.DecodePayload[device.TaskSessionPayload](device.Envelope{Payload: event.Payload})
 				if err != nil || payload.SessionID == "" {
 					ctx.SendEvent("error", map[string]string{"message": "Device returned an invalid session"})
+					ctx.setError(fmt.Errorf("device returned an invalid session"))
 					sendCancel("invalid_session")
 					return
 				}
@@ -551,6 +630,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 			case device.DeviceEventPermissionRequest:
 				if !sessionReady {
 					ctx.SendEvent("error", map[string]string{"message": "Device protocol error"})
+					ctx.setError(fmt.Errorf("device protocol error"))
 					sendCancel("protocol_error")
 					return
 				}
@@ -558,16 +638,18 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 				payload, err := device.DecodePayload[device.PermissionRequestPayload](device.Envelope{Payload: event.Payload})
 				if err != nil {
 					ctx.SendEvent("error", map[string]string{"message": "Invalid permission request"})
+					ctx.setError(fmt.Errorf("invalid permission request"))
 					return
 				}
 				if s.shouldAutoApproveAgent(ctx.Prepared.AgentID) {
 					optionID, ok := selectRemotePermissionOption(payload)
 					if ok {
-						if err := s.devices.SendToDevice(contextWithoutCancel(ctx.HTTPRequest.Context()), task.DeviceID, device.MsgPermissionConfirm, task.ID, device.PermissionConfirmPayload{
+						if err := s.devices.SendToDevice(contextWithoutCancel(ctx.requestContext()), task.DeviceID, device.MsgPermissionConfirm, task.ID, device.PermissionConfirmPayload{
 							ToolCallID: payload.ToolCall.ToolCallID,
 							OptionID:   optionID,
 						}); err != nil {
 							ctx.SendEvent("error", map[string]string{"message": "Failed to auto-confirm permission"})
+							ctx.setError(fmt.Errorf("failed to auto-confirm permission"))
 							return
 						}
 						continue
@@ -578,10 +660,16 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 			case device.DeviceEventDone:
 				if !sessionReady {
 					ctx.SendEvent("error", map[string]string{"message": "Device protocol error"})
+					ctx.setError(fmt.Errorf("device protocol error"))
 					sendCancel("protocol_error")
 					return
 				}
 
+				if err := s.executeCronCommandsForChat(ctx, &streamItems, &accumulator.currentText); err != nil {
+					ctx.setError(err)
+					ctx.SendEvent("error", map[string]string{"message": err.Error()})
+					return
+				}
 				s.finalizeAssistantStream(ctx.Prepared.ConvID, ctx.Prepared.AgentID, streamItems, accumulator)
 
 				payload, err := device.DecodePayload[device.TaskDonePayload](device.Envelope{Payload: event.Payload})
@@ -606,15 +694,18 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 			case device.DeviceEventError:
 				if event.Err != nil {
 					ctx.SendEvent("error", map[string]string{"message": event.Err.Error()})
+					ctx.setError(event.Err)
 					return
 				}
 
 				payload, err := device.DecodePayload[device.TaskErrorPayload](device.Envelope{Payload: event.Payload})
 				if err != nil || payload.Message == "" {
 					ctx.SendEvent("error", map[string]string{"message": "Device execution failed"})
+					ctx.setError(fmt.Errorf("device execution failed"))
 					return
 				}
 				ctx.SendEvent("error", map[string]string{"message": payload.Message})
+				ctx.setError(errors.New(payload.Message))
 				return
 			}
 		}
