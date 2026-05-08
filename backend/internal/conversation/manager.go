@@ -30,8 +30,11 @@ type MessageFile struct {
 // Message in conversation history
 type Message struct {
 	Role      string        `json:"role"` // user, assistant
+	Type      string        `json:"type,omitempty"`
 	Content   string        `json:"content"`
 	Agent     string        `json:"agent,omitempty"`
+	Status    string        `json:"status,omitempty"`
+	Duration  int64         `json:"duration,omitempty"`
 	ToolCall  *ToolCallInfo `json:"toolCall,omitempty"`
 	Files     []MessageFile `json:"files,omitempty"`
 	Timestamp int64         `json:"timestamp"`
@@ -123,6 +126,26 @@ func (m *Manager) AddAssistantMessage(id, content, agent string) {
 			Role:      "assistant",
 			Content:   content,
 			Agent:     agent,
+			Timestamp: time.Now().UnixMilli(),
+		})
+	}
+}
+
+// AddThinkingMessage adds an assistant thinking message.
+func (m *Manager) AddThinkingMessage(id, content, agent, status string, duration int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if conv, ok := m.conversations[id]; ok {
+		if status == "" {
+			status = "done"
+		}
+		conv.Messages = append(conv.Messages, Message{
+			Role:      "assistant",
+			Type:      "thinking",
+			Content:   content,
+			Agent:     agent,
+			Status:    status,
+			Duration:  duration,
 			Timestamp: time.Now().UnixMilli(),
 		})
 	}

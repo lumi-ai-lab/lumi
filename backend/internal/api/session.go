@@ -86,6 +86,10 @@ func (s *Server) restoreConversation(session *storage.StoredSession) {
 	for _, msg := range session.Messages {
 		if msg.Role == "user" {
 			s.conversations.AddUserMessage(session.ID, msg.Content, msg.Files)
+		} else if msg.Type == "thinking" {
+			s.conversations.AddThinkingMessage(session.ID, msg.Content, msg.Agent, msg.Status, msg.Duration)
+		} else if msg.ToolCall != nil {
+			s.conversations.AddToolCall(session.ID, msg.ToolCall, msg.Agent)
 		} else {
 			s.conversations.AddAssistantMessage(session.ID, msg.Content, msg.Agent)
 		}

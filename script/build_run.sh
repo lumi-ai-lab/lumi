@@ -8,5 +8,8 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 echo "Running build..."
 bash "$SCRIPT_DIR/build.sh"
 
+echo "Installing frontend dependencies..."
+cd "$REPO_DIR/web" && npm install
+
 echo "Starting backend..."
 exec "$REPO_DIR/backend/lumi" "$@"

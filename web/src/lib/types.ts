@@ -210,8 +210,11 @@ export interface ToolCall {
 
 export interface Message {
   role: "user" | "assistant";
+  type?: "text" | "thinking";
   content: string;
   agent?: string;
+  status?: "thinking" | "done";
+  duration?: number;
   toolCall?: ToolCall;
   timestamp?: number;
   isError?: boolean;
@@ -248,7 +251,14 @@ export interface PublicSharedConversation {
 
 export type StreamItem =
   | { type: "text"; data: string }
-  | { type: "tool"; data: ToolCall };
+  | { type: "tool"; data: ToolCall }
+  | { type: "thinking"; data: ThinkingData };
+
+export interface ThinkingData {
+  content: string;
+  status: "thinking" | "done";
+  duration?: number;
+}
 
 export interface SessionUpdate {
   sessionUpdate: string;

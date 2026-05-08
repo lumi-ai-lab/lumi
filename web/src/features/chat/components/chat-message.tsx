@@ -5,9 +5,33 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { ConversationFilePreviewDialog } from '@/features/chat/components/conversation-file-preview-dialog'
+import { ThinkingBlock } from '@/features/chat/components/thinking-block'
 import { ToolCallItem } from '@/features/chat/components/tool-call-item'
 import { formatFileSize } from '@/lib/utils'
 import type { Message, MessageFile } from '@/lib/types'
+
+const thinkBlockPattern = /<\s*think(?:ing)?\s*>[\s\S]*?<\s*\/\s*think(?:ing)?\s*>/gi
+const orphanThinkClosePrefixPattern = /^[\s\S]*?<\s*\/\s*think(?:ing)?\s*>/i
+const thinkTagPattern = /<\s*\/?\s*think(?:ing)?\s*>/gi
+
+function stripThinkTags(content: string) {
+  return content
+    .replace(thinkBlockPattern, '')
+    .replace(orphanThinkClosePrefixPattern, '')
+    .replace(thinkTagPattern, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\s*\n/, '')
+}
+
+function AgentTag({ agent, hidden }: { agent?: string; hidden?: boolean }) {
+  if (!agent || hidden) return null
+
+  return (
+    <div className="mb-1 inline-block text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
+      {agent}
+    </div>
+  )
+}
 
 export function ChatMessage({
   message,
@@ -24,7 +48,27 @@ export function ChatMessage({
   const canPreviewFiles = Boolean(shareToken || currentWorkspace)
 
   if (message.toolCall) {
-    return <ToolCallItem tool={message.toolCall} />
+    return (
+      <div className="mb-1">
+        <AgentTag agent={message.agent} hidden={hideAgentTag} />
+        <ToolCallItem tool={message.toolCall} />
+      </div>
+    )
+  }
+
+  if (message.type === 'thinking') {
+    return (
+      <div className="mb-1">
+        <AgentTag agent={message.agent} hidden={hideAgentTag} />
+        <ThinkingBlock
+          thinking={{
+            content: message.content,
+            duration: message.duration,
+            status: message.status === 'thinking' ? 'thinking' : 'done',
+          }}
+        />
+      </div>
+    )
   }
 
   if (message.isError) {
@@ -66,7 +110,7 @@ export function ChatMessage({
             </div>
           ) : null}
           <div className="markdown">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripThinkTags(message.content)}</ReactMarkdown>
           </div>
         </div>
         <ConversationFilePreviewDialog
@@ -86,13 +130,9 @@ export function ChatMessage({
 
   return (
     <div className="mb-1">
-      {message.agent && !hideAgentTag ? (
-        <div className="mb-1 inline-block text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
-          {message.agent}
-        </div>
-      ) : null}
+      <AgentTag agent={message.agent} hidden={hideAgentTag} />
       <div className="markdown">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripThinkTags(message.content)}</ReactMarkdown>
       </div>
     </div>
   )

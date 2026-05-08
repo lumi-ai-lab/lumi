@@ -49,7 +49,7 @@ func (s *Server) handleNotification(
 	msg *jsonrpc.Message,
 	sendEvent func(string, any),
 	streamItems *[]streamItem,
-	currentText *string,
+	accumulator *streamAccumulator,
 	toolCallMap map[string]int,
 	agentID string,
 ) {
@@ -67,12 +67,25 @@ func (s *Server) handleNotification(
 	update := params.Update
 
 	switch update.SessionUpdate {
-	case "agent_message_chunk", "agent_thought_chunk":
+	case "agent_message_chunk":
 		if text := extractTextContent(update.Content); text != "" {
-			*currentText += text
+			visibleText, thinkingItems := accumulator.AddMessageChunk(text, streamItems)
+			for _, item := range thinkingItems {
+				sendEvent("thinking", item.Thinking)
+			}
+			if visibleText != "" {
+				params.Update.Content = map[string]any{"type": "text", "text": visibleText}
+				sendEvent("update", params)
+			}
 		}
-		// Forward text chunks to frontend
-		sendEvent("update", params)
+		return
+
+	case "agent_thought_chunk":
+		if text := extractTextContent(update.Content); text != "" {
+			accumulator.FlushText(streamItems)
+			item := accumulator.AddThinkingChunk(text)
+			sendEvent("thinking", item.Thinking)
+		}
 		return
 
 	case "available_commands_update":
@@ -91,10 +104,8 @@ func (s *Server) handleNotification(
 
 	case "tool_call", "tool_call_update":
 		// Flush current text
-		if *currentText != "" {
-			*streamItems = append(*streamItems, streamItem{Type: "text", Text: *currentText})
-			*currentText = ""
-		}
+		accumulator.FlushText(streamItems)
+		accumulator.FlushThinking(streamItems)
 
 		toolID := update.ToolCallID
 		if toolID == "" {

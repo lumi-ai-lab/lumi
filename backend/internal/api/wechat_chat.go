@@ -94,12 +94,12 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 	}
 
 	streamItems := make([]streamItem, 0)
-	currentText := ""
+	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
 	autoPermissionErr := ""
 
 	cleanupNotification := agentProc.OnNotification(func(msg *jsonrpc.Message) {
-		_ = r.handleWeChatNotification(msg, sink, &streamItems, &currentText, toolCallMap)
+		_ = r.handleWeChatNotification(msg, sink, &streamItems, accumulator, toolCallMap)
 	})
 	defer cleanupNotification()
 
@@ -147,7 +147,7 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 		return r.emitError(sink, err.Error())
 	}
 
-	r.finalizeAssistantStream(conv.ID, input.AgentID, streamItems, currentText)
+	r.finalizeAssistantStream(conv.ID, input.AgentID, streamItems, accumulator)
 	if err := r.persistConversation(conv.ID, input.ConversationStore); err != nil {
 		return err
 	}
@@ -321,9 +321,10 @@ func (r *wechatChatRuntime) shouldSetSessionMode(agentID string, sessionMode str
 	return agentmode.ShouldSetACPMode(backend, sessionMode)
 }
 
-func (r *wechatChatRuntime) finalizeAssistantStream(convID, agentID string, streamItems []streamItem, currentText string) {
-	if currentText != "" {
-		streamItems = append(streamItems, streamItem{Type: "text", Text: currentText})
+func (r *wechatChatRuntime) finalizeAssistantStream(convID, agentID string, streamItems []streamItem, accumulator *streamAccumulator) {
+	if accumulator != nil {
+		accumulator.FlushText(&streamItems)
+		accumulator.SetText("")
 	}
 	for _, item := range streamItems {
 		if item.Type == "text" {
@@ -342,7 +343,7 @@ func (r *wechatChatRuntime) handleWeChatNotification(
 	msg *jsonrpc.Message,
 	sink wechat.ChatEventSink,
 	streamItems *[]streamItem,
-	currentText *string,
+	accumulator *streamAccumulator,
 	toolCallMap map[string]int,
 ) error {
 	if msg.Method != "session/update" {
@@ -358,17 +359,23 @@ func (r *wechatChatRuntime) handleWeChatNotification(
 
 	update := params.Update
 	switch update.SessionUpdate {
-	case "agent_message_chunk", "agent_thought_chunk":
+	case "agent_message_chunk":
 		if text := extractTextContent(update.Content); text != "" {
-			*currentText += text
+			visibleText, _ := accumulator.AddMessageChunk(text, streamItems)
+			if visibleText == "" {
+				return nil
+			}
+			update.Content = map[string]any{"type": "text", "text": visibleText}
+			return sink.Emit(wechat.ChatEvent{Name: "update", Data: map[string]any{"update": toWeChatUpdate(update)}})
 		}
-		return sink.Emit(wechat.ChatEvent{Name: "update", Data: map[string]any{"update": toWeChatUpdate(update)}})
+		return nil
+
+	case "agent_thought_chunk":
+		return nil
 
 	case "tool_call", "tool_call_update":
-		if *currentText != "" {
-			*streamItems = append(*streamItems, streamItem{Type: "text", Text: *currentText})
-			*currentText = ""
-		}
+		accumulator.FlushText(streamItems)
+		accumulator.SetText("")
 
 		toolID := update.ToolCallID
 		if toolID == "" {

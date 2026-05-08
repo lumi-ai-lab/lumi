@@ -4,12 +4,37 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/pengmide/lumi/internal/setupcheck"
 )
 
 type DependencyItem = setupcheck.DependencyItem
 type SetupStatus = setupcheck.SetupStatus
+
+func normalizePackageName(packageSpec string) string {
+	if packageSpec == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(packageSpec, "@") {
+		slashIndex := strings.Index(packageSpec, "/")
+		if slashIndex == -1 {
+			return packageSpec
+		}
+		versionIndex := strings.Index(packageSpec[slashIndex+1:], "@")
+		if versionIndex == -1 {
+			return packageSpec
+		}
+		return packageSpec[:slashIndex+1+versionIndex]
+	}
+
+	versionIndex := strings.Index(packageSpec, "@")
+	if versionIndex == -1 {
+		return packageSpec
+	}
+	return packageSpec[:versionIndex]
+}
 
 // initSetupStatus initializes status with all checks in "checking" state
 func (s *Server) initSetupStatus() {

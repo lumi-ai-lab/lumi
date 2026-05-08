@@ -36,9 +36,10 @@ type chatRequest struct {
 }
 
 type streamItem struct {
-	Type string
-	Text string
-	Tool *conversation.ToolCallInfo
+	Type     string
+	Text     string
+	Tool     *conversation.ToolCallInfo
+	Thinking *thinkingData
 }
 
 const maxRemoteMentionedFiles = 5
@@ -303,11 +304,11 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 	agentProc.SetWorkingDir(ctx.Prepared.WorkspacePath)
 
 	streamItems := make([]streamItem, 0)
-	currentText := ""
+	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
 
 	cleanupNotification := agentProc.OnNotification(func(msg *jsonrpc.Message) {
-		s.handleNotification(msg, ctx.SendEvent, &streamItems, &currentText, toolCallMap, ctx.Prepared.AgentID)
+		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID)
 	})
 	defer cleanupNotification()
 
@@ -358,7 +359,7 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 		return
 	}
 
-	s.finalizeAssistantStream(ctx.Prepared.ConvID, ctx.Prepared.AgentID, streamItems, currentText)
+	s.finalizeAssistantStream(ctx.Prepared.ConvID, ctx.Prepared.AgentID, streamItems, accumulator)
 
 	var result map[string]any
 	response.ParseResult(&result)
@@ -438,7 +439,7 @@ func (s *Server) applyPreparedAgentSwitch(prepared *chatPrepared) {
 
 func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.TaskRun) {
 	streamItems := make([]streamItem, 0)
-	currentText := ""
+	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
 	pendingNotifications := make([]device.DeviceEvent, 0)
 	sessionReady := task.SessionID != ""
@@ -457,7 +458,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 			Method:  payload.Notification.Method,
 			Params:  payload.Notification.Params,
 		}
-		s.handleNotification(msg, ctx.SendEvent, &streamItems, &currentText, toolCallMap, ctx.Prepared.AgentID)
+		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID)
 		return true
 	}
 
@@ -581,7 +582,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 					return
 				}
 
-				s.finalizeAssistantStream(ctx.Prepared.ConvID, ctx.Prepared.AgentID, streamItems, currentText)
+				s.finalizeAssistantStream(ctx.Prepared.ConvID, ctx.Prepared.AgentID, streamItems, accumulator)
 
 				payload, err := device.DecodePayload[device.TaskDonePayload](device.Envelope{Payload: event.Payload})
 				if err != nil {
@@ -620,14 +621,18 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 	}
 }
 
-func (s *Server) finalizeAssistantStream(convID string, agentID string, streamItems []streamItem, currentText string) {
-	if currentText != "" {
-		streamItems = append(streamItems, streamItem{Type: "text", Text: currentText})
+func (s *Server) finalizeAssistantStream(convID string, agentID string, streamItems []streamItem, accumulator *streamAccumulator) {
+	if accumulator != nil {
+		accumulator.Finish(&streamItems)
 	}
 
 	for _, item := range streamItems {
 		if item.Type == "text" {
 			s.conversations.AddAssistantMessage(convID, item.Text, agentID)
+			continue
+		}
+		if item.Type == "thinking" && item.Thinking != nil {
+			s.conversations.AddThinkingMessage(convID, item.Thinking.Content, agentID, item.Thinking.Status, item.Thinking.Duration)
 			continue
 		}
 		if item.Tool != nil {

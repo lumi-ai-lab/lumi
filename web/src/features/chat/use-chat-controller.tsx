@@ -15,6 +15,7 @@ import type {
   SlashCommand,
   StreamEvent,
   StreamItem,
+  ThinkingData,
   ToolCall,
   Workspace,
 } from '@/lib/types'
@@ -25,6 +26,18 @@ interface UseChatControllerOptions {
 }
 
 const WORKSPACE_TREE_REFRESH_WINDOW_MS = 1500
+const thinkBlockPattern = /<\s*think(?:ing)?\s*>[\s\S]*?<\s*\/\s*think(?:ing)?\s*>/gi
+const orphanThinkClosePrefixPattern = /^[\s\S]*?<\s*\/\s*think(?:ing)?\s*>/i
+const thinkTagPattern = /<\s*\/?\s*think(?:ing)?\s*>/gi
+
+function stripThinkTags(content: string) {
+  return content
+    .replace(thinkBlockPattern, '')
+    .replace(orphanThinkClosePrefixPattern, '')
+    .replace(thinkTagPattern, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\s*\n/, '')
+}
 
 function toToolStatus(update: SessionUpdate): ToolCall['status'] {
   if (update.error || update._meta?.claudeCode?.error) return 'error'
@@ -293,6 +306,28 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     })
   }
 
+  const upsertThinking = (thinking: ThinkingData, targetSessionId?: string | null) => {
+    const sessionId = targetSessionId || sendingSessionIdRef.current || currentSessionIdRef.current
+    if (!sessionId) return
+
+    setStreamItemsBySession((current) => {
+      const existing = current[sessionId] || []
+      const nextItems = [...existing]
+      const lastItem = nextItems[nextItems.length - 1]
+
+      if (lastItem?.type === 'thinking') {
+        nextItems[nextItems.length - 1] = { type: 'thinking', data: thinking }
+      } else {
+        nextItems.push({ type: 'thinking', data: thinking })
+      }
+
+      return {
+        ...current,
+        [sessionId]: nextItems,
+      }
+    })
+  }
+
   const clearStreamItems = (sessionId?: string | null) => {
     const targetSessionId = sessionId || currentSessionIdRef.current
     if (!targetSessionId) return
@@ -327,7 +362,18 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
         if (item.type === 'text') {
           return {
             role: 'assistant',
-            content: item.data,
+            content: stripThinkTags(item.data),
+            agent,
+          }
+        }
+
+        if (item.type === 'thinking') {
+          return {
+            role: 'assistant',
+            type: 'thinking',
+            content: item.data.content,
+            status: item.data.status === 'thinking' ? 'done' : item.data.status,
+            duration: item.data.duration,
             agent,
           }
         }
@@ -341,6 +387,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       })
 
       return [...messages, ...committedMessages]
+        .filter((message) => message.type === 'thinking' || message.toolCall || message.content)
     })
 
     setStreamItemsBySession((current) => ({
@@ -622,6 +669,8 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
         _eventType?: string
         commands?: SlashCommand[]
         agent?: string
+        content?: string
+        duration?: number
         options?: PermissionRequest['options']
         toolCall?: PermissionRequest['toolCall']
       },
@@ -654,6 +703,15 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       return
     }
 
+    if (event._eventType === 'thinking') {
+      const content = typeof event.content === 'string' ? event.content : ''
+      const rawStatus = (event as { status?: unknown }).status
+      const status = rawStatus === 'done' ? 'done' : 'thinking'
+      const duration = typeof event.duration === 'number' ? event.duration : undefined
+      upsertThinking({ content, status, duration }, targetSessionId)
+      return
+    }
+
     if (event.options && event.toolCall) {
       if ((targetSessionId || currentSessionIdRef.current) === currentSessionIdRef.current) {
         setPendingPermission({
@@ -678,9 +736,16 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     }
 
     const update = event.update
-    if (update?.sessionUpdate === 'agent_message_chunk' || update?.sessionUpdate === 'agent_thought_chunk') {
+    if (update?.sessionUpdate === 'agent_message_chunk') {
       if (update.content?.type === 'text' && update.content.text) {
-        addStreamingText(update.content.text, targetSessionId)
+        const visibleText = stripThinkTags(update.content.text)
+        if (visibleText) {
+          addStreamingText(visibleText, targetSessionId)
+        }
+      }
+    } else if (update?.sessionUpdate === 'agent_thought_chunk') {
+      if (update.content?.type === 'text' && update.content.text) {
+        upsertThinking({ content: update.content.text, status: 'thinking' }, targetSessionId)
       }
     } else if (update?.sessionUpdate === 'tool_call' || update?.sessionUpdate === 'tool_call_update') {
       requestWorkspaceTreeRefresh({ sessionId: targetSessionId, workspaceId: targetWorkspaceId })
