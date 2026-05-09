@@ -87,7 +87,7 @@ func parseCreateCommand(body string) (Command, bool) {
 }
 
 func parseFields(body string) map[string]string {
-	keys := regexp.MustCompile(`(?im)^(name|schedule|schedule_description|message|prompt):\s*`)
+	keys := regexp.MustCompile(`(?i)(name|schedule_description|schedule|message|prompt):\s*`)
 	matches := keys.FindAllStringIndex(body, -1)
 	names := keys.FindAllStringSubmatch(body, -1)
 	fields := map[string]string{}

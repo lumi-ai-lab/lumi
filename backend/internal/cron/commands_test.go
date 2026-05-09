@@ -32,6 +32,25 @@ Done.`
 	}
 }
 
+func TestDetectCommandsCreateAcceptsSingleLineFields(t *testing.T) {
+	body := `[CRON_CREATE] name: 问候任务 schedule: interval:2 schedule_description: 每2分钟message: 你好 [/CRON_CREATE]`
+
+	commands := DetectCommands(body)
+	if len(commands) != 1 {
+		t.Fatalf("len(commands) = %d, want 1", len(commands))
+	}
+	cmd := commands[0]
+	if cmd.Kind != "create" || cmd.Name != "问候任务" || cmd.Prompt != "你好" {
+		t.Fatalf("command = %#v", cmd)
+	}
+	if cmd.Schedule.Type != "interval" || cmd.Schedule.EverySeconds != 120 {
+		t.Fatalf("schedule = %#v", cmd.Schedule)
+	}
+	if got := StripCommands(body); got != "" {
+		t.Fatalf("StripCommands() = %q, want empty", got)
+	}
+}
+
 func TestDetectCommandsIgnoresCodeBlocks(t *testing.T) {
 	commands := DetectCommands("```text\n[CRON_LIST]\n```")
 	if len(commands) != 0 {
