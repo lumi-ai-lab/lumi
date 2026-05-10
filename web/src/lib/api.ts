@@ -522,11 +522,20 @@ export async function fetchCronJob(id: string, conversationId: string): Promise<
 
 export async function createCronJob(input: {
   name: string;
-  prompt: string;
+  description?: string;
+  prompt?: string;
+  exec?: string;
   agentId: string;
   workspaceId: string;
   conversationId?: string;
+  channel?: string;
   schedule: CronSchedule;
+  mute?: boolean;
+  silent?: boolean;
+  sessionMode?: string;
+  workDir?: string;
+  mode?: string;
+  timeoutMins?: number;
 }): Promise<CronJob> {
   const response = await fetch(`${API_BASE}/cron/jobs`, {
     method: "POST",
@@ -544,12 +553,21 @@ export async function updateCronJob(
   id: string,
   input: Partial<{
     name: string;
+    description: string;
     prompt: string;
+    exec: string;
     agentId: string;
     workspaceId: string;
     conversationId: string;
+    channel: string;
     enabled: boolean;
     schedule: CronSchedule;
+    mute: boolean;
+    silent: boolean;
+    sessionMode: string;
+    workDir: string;
+    mode: string;
+    timeoutMins: number;
   }>,
 ): Promise<CronJob> {
   if (!input.conversationId) {

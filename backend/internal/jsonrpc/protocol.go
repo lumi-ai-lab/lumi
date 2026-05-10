@@ -18,7 +18,7 @@ type Request struct {
 // Response represents a JSON-RPC response
 type Response struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      int             `json:"id"`
+	ID      any             `json:"id"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *Error          `json:"error,omitempty"`
 }
@@ -77,7 +77,7 @@ func NewNotification(method string, params any) *Notification {
 }
 
 // NewResponse creates a success response
-func NewResponse(id int, result any) *Response {
+func NewResponse(id any, result any) *Response {
 	var raw json.RawMessage
 	if result == nil {
 		raw = json.RawMessage("null")
@@ -92,7 +92,7 @@ func NewResponse(id int, result any) *Response {
 }
 
 // NewErrorResponse creates an error response
-func NewErrorResponse(id int, code int, message string) *Response {
+func NewErrorResponse(id any, code int, message string) *Response {
 	return &Response{
 		JSONRPC: Version,
 		ID:      id,
@@ -103,7 +103,7 @@ func NewErrorResponse(id int, code int, message string) *Response {
 // Message is a union type for incoming messages
 type Message struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      *int            `json:"id,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"`
 	Method  string          `json:"method,omitempty"`
 	Params  json.RawMessage `json:"params,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
@@ -112,17 +112,17 @@ type Message struct {
 
 // IsRequest returns true if message is a request
 func (m *Message) IsRequest() bool {
-	return m.ID != nil && m.Method != ""
+	return len(m.ID) > 0 && m.Method != ""
 }
 
 // IsResponse returns true if message is a response
 func (m *Message) IsResponse() bool {
-	return m.ID != nil && m.Method == ""
+	return len(m.ID) > 0 && m.Method == ""
 }
 
 // IsNotification returns true if message is a notification
 func (m *Message) IsNotification() bool {
-	return m.ID == nil && m.Method != ""
+	return len(m.ID) == 0 && m.Method != ""
 }
 
 // ParseParams unmarshals params into target

@@ -27,6 +27,7 @@ type ChatRunInput struct {
 	Files               []ChatFileInfo
 	PromptPrefix        string
 	SessionModeOverride string
+	NewSession          bool
 	ConversationStore   HiddenConversationStore
 	CronTarget          lumicron.Target
 }

@@ -129,11 +129,15 @@ func (p *Process) readLoop() {
 
 func (p *Process) handleMessage(msg *jsonrpc.Message) {
 	// Response to our request
-	if msg.IsResponse() && msg.ID != nil {
+	if msg.IsResponse() && len(msg.ID) > 0 {
+		id, ok := decodeIntID(msg.ID)
+		if !ok {
+			return
+		}
 		p.mu.Lock()
-		req, ok := p.pending[*msg.ID]
+		req, ok := p.pending[id]
 		if ok {
-			delete(p.pending, *msg.ID)
+			delete(p.pending, id)
 		}
 		p.mu.Unlock()
 
@@ -176,8 +180,8 @@ func (p *Process) handleRequest(msg *jsonrpc.Message) {
 		p.handleWriteFile(msg)
 
 	default:
-		if msg.ID != nil {
-			p.sendError(*msg.ID, jsonrpc.MethodNotFound, "Method not found: "+msg.Method)
+		if len(msg.ID) > 0 {
+			p.sendError(decodeAnyID(msg.ID), jsonrpc.MethodNotFound, "Method not found: "+msg.Method)
 		}
 	}
 }
@@ -197,7 +201,7 @@ func (p *Process) handlePermissionRequest(msg *jsonrpc.Message) {
 	respCh := make(chan string, 1)
 	p.mu.Lock()
 	p.permissions[toolCallID] = &PendingPermission{
-		RequestID: *msg.ID,
+		RequestID: decodeAnyID(msg.ID),
 		Response:  respCh,
 	}
 	permHandlers := make([]func(*PermissionRequest), len(p.permissionHandlers))
@@ -230,8 +234,8 @@ func (p *Process) handlePermissionRequest(msg *jsonrpc.Message) {
 		outcome = "rejected"
 	}
 
-	if msg.ID != nil {
-		p.sendResponse(*msg.ID, map[string]any{
+	if len(msg.ID) > 0 {
+		p.sendResponse(decodeAnyID(msg.ID), map[string]any{
 			"outcome": map[string]any{
 				"outcome":  outcome,
 				"optionId": optionID,
@@ -240,12 +244,32 @@ func (p *Process) handlePermissionRequest(msg *jsonrpc.Message) {
 	}
 }
 
-func (p *Process) sendResponse(id int, result any) {
+func (p *Process) sendResponse(id any, result any) {
 	resp := jsonrpc.NewResponse(id, result)
 	p.write(resp)
 }
 
-func (p *Process) sendError(id int, code int, message string) {
+func (p *Process) sendError(id any, code int, message string) {
 	resp := jsonrpc.NewErrorResponse(id, code, message)
 	p.write(resp)
+}
+
+func decodeIntID(raw json.RawMessage) (int, bool) {
+	var id int
+	if err := json.Unmarshal(raw, &id); err == nil {
+		return id, true
+	}
+	return 0, false
+}
+
+func decodeAnyID(raw json.RawMessage) any {
+	var id int
+	if err := json.Unmarshal(raw, &id); err == nil {
+		return id
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	return string(raw)
 }

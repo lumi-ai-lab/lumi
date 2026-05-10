@@ -14,13 +14,14 @@ const defaultWorkspace = "_default"
 
 // StoredSession represents a persisted session
 type StoredSession struct {
-	ID          string                 `json:"id"`
-	Title       string                 `json:"title"`
-	Messages    []conversation.Message `json:"messages"`
-	ActiveAgent string                 `json:"activeAgent"`
-	WorkspaceID string                 `json:"workspaceId,omitempty"`
-	CreatedAt   int64                  `json:"createdAt"`
-	UpdatedAt   int64                  `json:"updatedAt"`
+	ID                string                 `json:"id"`
+	Title             string                 `json:"title"`
+	Messages          []conversation.Message `json:"messages"`
+	ActiveAgent       string                 `json:"activeAgent"`
+	WorkspaceID       string                 `json:"workspaceId,omitempty"`
+	CreatedAt         int64                  `json:"createdAt"`
+	UpdatedAt         int64                  `json:"updatedAt"`
+	PendingPermission any                    `json:"pendingPermission,omitempty"`
 }
 
 // SessionMeta is metadata for listing

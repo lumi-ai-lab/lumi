@@ -48,7 +48,7 @@ type PendingRequest struct {
 
 // PendingPermission tracks permission request
 type PendingPermission struct {
-	RequestID int
+	RequestID any
 	Response  chan string // optionId
 }
 

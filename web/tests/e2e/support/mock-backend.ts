@@ -89,6 +89,38 @@ export interface MockSession {
   messages: MockMessage[]
 }
 
+export interface MockCronJob {
+  id: string
+  name: string
+  description?: string
+  enabled: boolean
+  channel?: string
+  workspaceId: string
+  agentId: string
+  conversationId?: string
+  schedule:
+    | { type: 'once'; runAt: number }
+    | { type: 'interval'; everySeconds: number }
+    | { type: 'cron'; cronExpr: string }
+  prompt?: string
+  exec?: string
+  silent?: boolean
+  mute?: boolean
+  sessionMode?: string
+  workDir?: string
+  mode?: string
+  timeoutMins?: number
+  state: {
+    lastRunAt?: number
+    nextRunAt?: number
+    lastStatus?: string
+    lastError?: string
+    runCount: number
+  }
+  createdAt: number
+  updatedAt: number
+}
+
 export interface MockShareFile {
   path: string
 }
@@ -200,6 +232,7 @@ export interface MockBackendOptions {
   publicShareError?: string
   publicShareFileErrors?: Record<string, string>
   chatResponses?: ChatResponseFactory[]
+  cronJobs?: MockCronJob[]
   wechatConfig?: {
     enabled: boolean
     loginMode: 'qr' | 'manual'
@@ -257,6 +290,10 @@ export interface MockBackendState {
   shareDeleteRequests: string[]
   chatResponses: ChatResponseFactory[]
   chatRequests: ChatRequestBody[]
+  cronJobs: MockCronJob[]
+  cronCreateRequests: Array<Record<string, unknown>>
+  cronUpdateRequests: Array<Record<string, unknown>>
+  cronDeleteRequests: string[]
   permissionConfirmations: Array<Record<string, unknown>>
   agentUpdateRequests: Array<Record<string, unknown>>
   workspaceCreates: Array<{
@@ -407,6 +444,52 @@ export async function installMockBackend(
   options: MockBackendOptions = {}
 ): Promise<MockBackendState> {
   const state = createMockBackendState(options)
+
+  await page.addInitScript(() => {
+    type MockCronEventDetail = {
+      type: string
+      payload: unknown
+    }
+    class MockEventSource extends EventTarget {
+      url: string
+      readyState = 1
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+
+      constructor(url: string | URL) {
+        super()
+        this.url = String(url)
+        window.addEventListener('mock-cron-event', this.handleMockCronEvent as EventListener)
+        setTimeout(() => {
+          const event = new Event('open')
+          this.dispatchEvent(event)
+          this.onopen?.(event)
+        }, 0)
+      }
+
+      close() {
+        this.readyState = 2
+        window.removeEventListener('mock-cron-event', this.handleMockCronEvent as EventListener)
+      }
+
+      private handleMockCronEvent = (event: Event) => {
+        const detail = (event as CustomEvent<MockCronEventDetail>).detail
+        if (!detail?.type) return
+        const message = new MessageEvent(detail.type, { data: JSON.stringify(detail.payload) })
+        this.dispatchEvent(message)
+        if (detail.type === 'message') {
+          this.onmessage?.(message)
+        }
+      }
+    }
+
+    Object.defineProperty(window, 'EventSource', {
+      configurable: true,
+      writable: true,
+      value: MockEventSource,
+    })
+  })
 
   if (process.env.DEBUG_E2E === '1') {
     page.on('console', (message) => {
@@ -572,6 +655,93 @@ export async function installMockBackend(
     if (pathname === '/api/wechat/config' && method === 'GET') {
       syncWeChatStatus(state)
       await route.fulfill(jsonResponse(state.wechatConfig))
+      return
+    }
+
+    if (pathname === '/api/cron/jobs' && method === 'GET') {
+      const channel = searchParams.get('channel') ?? ''
+      const conversationId = searchParams.get('conversationId') ?? ''
+      const jobs = state.cronJobs.filter((job) => {
+        if (channel && (job.channel || 'web') !== channel) return false
+        if (conversationId && job.conversationId !== conversationId) return false
+        return true
+      })
+      await route.fulfill(jsonResponse({ jobs }))
+      return
+    }
+
+    if (pathname === '/api/cron/jobs' && method === 'POST') {
+      const body = readJson<Record<string, unknown>>(request)
+      state.cronCreateRequests.push(body)
+      const schedule = body.schedule as MockCronJob['schedule']
+      const job: MockCronJob = {
+        id: `cron-${state.cronJobs.length + 1}`,
+        name: String(body.name ?? ''),
+        description: typeof body.description === 'string' ? body.description : undefined,
+        enabled: typeof body.enabled === 'boolean' ? body.enabled : true,
+        channel: typeof body.channel === 'string' ? body.channel : 'web',
+        workspaceId: String(body.workspaceId ?? ''),
+        agentId: String(body.agentId ?? ''),
+        conversationId: typeof body.conversationId === 'string' ? body.conversationId : undefined,
+        schedule,
+        prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
+        exec: typeof body.exec === 'string' ? body.exec : undefined,
+        silent: Boolean(body.silent),
+        mute: Boolean(body.mute),
+        sessionMode: typeof body.sessionMode === 'string' ? body.sessionMode : 'reuse',
+        workDir: typeof body.workDir === 'string' ? body.workDir : undefined,
+        mode: typeof body.mode === 'string' ? body.mode : undefined,
+        timeoutMins: typeof body.timeoutMins === 'number' ? body.timeoutMins : undefined,
+        state: {
+          nextRunAt: now + 60 * 60 * 1000,
+          runCount: 0,
+        },
+        createdAt: now,
+        updatedAt: now,
+      }
+      state.cronJobs.unshift(job)
+      await route.fulfill(jsonResponse({ job }))
+      return
+    }
+
+    if (pathname.startsWith('/api/cron/jobs/')) {
+      const trimmed = pathname.replace('/api/cron/jobs/', '')
+      const [rawId, action] = trimmed.split('/')
+      const id = decodeURIComponent(rawId ?? '')
+      const job = state.cronJobs.find((item) => item.id === id)
+      if (!job) {
+        await route.fulfill(jsonResponse({ error: 'Job not found' }, 404))
+        return
+      }
+      if (action === 'run' && method === 'POST') {
+        await route.fulfill(jsonResponse({ success: true, conversationId: job.conversationId }))
+        return
+      }
+      if (method === 'GET') {
+        await route.fulfill(jsonResponse({ job }))
+        return
+      }
+      if (method === 'PUT') {
+        const body = readJson<Record<string, unknown>>(request)
+        state.cronUpdateRequests.push(body)
+        Object.assign(job, body)
+        if (body.schedule) {
+          job.schedule = body.schedule as MockCronJob['schedule']
+        }
+        job.updatedAt = now + state.cronUpdateRequests.length
+        await route.fulfill(jsonResponse({ job }))
+        return
+      }
+      if (method === 'DELETE') {
+        state.cronDeleteRequests.push(id)
+        state.cronJobs = state.cronJobs.filter((item) => item.id !== id)
+        await route.fulfill(jsonResponse({ success: true }))
+        return
+      }
+    }
+
+    if (pathname === '/api/cron/events' && method === 'GET') {
+      await route.fulfill(sseResponse(''))
       return
     }
 
@@ -1220,6 +1390,10 @@ function createMockBackendState(options: MockBackendOptions): MockBackendState {
     shareDeleteRequests: [],
     chatResponses: [...(options.chatResponses ?? [])],
     chatRequests: [],
+    cronJobs: clone(options.cronJobs ?? []),
+    cronCreateRequests: [],
+    cronUpdateRequests: [],
+    cronDeleteRequests: [],
     permissionConfirmations: [],
     agentUpdateRequests: [],
     workspaceCreates: [],

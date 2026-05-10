@@ -241,6 +241,35 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     })
   }
 
+  const mergeSessionDetail = (session: Session) => {
+    setSessionDetails((current) => {
+      const existing = current[session.id]
+      if (!existing) {
+        return {
+          ...current,
+          [session.id]: session,
+        }
+      }
+
+      const existingMessages = existing.messages || []
+      const nextMessages = session.messages || []
+      if (existingMessages.length > nextMessages.length) {
+        return {
+          ...current,
+          [session.id]: {
+            ...session,
+            messages: existingMessages,
+          },
+        }
+      }
+
+      return {
+        ...current,
+        [session.id]: session,
+      }
+    })
+  }
+
   const upsertToolCall = (tool: ToolCall, targetSessionId?: string | null) => {
     const sessionId = targetSessionId || sendingSessionIdRef.current || currentSessionIdRef.current
     if (!sessionId) return
@@ -451,11 +480,12 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
         upsertSessionDetail(session)
       }
 
-      setCurrentSessionId(session.id)
-      setCurrentAgent(session.activeAgent)
-      if (session.workspaceId) {
-        setCurrentWorkspace(session.workspaceId)
-      }
+	      setCurrentSessionId(session.id)
+	      setCurrentAgent(session.activeAgent)
+	      setPendingPermission(session.pendingPermission || null)
+	      if (session.workspaceId) {
+	        setCurrentWorkspace(session.workspaceId)
+	      }
 
       if (syncRoute) {
         lastPushedRouteRef.current = session.id
@@ -680,11 +710,12 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   const handleStreamEvent = (
     event: StreamEvent &
       Partial<ToolCall> & {
-        permission_request?: PermissionRequest
-        _eventType?: string
-        commands?: SlashCommand[]
-        agent?: string
-        content?: string
+	        permission_request?: PermissionRequest
+	        _eventType?: string
+	        commands?: SlashCommand[]
+	        agent?: string
+	        agentId?: string
+	        content?: string
         duration?: number
         options?: PermissionRequest['options']
         toolCall?: PermissionRequest['toolCall']
@@ -727,14 +758,17 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       return
     }
 
-    if (event.options && event.toolCall) {
-      if ((targetSessionId || currentSessionIdRef.current) === currentSessionIdRef.current) {
-        setPendingPermission({
-          sessionId: targetSessionId || currentSessionIdRef.current || '',
-          options: event.options,
-          toolCall: event.toolCall,
-        })
-      }
+	    if (event.options && event.toolCall) {
+	      const permissionSessionId = targetSessionId || currentSessionIdRef.current || ''
+	      if (permissionSessionId) {
+	        setPendingPermission({
+	          sessionId: permissionSessionId,
+	          conversationId: typeof event.conversationId === 'string' ? event.conversationId : permissionSessionId,
+	          agentId: typeof event.agentId === 'string' ? event.agentId : event.agent,
+	          options: event.options,
+	          toolCall: event.toolCall,
+	        })
+	      }
       return
     }
 
@@ -815,7 +849,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       void loadSessions(true)
       if (payload.conversationId && sessionDetailsRef.current[payload.conversationId]) {
         void api.fetchSession(payload.conversationId).then((session) => {
-          if (session) upsertSessionDetail(session)
+          if (session) mergeSessionDetail(session)
         })
       }
     }
@@ -836,7 +870,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
             updateSessionMessages(payload.conversationId, (messages) => [...messages, message])
           } else {
             void api.fetchSession(payload.conversationId).then((session) => {
-              if (session) upsertSessionDetail(session)
+              if (session) mergeSessionDetail(session)
             })
           }
         }

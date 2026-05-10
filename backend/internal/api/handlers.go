@@ -386,6 +386,7 @@ func (s *Server) handlePermissionConfirm(w http.ResponseWriter, r *http.Request)
 			writeError(w, "Failed to confirm permission: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		s.clearPendingPermission(task.ConversationID, data.ToolCallID)
 		writeJSON(w, map[string]any{"success": true})
 		return
 	}
@@ -397,6 +398,7 @@ func (s *Server) handlePermissionConfirm(w http.ResponseWriter, r *http.Request)
 	}
 
 	agent.ConfirmPermission(data.ToolCallID, data.OptionID)
+	s.clearPendingPermissionByToolCall(data.AgentID, data.ToolCallID)
 	writeJSON(w, map[string]any{"success": true})
 }
 

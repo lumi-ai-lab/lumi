@@ -76,6 +76,24 @@ type chatRuntimeContext struct {
 	Result      *chatRunResult
 }
 
+type pendingPermissionState struct {
+	ConversationID string `json:"conversationId"`
+	AgentID        string `json:"agentId"`
+	SessionID      string `json:"sessionId"`
+	Options        []struct {
+		OptionID string `json:"optionId"`
+		Name     string `json:"name"`
+		Kind     string `json:"kind"`
+	} `json:"options"`
+	ToolCall struct {
+		ToolCallID string         `json:"toolCallId"`
+		RawInput   map[string]any `json:"rawInput,omitempty"`
+		Status     string         `json:"status,omitempty"`
+		Title      string         `json:"title,omitempty"`
+		Kind       string         `json:"kind,omitempty"`
+	} `json:"toolCall"`
+}
+
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -204,7 +222,14 @@ func (s *Server) prepareChat(ctx context.Context, req chatRequest) (*chatPrepare
 		}
 	}
 	if !req.Hidden {
-		promptText = lumicron.WithConversationInstructionAndJobs(promptText, s.currentCronJobsForPrompt(lumicron.ChannelWeb, convID))
+		promptText = lumicron.WithAgentToolInstructionsForContext(promptText, lumicron.ToolContext{
+			APIBase:        s.apiBaseForAgent(),
+			Channel:        lumicron.ChannelWeb,
+			ConversationID: convID,
+			AgentID:        agentID,
+			WorkspaceID:    workspaceID,
+			WorkspacePath:  workspacePath,
+		})
 	}
 
 	messageFiles := make([]conversation.MessageFile, 0, len(req.Files))
@@ -315,6 +340,7 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 	s.applyPreparedAgentSwitch(ctx.Prepared)
 	if !s.initialized[ctx.Prepared.AgentID] {
 		ctx.SendEvent("status", map[string]string{"message": fmt.Sprintf("Initializing %s...", ctx.Prepared.AgentID)})
+		injectLumiAgentEnv(s.config, ctx.Prepared.AgentID, s.apiBaseForAgent())
 		if err := s.initializeAgent(ctx.Prepared.AgentID); err != nil {
 			ctx.setError(err)
 			ctx.SendEvent("error", map[string]string{"message": err.Error()})
@@ -334,10 +360,9 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 	streamItems := make([]streamItem, 0)
 	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
-	cronCommandStream := &cronCommandStreamState{}
 
 	cleanupNotification := agentProc.OnNotification(func(msg *jsonrpc.Message) {
-		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID, cronCommandStream)
+		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID)
 	})
 	defer cleanupNotification()
 
@@ -348,7 +373,9 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 				return
 			}
 		}
-		ctx.SendEvent("permission_request", req)
+		payload := pendingPermissionFromAgent(ctx.Prepared.ConvID, ctx.Prepared.AgentID, req)
+		s.setPendingPermission(payload)
+		ctx.SendEvent("permission_request", payload)
 	})
 	defer cleanupPermission()
 
@@ -358,7 +385,11 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 		s.agentSessions[ctx.Prepared.ConvID] = sessionsMap
 	}
 
-	sessionID := sessionsMap[ctx.Prepared.AgentID]
+	useEphemeralSession := ctx.Request.CronJobID != "" && ctx.Request.Hidden
+	sessionID := ""
+	if !useEphemeralSession {
+		sessionID = sessionsMap[ctx.Prepared.AgentID]
+	}
 	if sessionID == "" {
 		sessionID, err = s.createAgentSession(ctx.Prepared.AgentID, ctx.Prepared.WorkspacePath)
 		if err != nil {
@@ -366,7 +397,9 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 			ctx.SendEvent("error", map[string]string{"message": err.Error()})
 			return
 		}
-		sessionsMap[ctx.Prepared.AgentID] = sessionID
+		if !useEphemeralSession {
+			sessionsMap[ctx.Prepared.AgentID] = sessionID
+		}
 	}
 
 	s.addChatUserMessage(ctx)
@@ -390,12 +423,9 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 		return
 	}
 
-	if err := s.executeCronCommandsForChat(ctx, &streamItems, &accumulator.currentText); err != nil {
-		ctx.setError(err)
-		ctx.SendEvent("error", map[string]string{"message": err.Error()})
-		return
+	if !ctx.Request.Hidden || ctx.Request.CronJobID != "" {
+		s.finalizeAssistantStream(ctx.Prepared.ConvID, ctx.Prepared.AgentID, streamItems, accumulator)
 	}
-	s.finalizeAssistantStream(ctx.Prepared.ConvID, ctx.Prepared.AgentID, streamItems, accumulator)
 
 	var result map[string]any
 	response.ParseResult(&result)
@@ -485,6 +515,7 @@ func (s *Server) addChatUserMessage(ctx chatRuntimeContext) {
 		}
 	}
 	s.conversations.AddMessage(ctx.Prepared.ConvID, msg)
+	s.persistConversation(ctx.Prepared.ConvID)
 }
 
 func (ctx chatRuntimeContext) requestContext() context.Context {
@@ -503,12 +534,100 @@ func (ctx chatRuntimeContext) setError(err error) {
 	}
 }
 
+func pendingPermissionFromAgent(convID, agentID string, req *agent.PermissionRequest) pendingPermissionState {
+	payload := pendingPermissionState{
+		ConversationID: convID,
+		AgentID:        agentID,
+		SessionID:      req.SessionID,
+	}
+	payload.Options = append(payload.Options, req.Options...)
+	payload.ToolCall.ToolCallID = req.ToolCall.ToolCallID
+	payload.ToolCall.RawInput = req.ToolCall.RawInput
+	payload.ToolCall.Status = req.ToolCall.Status
+	payload.ToolCall.Title = req.ToolCall.Title
+	payload.ToolCall.Kind = req.ToolCall.Kind
+	return payload
+}
+
+func pendingPermissionFromDevice(convID, agentID string, payload device.PermissionRequestPayload) pendingPermissionState {
+	state := pendingPermissionState{
+		ConversationID: convID,
+		AgentID:        agentID,
+		SessionID:      payload.SessionID,
+	}
+	for _, option := range payload.Options {
+		state.Options = append(state.Options, struct {
+			OptionID string `json:"optionId"`
+			Name     string `json:"name"`
+			Kind     string `json:"kind"`
+		}{
+			OptionID: option.OptionID,
+			Name:     option.Name,
+			Kind:     option.Kind,
+		})
+	}
+	state.ToolCall.ToolCallID = payload.ToolCall.ToolCallID
+	state.ToolCall.Status = payload.ToolCall.Status
+	state.ToolCall.Title = payload.ToolCall.Title
+	state.ToolCall.Kind = payload.ToolCall.Kind
+	if len(payload.ToolCall.RawInput) > 0 {
+		var raw map[string]any
+		if err := json.Unmarshal(payload.ToolCall.RawInput, &raw); err == nil {
+			state.ToolCall.RawInput = raw
+		}
+	}
+	return state
+}
+
+func (s *Server) setPendingPermission(payload pendingPermissionState) {
+	if payload.ConversationID == "" || payload.ToolCall.ToolCallID == "" {
+		return
+	}
+	s.pendingPermissionsMu.Lock()
+	s.pendingPermissions[payload.ConversationID] = payload
+	s.pendingPermissionsMu.Unlock()
+}
+
+func (s *Server) clearPendingPermission(convID string, toolCallID string) {
+	if convID == "" {
+		return
+	}
+	s.pendingPermissionsMu.Lock()
+	if current, ok := s.pendingPermissions[convID]; ok && (toolCallID == "" || current.ToolCall.ToolCallID == toolCallID) {
+		delete(s.pendingPermissions, convID)
+	}
+	s.pendingPermissionsMu.Unlock()
+}
+
+func (s *Server) clearPendingPermissionByToolCall(agentID string, toolCallID string) {
+	if toolCallID == "" {
+		return
+	}
+	s.pendingPermissionsMu.Lock()
+	for convID, current := range s.pendingPermissions {
+		if current.ToolCall.ToolCallID == toolCallID && (agentID == "" || current.AgentID == agentID) {
+			delete(s.pendingPermissions, convID)
+			break
+		}
+	}
+	s.pendingPermissionsMu.Unlock()
+}
+
+func (s *Server) getPendingPermission(convID string) (pendingPermissionState, bool) {
+	s.pendingPermissionsMu.RLock()
+	defer s.pendingPermissionsMu.RUnlock()
+	payload, ok := s.pendingPermissions[convID]
+	return payload, ok
+}
+
 func (s *Server) applyPreparedAgentSwitch(prepared *chatPrepared) {
-	if prepared == nil || !prepared.AgentChanged {
+	if prepared == nil {
 		return
 	}
 	s.conversations.SetActiveAgent(prepared.ConvID, prepared.AgentID)
-	log.Printf("Agent switched via @mention: %s -> %s", prepared.PreviousAgent, prepared.AgentID)
+	if prepared.AgentChanged {
+		log.Printf("Agent switched via @mention: %s -> %s", prepared.PreviousAgent, prepared.AgentID)
+	}
 	prepared.AgentChanged = false
 }
 
@@ -516,7 +635,6 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 	streamItems := make([]streamItem, 0)
 	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
-	cronCommandStream := &cronCommandStreamState{}
 	pendingNotifications := make([]device.DeviceEvent, 0)
 	sessionReady := task.SessionID != ""
 	sessionAnnounced := false
@@ -535,7 +653,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 			Method:  payload.Notification.Method,
 			Params:  payload.Notification.Params,
 		}
-		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID, cronCommandStream)
+		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID)
 		return true
 	}
 
@@ -655,7 +773,9 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 						continue
 					}
 				}
-				ctx.SendEvent("permission_request", payload)
+				state := pendingPermissionFromDevice(ctx.Prepared.ConvID, ctx.Prepared.AgentID, payload)
+				s.setPendingPermission(state)
+				ctx.SendEvent("permission_request", state)
 
 			case device.DeviceEventDone:
 				if !sessionReady {
@@ -665,11 +785,6 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 					return
 				}
 
-				if err := s.executeCronCommandsForChat(ctx, &streamItems, &accumulator.currentText); err != nil {
-					ctx.setError(err)
-					ctx.SendEvent("error", map[string]string{"message": err.Error()})
-					return
-				}
 				s.finalizeAssistantStream(ctx.Prepared.ConvID, ctx.Prepared.AgentID, streamItems, accumulator)
 
 				payload, err := device.DecodePayload[device.TaskDonePayload](device.Envelope{Payload: event.Payload})

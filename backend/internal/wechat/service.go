@@ -208,6 +208,7 @@ func (s *Service) RunCronJob(ctx context.Context, job lumicron.Job) (string, err
 		AgentID:             job.AgentID,
 		PromptPrefix:        wechatSourceInstruction,
 		SessionModeOverride: deriveSessionMode(job.AgentID),
+		NewSession:          job.SessionMode == lumicron.SessionModeNewPerRun,
 		ConversationStore:   s.convStore,
 		CronTarget:          job.Target,
 	}, sink)

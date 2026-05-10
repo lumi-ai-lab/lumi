@@ -33,10 +33,9 @@ func TestStopUnblocksPermissionRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	requestID := 1
 	msg := &jsonrpc.Message{
 		JSONRPC: jsonrpc.Version,
-		ID:      &requestID,
+		ID:      json.RawMessage(`1`),
 		Method:  "session/request_permission",
 		Params:  params,
 	}

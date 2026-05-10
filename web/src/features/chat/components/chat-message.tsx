@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { AlarmClock, ChevronRight } from 'lucide-react'
+import { AlarmClock } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -74,22 +74,12 @@ export function ChatMessage({
 
   if (message.kind === 'cron_trigger') {
     return (
-      <button
-        className="mx-auto my-4 flex w-full max-w-[720px] items-center gap-2 rounded-md border border-border bg-card px-4 py-3 text-left text-sm text-muted-foreground transition hover:bg-accent hover:text-foreground"
-        onClick={() => {
-          if (message.cron?.jobId) {
-            window.history.pushState(null, '', `/scheduled/${message.cron.jobId}`)
-            window.dispatchEvent(new PopStateEvent('popstate'))
-          }
-        }}
-        type="button"
-      >
+      <div className="mx-auto my-4 flex w-full max-w-[720px] cursor-default items-center gap-2 rounded-md border border-border bg-muted/60 px-4 py-3 text-sm text-muted-foreground">
         <AlarmClock className="h-4 w-4 flex-shrink-0" />
         <span className="min-w-0 flex-1 truncate">
           Scheduled task "{message.cron?.jobName || message.content}" triggered
         </span>
-        <ChevronRight className="h-4 w-4 flex-shrink-0" />
-      </button>
+      </div>
     )
   }
 

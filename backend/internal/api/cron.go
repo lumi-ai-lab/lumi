@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -15,22 +17,41 @@ import (
 
 type cronJobRequest struct {
 	Name           string            `json:"name"`
+	Description    string            `json:"description"`
 	Prompt         string            `json:"prompt"`
+	Exec           string            `json:"exec"`
 	AgentID        string            `json:"agentId"`
 	WorkspaceID    string            `json:"workspaceId"`
 	ConversationID string            `json:"conversationId"`
+	Channel        string            `json:"channel"`
 	Enabled        *bool             `json:"enabled,omitempty"`
 	Schedule       lumicron.Schedule `json:"schedule"`
+	Silent         *bool             `json:"silent,omitempty"`
+	Mute           bool              `json:"mute,omitempty"`
+	SessionMode    string            `json:"sessionMode,omitempty"`
+	WorkDir        string            `json:"workDir,omitempty"`
+	Mode           string            `json:"mode,omitempty"`
+	TimeoutMins    *int              `json:"timeoutMins,omitempty"`
+	Target         lumicron.Target   `json:"target,omitempty"`
 }
 
 type cronJobUpdateRequest struct {
 	Name           *string            `json:"name"`
+	Description    *string            `json:"description"`
 	Prompt         *string            `json:"prompt"`
+	Exec           *string            `json:"exec"`
 	AgentID        *string            `json:"agentId"`
 	WorkspaceID    *string            `json:"workspaceId"`
 	ConversationID *string            `json:"conversationId"`
+	Channel        *string            `json:"channel"`
 	Enabled        *bool              `json:"enabled"`
 	Schedule       *lumicron.Schedule `json:"schedule"`
+	Silent         *bool              `json:"silent,omitempty"`
+	Mute           *bool              `json:"mute,omitempty"`
+	SessionMode    *string            `json:"sessionMode,omitempty"`
+	WorkDir        *string            `json:"workDir,omitempty"`
+	Mode           *string            `json:"mode,omitempty"`
+	TimeoutMins    *int               `json:"timeoutMins,omitempty"`
 }
 
 func (s *Server) handleCronJobs(w http.ResponseWriter, r *http.Request) {
@@ -52,13 +73,22 @@ func (s *Server) handleCronJobs(w http.ResponseWriter, r *http.Request) {
 		job := lumicron.Job{
 			ID:             "cron_" + generateUUID(),
 			Name:           strings.TrimSpace(req.Name),
+			Description:    strings.TrimSpace(req.Description),
 			Prompt:         strings.TrimSpace(req.Prompt),
+			Exec:           strings.TrimSpace(req.Exec),
 			AgentID:        strings.TrimSpace(req.AgentID),
 			WorkspaceID:    strings.TrimSpace(req.WorkspaceID),
-			Channel:        lumicron.ChannelWeb,
+			Channel:        strings.TrimSpace(req.Channel),
 			ConversationID: strings.TrimSpace(req.ConversationID),
 			Enabled:        enabled,
 			Schedule:       req.Schedule,
+			Silent:         req.Silent,
+			Mute:           req.Mute,
+			SessionMode:    req.SessionMode,
+			WorkDir:        req.WorkDir,
+			Mode:           req.Mode,
+			TimeoutMins:    req.TimeoutMins,
+			Target:         req.Target,
 		}
 		created, err := s.cron.Create(job)
 		if err != nil {
@@ -85,12 +115,12 @@ func (s *Server) handleCronJobByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		scopeConversationID := strings.TrimSpace(r.URL.Query().Get("conversationId"))
+		scopeChannel, scopeConversationID := cronScopeFromQuery(r)
 		if scopeConversationID == "" {
 			writeError(w, "conversationId is required", http.StatusBadRequest)
 			return
 		}
-		conversationID, err := s.cron.RunNowScoped(lumicron.ChannelWeb, scopeConversationID, jobID)
+		conversationID, err := s.cron.RunNowScoped(scopeChannel, scopeConversationID, jobID)
 		if err != nil {
 			writeError(w, err.Error(), http.StatusBadRequest)
 			return
@@ -101,12 +131,12 @@ func (s *Server) handleCronJobByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case "GET":
-		scopeConversationID := strings.TrimSpace(r.URL.Query().Get("conversationId"))
+		scopeChannel, scopeConversationID := cronScopeFromQuery(r)
 		if scopeConversationID == "" {
 			writeError(w, "conversationId is required", http.StatusBadRequest)
 			return
 		}
-		job, ok := s.cron.GetScoped(lumicron.ChannelWeb, scopeConversationID, jobID)
+		job, ok := s.cron.GetScoped(scopeChannel, scopeConversationID, jobID)
 		if !ok {
 			writeError(w, "Job not found", http.StatusNotFound)
 			return
@@ -118,7 +148,10 @@ func (s *Server) handleCronJobByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "Invalid request", http.StatusBadRequest)
 			return
 		}
-		scopeConversationID := strings.TrimSpace(r.URL.Query().Get("conversationId"))
+		scopeChannel, scopeConversationID := cronScopeFromQuery(r)
+		if strings.TrimSpace(r.URL.Query().Get("channel")) == "" && req.Channel != nil {
+			scopeChannel = strings.TrimSpace(*req.Channel)
+		}
 		if scopeConversationID == "" {
 			if req.ConversationID != nil {
 				scopeConversationID = strings.TrimSpace(*req.ConversationID)
@@ -128,12 +161,22 @@ func (s *Server) handleCronJobByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "conversationId is required", http.StatusBadRequest)
 			return
 		}
-		updated, err := s.cron.UpdateScoped(lumicron.ChannelWeb, scopeConversationID, jobID, func(job lumicron.Job) (lumicron.Job, error) {
+		updated, err := s.cron.UpdateScoped(scopeChannel, scopeConversationID, jobID, func(job lumicron.Job) (lumicron.Job, error) {
 			if req.Name != nil && strings.TrimSpace(*req.Name) != "" {
 				job.Name = strings.TrimSpace(*req.Name)
 			}
+			if req.Description != nil {
+				job.Description = strings.TrimSpace(*req.Description)
+			}
 			if req.Prompt != nil && strings.TrimSpace(*req.Prompt) != "" {
 				job.Prompt = strings.TrimSpace(*req.Prompt)
+				job.Exec = ""
+			}
+			if req.Exec != nil {
+				job.Exec = strings.TrimSpace(*req.Exec)
+				if job.Exec != "" {
+					job.Prompt = ""
+				}
 			}
 			if req.AgentID != nil && strings.TrimSpace(*req.AgentID) != "" {
 				job.AgentID = strings.TrimSpace(*req.AgentID)
@@ -147,6 +190,24 @@ func (s *Server) handleCronJobByID(w http.ResponseWriter, r *http.Request) {
 			if req.Schedule != nil {
 				job.Schedule = *req.Schedule
 			}
+			if req.Silent != nil {
+				job.Silent = req.Silent
+			}
+			if req.Mute != nil {
+				job.Mute = *req.Mute
+			}
+			if req.SessionMode != nil {
+				job.SessionMode = strings.TrimSpace(*req.SessionMode)
+			}
+			if req.WorkDir != nil {
+				job.WorkDir = strings.TrimSpace(*req.WorkDir)
+			}
+			if req.Mode != nil {
+				job.Mode = strings.TrimSpace(*req.Mode)
+			}
+			if req.TimeoutMins != nil {
+				job.TimeoutMins = req.TimeoutMins
+			}
 			return job, nil
 		})
 		if err != nil {
@@ -155,12 +216,12 @@ func (s *Server) handleCronJobByID(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, map[string]any{"job": updated})
 	case "DELETE":
-		scopeConversationID := strings.TrimSpace(r.URL.Query().Get("conversationId"))
+		scopeChannel, scopeConversationID := cronScopeFromQuery(r)
 		if scopeConversationID == "" {
 			writeError(w, "conversationId is required", http.StatusBadRequest)
 			return
 		}
-		if err := s.cron.DeleteScoped(lumicron.ChannelWeb, scopeConversationID, jobID); err != nil {
+		if err := s.cron.DeleteScoped(scopeChannel, scopeConversationID, jobID); err != nil {
 			writeError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -168,6 +229,14 @@ func (s *Server) handleCronJobByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func cronScopeFromQuery(r *http.Request) (string, string) {
+	channel := strings.TrimSpace(r.URL.Query().Get("channel"))
+	if channel == "" {
+		channel = lumicron.ChannelWeb
+	}
+	return channel, strings.TrimSpace(r.URL.Query().Get("conversationId"))
 }
 
 func (s *Server) handleCronEvents(w http.ResponseWriter, r *http.Request) {
@@ -222,6 +291,9 @@ func (s *Server) broadcastCronEvent(event lumicron.Event) {
 }
 
 func (s *Server) RunCronJob(job lumicron.Job) (string, error) {
+	if job.Exec != "" {
+		return s.runCronExecJob(job)
+	}
 	switch job.Channel {
 	case lumicron.ChannelWeChat:
 		return s.wechat.RunCronJob(context.Background(), job)
@@ -245,36 +317,38 @@ func (s *Server) RunCronJob(job lumicron.Job) (string, error) {
 	}
 	defer s.releaseCronRun(convID)
 
-	triggeredAt := time.Now().UnixMilli()
-	s.conversations.AddMessage(convID, conversation.Message{
-		Role:    "assistant",
-		Kind:    "cron_trigger",
-		Content: fmt.Sprintf("Scheduled task %q triggered.", job.Name),
-		Cron: &conversation.CronMessageMeta{
-			JobID:       job.ID,
-			JobName:     job.Name,
-			TriggeredAt: triggeredAt,
-		},
-	})
-	s.persistConversation(convID)
-	s.broadcastCronEvent(lumicron.Event{
-		Type:           "chat_event",
-		Channel:        lumicron.ChannelWeb,
-		ConversationID: convID,
-		Event:          "cron_trigger",
-		Data: map[string]any{
-			"message": map[string]any{
-				"role":    "assistant",
-				"kind":    "cron_trigger",
-				"content": fmt.Sprintf("Scheduled task %q triggered.", job.Name),
-				"cron": map[string]any{
-					"jobId":       job.ID,
-					"jobName":     job.Name,
-					"triggeredAt": triggeredAt,
+	if !job.Mute && !isCronSilent(job) {
+		triggeredAt := time.Now().UnixMilli()
+		s.conversations.AddMessage(convID, conversation.Message{
+			Role:    "assistant",
+			Kind:    "cron_trigger",
+			Content: fmt.Sprintf("Scheduled task %q triggered.", job.Name),
+			Cron: &conversation.CronMessageMeta{
+				JobID:       job.ID,
+				JobName:     job.Name,
+				TriggeredAt: triggeredAt,
+			},
+		})
+		s.persistConversation(convID)
+		s.broadcastCronEvent(lumicron.Event{
+			Type:           "chat_event",
+			Channel:        lumicron.ChannelWeb,
+			ConversationID: convID,
+			Event:          "cron_trigger",
+			Data: map[string]any{
+				"message": map[string]any{
+					"role":    "assistant",
+					"kind":    "cron_trigger",
+					"content": fmt.Sprintf("Scheduled task %q triggered.", job.Name),
+					"cron": map[string]any{
+						"jobId":       job.ID,
+						"jobName":     job.Name,
+						"triggeredAt": triggeredAt,
+					},
 				},
 			},
-		},
-	})
+		})
+	}
 
 	req := chatRequest{
 		Message:        job.Prompt,
@@ -286,6 +360,9 @@ func (s *Server) RunCronJob(job lumicron.Job) (string, error) {
 		CronJobName:    job.Name,
 	}
 	send := func(event string, data any) {
+		if job.Mute {
+			return
+		}
 		s.broadcastCronEvent(lumicron.Event{
 			Type:           "chat_event",
 			Channel:        lumicron.ChannelWeb,
@@ -325,6 +402,88 @@ func (s *Server) RunCronJob(job lumicron.Job) (string, error) {
 		return convID, ctx.Result.Err
 	}
 	return convID, nil
+}
+
+func (s *Server) runCronExecJob(job lumicron.Job) (string, error) {
+	convID := job.ConversationID
+	if convID == "" {
+		return "", errors.New("missing conversation binding")
+	}
+	if !s.conversations.Has(convID) {
+		if stored, err := s.sessionStore.Load(convID); err == nil {
+			s.restoreConversation(stored)
+		} else {
+			return convID, errors.New("conversation not found")
+		}
+	}
+	if !s.acquireCronRun(convID) {
+		return convID, lumicron.SkippedError{Reason: "conversation busy"}
+	}
+	defer s.releaseCronRun(convID)
+
+	ctx := context.Background()
+	timeout := lumicron.ExecutionTimeout(job)
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, shellName(), shellFlag(), job.Exec)
+	if job.WorkDir != "" {
+		cmd.Dir = job.WorkDir
+	} else if ws := s.resolveWorkspacePath(job.WorkspaceID); ws != "" {
+		cmd.Dir = ws
+	}
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		err = errors.New("cron exec timed out")
+	}
+	if !job.Mute {
+		content := strings.TrimSpace(string(output))
+		if content == "" {
+			content = "(no output)"
+		}
+		if err != nil {
+			content = fmt.Sprintf("Scheduled task %q failed: %v\n\n%s", job.Name, err, content)
+		}
+		s.conversations.AddMessage(convID, conversation.Message{
+			Role:    "assistant",
+			Content: content,
+			Cron: &conversation.CronMessageMeta{
+				JobID:       job.ID,
+				JobName:     job.Name,
+				TriggeredAt: time.Now().UnixMilli(),
+			},
+		})
+		s.persistConversation(convID)
+		s.broadcastCronEvent(lumicron.Event{Type: "session_updated", Channel: lumicron.ChannelWeb, ConversationID: convID})
+	}
+	return convID, err
+}
+
+func isCronSilent(job lumicron.Job) bool {
+	return job.Silent != nil && *job.Silent
+}
+
+func shellName() string {
+	if runtime.GOOS == "windows" {
+		return "cmd"
+	}
+	return "sh"
+}
+
+func shellFlag() string {
+	if runtime.GOOS == "windows" {
+		return "/C"
+	}
+	return "-c"
+}
+
+func (s *Server) apiBaseForAgent() string {
+	if s == nil {
+		return lumiAPIBaseForConfig(nil)
+	}
+	return lumiAPIBaseForConfig(s.config)
 }
 
 func (s *Server) acquireCronRun(conversationID string) bool {

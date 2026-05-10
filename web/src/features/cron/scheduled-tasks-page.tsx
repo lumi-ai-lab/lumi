@@ -98,7 +98,7 @@ export function ScheduledTasksPage({
       const targetLabel = cronTargetLabel(item)
       if (conversationFilter !== 'all' && `${cronChannel(item)}:${targetLabel}` !== conversationFilter) return false
       if (!query) return true
-      return [item.name, item.id, item.prompt, item.agentId, item.workspaceId, cronChannelLabel(item), targetLabel]
+      return [item.name, item.description || '', item.id, item.prompt || '', item.exec || '', item.agentId, item.workspaceId, cronChannelLabel(item), targetLabel]
         .some((value) => value.toLowerCase().includes(query))
     })
   }, [channelFilter, conversationFilter, jobs, search])
@@ -128,6 +128,17 @@ export function ScheduledTasksPage({
     setBusyId(target.id)
     try {
       upsert(await api.updateCronJob(target.id, { conversationId, enabled: !target.enabled }))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const toggleMute = async (target: CronJob) => {
+    const conversationId = scopedConversationId(target)
+    if (!conversationId) return
+    setBusyId(target.id)
+    try {
+      upsert(await api.updateCronJob(target.id, { conversationId, mute: !target.mute }))
     } finally {
       setBusyId(null)
     }
@@ -209,7 +220,16 @@ export function ScheduledTasksPage({
                 </section>
                 <section>
                   <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Prompt</h2>
-                  <div className="whitespace-pre-wrap rounded-md border border-border bg-card p-4">{job.prompt}</div>
+                  <div className="whitespace-pre-wrap rounded-md border border-border bg-card p-4">{job.prompt || job.exec}</div>
+                </section>
+                <section>
+                  <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Options</h2>
+                  <div>Mute: {job.mute ? 'yes' : 'no'}</div>
+                  <div>Silent: {job.silent ? 'yes' : 'no'}</div>
+                  <div>Session mode: {job.sessionMode || 'reuse'}</div>
+                  <div>Timeout: {job.timeoutMins ?? 30} minutes</div>
+                  {job.workDir ? <div className="truncate">Work dir: {job.workDir}</div> : null}
+                  {job.mode ? <div>Mode: {job.mode}</div> : null}
                 </section>
                 <section>
                   <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Schedule</h2>
@@ -288,9 +308,9 @@ export function ScheduledTasksPage({
         {filteredJobs.length === 0 ? (
           <div className="py-20 text-center text-sm text-muted-foreground">No scheduled tasks match these filters</div>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
             {filteredJobs.map((item) => (
-              <button key={item.id} className="rounded-md border border-border bg-card p-4 text-left transition hover:bg-accent" onClick={() => onNavigate(`/scheduled/${item.id}`)} type="button">
+              <article key={item.id} className="rounded-md border border-border bg-card p-4 text-left transition hover:bg-accent">
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate text-sm font-medium">{item.name}</span>
                   <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><span className={`h-2 w-2 rounded-full ${statusDotClass(cronStatus(item))}`} />{cronStatus(item)}</span>
@@ -300,11 +320,13 @@ export function ScheduledTasksPage({
                   <span className="truncate font-mono" title={cronTargetLabel(item)}>Conversation: {cronTargetLabel(item)}</span>
                   <span>{formatCronSchedule(item.schedule)}</span>
                 </div>
-                <div className="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                  <span>Next: {formatCronTime(item.state.nextRunAt)}</span>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span className="min-w-0 truncate">Next: {formatCronTime(item.state.nextRunAt)}</span>
                   {isWebJob(item) ? (
-                    <span className="flex gap-1" onClick={(event) => event.stopPropagation()}>
+                    <span className="ml-auto flex max-w-full flex-wrap justify-end gap-1">
+                      <Button size="sm" variant="outline" onClick={() => onNavigate(`/scheduled/${item.id}`)}>Details</Button>
                       <Button size="sm" variant="outline" onClick={() => void toggle(item)} disabled={busyId === item.id}>{item.enabled ? 'Pause' : 'Resume'}</Button>
+                      <Button size="sm" variant="outline" onClick={() => void toggleMute(item)} disabled={busyId === item.id}>{item.mute ? 'Unmute' : 'Mute'}</Button>
                       <Button size="sm" variant="outline" onClick={() => void runNow(item)} disabled={busyId === item.id}>Run</Button>
                       <Button size="icon" variant="outline" onClick={() => void remove(item)} disabled={busyId === item.id}><Trash2 className="h-3.5 w-3.5" /></Button>
                     </span>
@@ -312,7 +334,7 @@ export function ScheduledTasksPage({
                     <span>Read-only</span>
                   )}
                 </div>
-              </button>
+              </article>
             ))}
           </div>
         )}

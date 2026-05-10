@@ -12,8 +12,8 @@ func (p *Process) handleReadFile(msg *jsonrpc.Message) {
 		Path string `json:"path"`
 	}
 	if err := msg.ParseParams(&params); err != nil {
-		if msg.ID != nil {
-			p.sendError(*msg.ID, jsonrpc.InvalidParams, "Invalid params")
+		if len(msg.ID) > 0 {
+			p.sendError(decodeAnyID(msg.ID), jsonrpc.InvalidParams, "Invalid params")
 		}
 		return
 	}
@@ -21,14 +21,14 @@ func (p *Process) handleReadFile(msg *jsonrpc.Message) {
 	filePath := p.resolvePath(params.Path)
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		if msg.ID != nil {
-			p.sendError(*msg.ID, jsonrpc.InternalError, err.Error())
+		if len(msg.ID) > 0 {
+			p.sendError(decodeAnyID(msg.ID), jsonrpc.InternalError, err.Error())
 		}
 		return
 	}
 
-	if msg.ID != nil {
-		p.sendResponse(*msg.ID, map[string]string{"content": string(content)})
+	if len(msg.ID) > 0 {
+		p.sendResponse(decodeAnyID(msg.ID), map[string]string{"content": string(content)})
 	}
 }
 
@@ -38,8 +38,8 @@ func (p *Process) handleWriteFile(msg *jsonrpc.Message) {
 		Content string `json:"content"`
 	}
 	if err := msg.ParseParams(&params); err != nil {
-		if msg.ID != nil {
-			p.sendError(*msg.ID, jsonrpc.InvalidParams, "Invalid params")
+		if len(msg.ID) > 0 {
+			p.sendError(decodeAnyID(msg.ID), jsonrpc.InvalidParams, "Invalid params")
 		}
 		return
 	}
@@ -47,21 +47,21 @@ func (p *Process) handleWriteFile(msg *jsonrpc.Message) {
 	filePath := p.resolvePath(params.Path)
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		if msg.ID != nil {
-			p.sendError(*msg.ID, jsonrpc.InternalError, err.Error())
+		if len(msg.ID) > 0 {
+			p.sendError(decodeAnyID(msg.ID), jsonrpc.InternalError, err.Error())
 		}
 		return
 	}
 
 	if err := os.WriteFile(filePath, []byte(params.Content), 0644); err != nil {
-		if msg.ID != nil {
-			p.sendError(*msg.ID, jsonrpc.InternalError, err.Error())
+		if len(msg.ID) > 0 {
+			p.sendError(decodeAnyID(msg.ID), jsonrpc.InternalError, err.Error())
 		}
 		return
 	}
 
-	if msg.ID != nil {
-		p.sendResponse(*msg.ID, nil)
+	if len(msg.ID) > 0 {
+		p.sendResponse(decodeAnyID(msg.ID), nil)
 	}
 }
 

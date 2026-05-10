@@ -99,11 +99,10 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 	streamItems := make([]streamItem, 0)
 	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
-	cronCommandStream := &cronCommandStreamState{}
 	autoPermissionErr := ""
 
 	cleanupNotification := agentProc.OnNotification(func(msg *jsonrpc.Message) {
-		_ = r.handleWeChatNotification(msg, sink, &streamItems, accumulator, toolCallMap, cronCommandStream)
+		_ = r.handleWeChatNotification(msg, sink, &streamItems, accumulator, toolCallMap)
 	})
 	defer cleanupNotification()
 
@@ -136,7 +135,15 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 	defer close(stopCancelWatcher)
 
 	promptText := input.Message
-	promptText = lumicron.WithConversationInstructionAndJobs(promptText, r.currentCronJobsForPrompt(input.ConversationID))
+	promptText = lumicron.WithAgentToolInstructionsForContext(promptText, lumicron.ToolContext{
+		APIBase:        lumiAPIBaseForConfig(r.config),
+		Channel:        lumicron.ChannelWeChat,
+		ConversationID: input.ConversationID,
+		AgentID:        input.AgentID,
+		WorkspaceID:    input.WorkspaceID,
+		WorkspacePath:  input.WorkspacePath,
+		Target:         input.CronTarget,
+	})
 	if input.PromptPrefix != "" {
 		promptText = input.PromptPrefix + "\n\n" + promptText
 	}
@@ -152,18 +159,6 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 		return r.emitError(sink, err.Error())
 	}
 
-	cronConfirmation, err := r.executeCronCommands(input, &streamItems, &accumulator.currentText)
-	if err != nil {
-		return r.emitError(sink, err.Error())
-	}
-	if cronConfirmation != "" {
-		if err := sink.Emit(wechat.ChatEvent{Name: "update", Data: map[string]any{"update": map[string]any{
-			"sessionUpdate": "agent_message_chunk",
-			"content":       map[string]any{"type": "text", "text": cronConfirmation},
-		}}}); err != nil {
-			return err
-		}
-	}
 	r.finalizeAssistantStream(conv.ID, input.AgentID, streamItems, accumulator)
 	if err := r.persistConversation(conv.ID, input.ConversationStore); err != nil {
 		return err
@@ -270,6 +265,7 @@ func (r *wechatChatRuntime) ensureInitialized(agentID string, sink wechat.ChatEv
 	}); err != nil {
 		return err
 	}
+	injectLumiAgentEnv(r.config, agentID, lumiAPIBaseForConfig(r.config))
 	if _, err := r.agents.Request(agentID, "initialize", map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{
@@ -293,7 +289,10 @@ func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, sink w
 		sessions = make(map[string]string)
 		r.agentSessions[input.ConversationID] = sessions
 	}
-	sessionID := sessions[input.AgentID]
+	sessionID := ""
+	if !input.NewSession {
+		sessionID = sessions[input.AgentID]
+	}
 	r.mu.Unlock()
 	if sessionID != "" {
 		return sessionID, false, nil
@@ -324,7 +323,9 @@ func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, sink w
 	}
 
 	r.mu.Lock()
-	r.agentSessions[input.ConversationID][input.AgentID] = sessionID
+	if !input.NewSession {
+		r.agentSessions[input.ConversationID][input.AgentID] = sessionID
+	}
 	r.mu.Unlock()
 	return sessionID, true, nil
 }
@@ -354,23 +355,6 @@ func (r *wechatChatRuntime) finalizeAssistantStream(convID, agentID string, stre
 	}
 }
 
-func (r *wechatChatRuntime) executeCronCommands(input wechat.ChatRunInput, streamItems *[]streamItem, currentText *string) (string, error) {
-	return executeCronCommandsWithService(r.cron, cronCommandContext{
-		Channel:        lumicron.ChannelWeChat,
-		ConversationID: input.ConversationID,
-		AgentID:        input.AgentID,
-		WorkspaceID:    input.WorkspaceID,
-		Target:         input.CronTarget,
-	}, streamItems, currentText)
-}
-
-func (r *wechatChatRuntime) currentCronJobsForPrompt(conversationID string) []lumicron.Job {
-	if r.cron == nil {
-		return nil
-	}
-	return r.cron.ListByScope(lumicron.ChannelWeChat, conversationID)
-}
-
 // V1 WeChat-private copy of api notification aggregation.
 // Keep Web notification.go unchanged; dedupe in V2 only after WeChat V1 stabilizes.
 func (r *wechatChatRuntime) handleWeChatNotification(
@@ -379,7 +363,6 @@ func (r *wechatChatRuntime) handleWeChatNotification(
 	streamItems *[]streamItem,
 	accumulator *streamAccumulator,
 	toolCallMap map[string]int,
-	cronCommandStream *cronCommandStreamState,
 ) error {
 	if msg.Method != "session/update" {
 		return nil
@@ -398,9 +381,6 @@ func (r *wechatChatRuntime) handleWeChatNotification(
 		if text := extractTextContent(update.Content); text != "" {
 			visibleText, _ := accumulator.AddMessageChunk(text, streamItems)
 			if visibleText == "" {
-				return nil
-			}
-			if cronCommandStream.shouldSuppress(accumulator.Text()) {
 				return nil
 			}
 			update.Content = map[string]any{"type": "text", "text": visibleText}

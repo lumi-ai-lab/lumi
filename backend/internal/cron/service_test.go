@@ -3,6 +3,7 @@ package cron
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -187,5 +188,129 @@ func TestScheduledRunSkipsDeletedJob(t *testing.T) {
 	case called := <-calls:
 		t.Fatalf("runner was called for deleted job: %#v", called)
 	default:
+	}
+}
+
+func TestCreateCronJobValidatesAndComputesNextRun(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "jobs.json"))
+	calls := make(chan Job, 1)
+	service := NewService(store, testRunner{conversationID: "conv-1", calls: calls}, nil)
+	job, err := service.Create(Job{
+		ID:             "job-cron",
+		Name:           "Daily",
+		Enabled:        true,
+		WorkspaceID:    "default",
+		AgentID:        "claude",
+		ConversationID: "conv-1",
+		Prompt:         "hello",
+		Schedule:       Schedule{Type: ScheduleCron, CronExpr: "0 8 * * *"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.State.NextRunAt <= 0 {
+		t.Fatalf("NextRunAt = %d, want positive", job.State.NextRunAt)
+	}
+	select {
+	case called := <-calls:
+		t.Fatalf("runner was called during create: %#v", called)
+	default:
+	}
+}
+
+func TestCreateRejectsInvalidCronExpression(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "jobs.json"))
+	service := NewService(store, testRunner{}, nil)
+	_, err := service.Create(Job{
+		ID:             "job-cron",
+		Name:           "Bad",
+		WorkspaceID:    "default",
+		AgentID:        "claude",
+		ConversationID: "conv-1",
+		Prompt:         "hello",
+		Schedule:       Schedule{Type: ScheduleCron, CronExpr: "bad"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid cron expression") {
+		t.Fatalf("Create() error = %v, want invalid cron expression", err)
+	}
+}
+
+func TestUpdateCronExpressionMuteAndResume(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "jobs.json"))
+	service := NewService(store, testRunner{}, nil)
+	created, err := service.Create(Job{
+		ID:             "job-cron",
+		Name:           "Daily",
+		Enabled:        true,
+		WorkspaceID:    "default",
+		AgentID:        "claude",
+		ConversationID: "conv-1",
+		Prompt:         "hello",
+		Schedule:       Schedule{Type: ScheduleCron, CronExpr: "0 8 * * *"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused, err := service.Update(created.ID, func(job Job) (Job, error) {
+		job.Enabled = false
+		job.Mute = true
+		job.Schedule = Schedule{Type: ScheduleCron, CronExpr: "0 9 * * 1"}
+		return job, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paused.Enabled || !paused.Mute || paused.State.NextRunAt != 0 {
+		t.Fatalf("paused = %#v", paused)
+	}
+	resumed, err := service.Update(created.ID, func(job Job) (Job, error) {
+		job.Enabled = true
+		return job, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resumed.Enabled || resumed.State.NextRunAt <= 0 || resumed.Schedule.CronExpr != "0 9 * * 1" {
+		t.Fatalf("resumed = %#v", resumed)
+	}
+}
+
+func TestExecJobAndPromptAreMutuallyExclusive(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "jobs.json"))
+	service := NewService(store, testRunner{}, nil)
+	_, err := service.Create(Job{
+		ID:             "job-exec",
+		Name:           "Exec",
+		WorkspaceID:    "default",
+		AgentID:        "claude",
+		ConversationID: "conv-1",
+		Prompt:         "hello",
+		Exec:           "echo hello",
+		Schedule:       Schedule{Type: ScheduleCron, CronExpr: "*/30 * * * *"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("Create() error = %v, want mutually exclusive", err)
+	}
+}
+
+func TestTimeoutMarksJobFailed(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "jobs.json"))
+	timeout := 0
+	service := NewService(store, testRunner{conversationID: "conv-1", calls: make(chan Job, 1)}, nil)
+	job, err := service.Create(Job{
+		ID:             "job-timeout",
+		Name:           "Timeout",
+		WorkspaceID:    "default",
+		AgentID:        "claude",
+		ConversationID: "conv-1",
+		Prompt:         "hello",
+		TimeoutMins:    &timeout,
+		Schedule:       Schedule{Type: ScheduleInterval, EverySeconds: 60},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ExecutionTimeout(job); got != 0 {
+		t.Fatalf("ExecutionTimeout() = %v, want unlimited", got)
 	}
 }

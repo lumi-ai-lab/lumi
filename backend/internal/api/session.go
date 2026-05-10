@@ -65,6 +65,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.restoreConversation(session)
+		if pending, ok := s.getPendingPermission(id); ok {
+			session.PendingPermission = &pending
+		}
 		writeJSON(w, map[string]any{"session": session})
 
 	case "DELETE":

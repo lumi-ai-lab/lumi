@@ -63,7 +63,7 @@ func TestPrepareChatLeavesLocalWorkspaceMentionsUnchanged(t *testing.T) {
 	}
 }
 
-func TestPrepareChatInjectsCronProtocolForNaturalLanguage(t *testing.T) {
+func TestPrepareChatInjectsCronToolInstructionsForNaturalLanguage(t *testing.T) {
 	server := newTestAPIServer(t)
 
 	prepared, err := server.prepareChat(context.Background(), chatRequest{
@@ -74,8 +74,11 @@ func TestPrepareChatInjectsCronProtocolForNaturalLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareChat() error = %v", err)
 	}
-	if !strings.Contains(prepared.PromptText, "Lumi scheduled task protocol:") {
-		t.Fatalf("prepared.PromptText missing cron protocol: %q", prepared.PromptText)
+	if !strings.Contains(prepared.PromptText, "lumi-cli cron add") {
+		t.Fatalf("prepared.PromptText missing cron CLI instructions: %q", prepared.PromptText)
+	}
+	if strings.Contains(prepared.PromptText, "[CRON_") {
+		t.Fatalf("prepared.PromptText contains old hidden protocol: %q", prepared.PromptText)
 	}
 	if !strings.Contains(prepared.PromptText, "User: 现在我们有哪些定时任务?") {
 		t.Fatalf("prepared.PromptText missing original user prompt: %q", prepared.PromptText)
@@ -88,16 +91,15 @@ func TestHandleNotificationSeparatesThinkingFromAssistantText(t *testing.T) {
 	items := make([]streamItem, 0)
 	accumulator := &streamAccumulator{}
 	toolMap := make(map[string]int)
-	cronStream := &cronCommandStreamState{}
 	events := make([]string, 0)
 
 	send := func(event string, data any) {
 		events = append(events, event)
 	}
 
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello "}}}`), send, &items, accumulator, toolMap, "claude", cronStream)
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"secret"}}}`), send, &items, accumulator, toolMap, "claude", cronStream)
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"world"}}}`), send, &items, accumulator, toolMap, "claude", cronStream)
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello "}}}`), send, &items, accumulator, toolMap, "claude")
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"secret"}}}`), send, &items, accumulator, toolMap, "claude")
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"world"}}}`), send, &items, accumulator, toolMap, "claude")
 
 	server.finalizeAssistantStream("conv", "claude", items, accumulator)
 
@@ -122,6 +124,50 @@ func TestHandleNotificationSeparatesThinkingFromAssistantText(t *testing.T) {
 	}
 	if len(events) != 4 || events[0] != "update" || events[1] != "thinking" || events[2] != "thinking" || events[3] != "update" {
 		t.Fatalf("events = %v, want update/thinking/thinking/update", events)
+	}
+}
+
+func TestHiddenCronFinalizePersistsAssistantResultWithoutPrompt(t *testing.T) {
+	server := newTestAPIServer(t)
+	server.conversations.Create("conv", "claude", "default")
+	items := []streamItem{{Type: "text", Text: "cron result"}}
+
+	server.finalizeAssistantStream("conv", "claude", items, &streamAccumulator{})
+
+	conv := server.conversations.Get("conv")
+	if conv == nil {
+		t.Fatal("conversation not found")
+	}
+	if len(conv.Messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1 (%+v)", len(conv.Messages), conv.Messages)
+	}
+	if conv.Messages[0].Role != "assistant" || conv.Messages[0].Content != "cron result" || conv.Messages[0].Hidden {
+		t.Fatalf("message = %+v, want visible assistant cron result", conv.Messages[0])
+	}
+}
+
+func TestAddChatUserMessagePersistsBeforeAgentCompletes(t *testing.T) {
+	server := newTestAPIServer(t)
+	server.conversations.Create("conv", "claude", "default")
+	ctx := chatRuntimeContext{
+		Request: chatRequest{
+			Message: "create a scheduled task",
+		},
+		Prepared: &chatPrepared{
+			ConvID:      "conv",
+			AgentID:     "claude",
+			WorkspaceID: "default",
+		},
+	}
+
+	server.addChatUserMessage(ctx)
+
+	stored, err := server.sessionStore.Load("conv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Messages) != 1 || stored.Messages[0].Content != "create a scheduled task" {
+		t.Fatalf("stored messages = %+v, want persisted user prompt", stored.Messages)
 	}
 }
 

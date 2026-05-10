@@ -187,7 +187,8 @@ export interface SessionMeta {
 
 export type CronSchedule =
   | { type: "once"; runAt: number }
-  | { type: "interval"; everySeconds: number };
+  | { type: "interval"; everySeconds: number }
+  | { type: "cron"; cronExpr: string };
 
 export interface CronJobState {
   lastRunAt?: number;
@@ -213,13 +214,21 @@ export interface CronTarget {
 export interface CronJob {
   id: string;
   name: string;
+  description?: string;
   enabled: boolean;
   channel?: "web" | "wechat" | "wecom" | string;
   workspaceId: string;
   agentId: string;
   conversationId?: string;
   schedule: CronSchedule;
-  prompt: string;
+  prompt?: string;
+  exec?: string;
+  silent?: boolean;
+  mute?: boolean;
+  sessionMode?: string;
+  workDir?: string;
+  mode?: string;
+  timeoutMins?: number;
   target?: CronTarget;
   state: CronJobState;
   createdAt: number;
@@ -280,6 +289,7 @@ export interface Session {
   workspaceId?: string;
   createdAt: number;
   updatedAt: number;
+  pendingPermission?: PermissionRequest | null;
 }
 
 export interface ConversationShare {
@@ -348,6 +358,8 @@ export interface StreamEvent {
 
 export interface PermissionRequest {
   sessionId: string;
+  conversationId?: string;
+  agentId?: string;
   options: Array<{
     optionId: string;
     name: string;

@@ -4,6 +4,9 @@ export function formatCronSchedule(schedule: CronSchedule) {
   if (schedule.type === 'once') {
     return `Once at ${new Date(schedule.runAt).toLocaleString()}`
   }
+  if (schedule.type === 'cron') {
+    return schedule.cronExpr
+  }
   return `Every ${Math.round(schedule.everySeconds / 60)} min`
 }
 
@@ -24,4 +27,3 @@ export function statusDotClass(status: string) {
   if (status === 'active') return 'bg-emerald-500'
   return 'bg-muted-foreground'
 }
-

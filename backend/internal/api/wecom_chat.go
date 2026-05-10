@@ -98,11 +98,10 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 	streamItems := make([]streamItem, 0)
 	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
-	cronCommandStream := &cronCommandStreamState{}
 	autoPermissionErr := ""
 
 	cleanupNotification := agentProc.OnNotification(func(msg *jsonrpc.Message) {
-		_ = r.handleWeComNotification(msg, sink, &streamItems, accumulator, toolCallMap, cronCommandStream)
+		_ = r.handleWeComNotification(msg, sink, &streamItems, accumulator, toolCallMap)
 	})
 	defer cleanupNotification()
 
@@ -135,7 +134,15 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 	defer close(stopCancelWatcher)
 
 	promptText := input.Message
-	promptText = lumicron.WithConversationInstructionAndJobs(promptText, r.currentCronJobsForPrompt(input.ConversationID))
+	promptText = lumicron.WithAgentToolInstructionsForContext(promptText, lumicron.ToolContext{
+		APIBase:        lumiAPIBaseForConfig(r.config),
+		Channel:        lumicron.ChannelWeCom,
+		ConversationID: input.ConversationID,
+		AgentID:        input.AgentID,
+		WorkspaceID:    input.WorkspaceID,
+		WorkspacePath:  input.WorkspacePath,
+		Target:         input.CronTarget,
+	})
 	if input.PromptPrefix != "" {
 		promptText = input.PromptPrefix + "\n\n" + promptText
 	}
@@ -151,18 +158,6 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 		return r.emitError(sink, err.Error())
 	}
 
-	cronConfirmation, err := r.executeCronCommands(input, &streamItems, &accumulator.currentText)
-	if err != nil {
-		return r.emitError(sink, err.Error())
-	}
-	if cronConfirmation != "" {
-		if err := sink.Emit(wecom.ChatEvent{Name: "update", Data: map[string]any{"update": map[string]any{
-			"sessionUpdate": "agent_message_chunk",
-			"content":       map[string]any{"type": "text", "text": cronConfirmation},
-		}}}); err != nil {
-			return err
-		}
-	}
 	r.finalizeAssistantStream(conv.ID, input.AgentID, streamItems, accumulator)
 	if err := r.persistConversation(conv.ID, input.ConversationStore); err != nil {
 		return err
@@ -269,6 +264,7 @@ func (r *wecomChatRuntime) ensureInitialized(agentID string, sink wecom.ChatEven
 	}); err != nil {
 		return err
 	}
+	injectLumiAgentEnv(r.config, agentID, lumiAPIBaseForConfig(r.config))
 	if _, err := r.agents.Request(agentID, "initialize", map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{
@@ -292,7 +288,10 @@ func (r *wecomChatRuntime) ensureAgentSession(input wecom.ChatRunInput, sink wec
 		sessions = make(map[string]string)
 		r.agentSessions[input.ConversationID] = sessions
 	}
-	sessionID := sessions[input.AgentID]
+	sessionID := ""
+	if !input.NewSession {
+		sessionID = sessions[input.AgentID]
+	}
 	r.mu.Unlock()
 	if sessionID != "" {
 		return sessionID, false, nil
@@ -323,7 +322,9 @@ func (r *wecomChatRuntime) ensureAgentSession(input wecom.ChatRunInput, sink wec
 	}
 
 	r.mu.Lock()
-	r.agentSessions[input.ConversationID][input.AgentID] = sessionID
+	if !input.NewSession {
+		r.agentSessions[input.ConversationID][input.AgentID] = sessionID
+	}
 	r.mu.Unlock()
 	return sessionID, true, nil
 }
@@ -344,30 +345,12 @@ func (r *wecomChatRuntime) finalizeAssistantStream(convID, agentID string, strea
 	}
 }
 
-func (r *wecomChatRuntime) executeCronCommands(input wecom.ChatRunInput, streamItems *[]streamItem, currentText *string) (string, error) {
-	return executeCronCommandsWithService(r.cron, cronCommandContext{
-		Channel:        lumicron.ChannelWeCom,
-		ConversationID: input.ConversationID,
-		AgentID:        input.AgentID,
-		WorkspaceID:    input.WorkspaceID,
-		Target:         input.CronTarget,
-	}, streamItems, currentText)
-}
-
-func (r *wecomChatRuntime) currentCronJobsForPrompt(conversationID string) []lumicron.Job {
-	if r.cron == nil {
-		return nil
-	}
-	return r.cron.ListByScope(lumicron.ChannelWeCom, conversationID)
-}
-
 func (r *wecomChatRuntime) handleWeComNotification(
 	msg *jsonrpc.Message,
 	sink wecom.ChatEventSink,
 	streamItems *[]streamItem,
 	accumulator *streamAccumulator,
 	toolCallMap map[string]int,
-	cronCommandStream *cronCommandStreamState,
 ) error {
 	if msg.Method != "session/update" {
 		return nil
@@ -386,9 +369,6 @@ func (r *wecomChatRuntime) handleWeComNotification(
 		if text := extractTextContent(update.Content); text != "" {
 			visibleText, _ := accumulator.AddMessageChunk(text, streamItems)
 			if visibleText == "" {
-				return nil
-			}
-			if cronCommandStream.shouldSuppress(accumulator.Text()) {
 				return nil
 			}
 			update.Content = map[string]any{"type": "text", "text": visibleText}

@@ -3,10 +3,10 @@ module github.com/pengmide/lumi
 go 1.25.0
 
 require (
-	github.com/pengmide/lumi/gotray v0.0.0
-	github.com/pengmide/lumi/web v0.0.0
 	github.com/docker/docker v27.5.1+incompatible
 	github.com/gorilla/websocket v1.5.0
+	github.com/pengmide/lumi/gotray v0.0.0
+	github.com/pengmide/lumi/web v0.0.0
 	nhooyr.io/websocket v1.8.17
 )
 
@@ -37,6 +37,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 // indirect

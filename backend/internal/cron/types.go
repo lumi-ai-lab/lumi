@@ -2,6 +2,7 @@ package cron
 
 type Schedule struct {
 	Type         string `json:"type"`
+	CronExpr     string `json:"cronExpr,omitempty"`
 	RunAt        int64  `json:"runAt,omitempty"`
 	EverySeconds int64  `json:"everySeconds,omitempty"`
 }
@@ -17,13 +18,21 @@ type JobState struct {
 type Job struct {
 	ID             string   `json:"id"`
 	Name           string   `json:"name"`
+	Description    string   `json:"description,omitempty"`
 	Enabled        bool     `json:"enabled"`
 	Channel        string   `json:"channel,omitempty"`
 	WorkspaceID    string   `json:"workspaceId"`
 	AgentID        string   `json:"agentId"`
 	ConversationID string   `json:"conversationId,omitempty"`
 	Schedule       Schedule `json:"schedule"`
-	Prompt         string   `json:"prompt"`
+	Prompt         string   `json:"prompt,omitempty"`
+	Exec           string   `json:"exec,omitempty"`
+	Silent         *bool    `json:"silent,omitempty"`
+	Mute           bool     `json:"mute,omitempty"`
+	SessionMode    string   `json:"sessionMode,omitempty"`
+	WorkDir        string   `json:"workDir,omitempty"`
+	Mode           string   `json:"mode,omitempty"`
+	TimeoutMins    *int     `json:"timeoutMins,omitempty"`
 	Target         Target   `json:"target,omitempty"`
 	State          JobState `json:"state"`
 	CreatedAt      int64    `json:"createdAt"`

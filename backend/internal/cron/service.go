@@ -5,14 +5,26 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	robfigcron "github.com/robfig/cron/v3"
 )
 
 const MinIntervalSeconds int64 = 60
+const DefaultTimeoutMins = 30
 
 const (
 	ChannelWeb    = "web"
 	ChannelWeChat = "wechat"
 	ChannelWeCom  = "wecom"
+)
+
+const (
+	ScheduleCron     = "cron"
+	ScheduleOnce     = "once"
+	ScheduleInterval = "interval"
+
+	SessionModeReuse     = "reuse"
+	SessionModeNewPerRun = "new_per_run"
 )
 
 type Runner interface {
@@ -25,6 +37,8 @@ type Service struct {
 	emit    func(Event)
 	mu      sync.Mutex
 	jobs    map[string]Job
+	cron    *robfigcron.Cron
+	entries map[string]robfigcron.EntryID
 	timers  map[string]*time.Timer
 	started bool
 }
@@ -34,11 +48,13 @@ func NewService(store *Store, runner Runner, emit func(Event)) *Service {
 		emit = func(Event) {}
 	}
 	return &Service{
-		store:  store,
-		runner: runner,
-		emit:   emit,
-		jobs:   make(map[string]Job),
-		timers: make(map[string]*time.Timer),
+		store:   store,
+		runner:  runner,
+		emit:    emit,
+		jobs:    make(map[string]Job),
+		cron:    robfigcron.New(),
+		entries: make(map[string]robfigcron.EntryID),
+		timers:  make(map[string]*time.Timer),
 	}
 }
 
@@ -69,6 +85,7 @@ func (s *Service) Start() error {
 			s.scheduleLocked(job)
 		}
 	}
+	s.cron.Start()
 	s.started = true
 	return s.persistLocked()
 }
@@ -79,6 +96,15 @@ func (s *Service) Stop() {
 	for id, timer := range s.timers {
 		timer.Stop()
 		delete(s.timers, id)
+	}
+	if s.cron != nil {
+		ctx := s.cron.Stop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(5 * time.Second):
+		}
+		s.cron = robfigcron.New()
+		s.entries = make(map[string]robfigcron.EntryID)
 	}
 	s.started = false
 }
@@ -162,7 +188,9 @@ func (s *Service) Create(job Job) (Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.jobs[job.ID] = job
-	s.scheduleLocked(job)
+	if job.Enabled {
+		s.scheduleLocked(job)
+	}
 	if err := s.persistLocked(); err != nil {
 		return Job{}, err
 	}
@@ -285,6 +313,25 @@ func (s *Service) scheduleLocked(job Job) {
 	if !job.Enabled {
 		return
 	}
+	if job.Schedule.Type == ScheduleCron {
+		entryID, err := s.cron.AddFunc(job.Schedule.CronExpr, func() {
+			_, _ = s.run(job.ID, true)
+		})
+		if err == nil {
+			s.entries[job.ID] = entryID
+			if s.started {
+				entries := s.cron.Entries()
+				for _, entry := range entries {
+					if entry.ID == entryID {
+						job.State.NextRunAt = entry.Next.UnixMilli()
+						s.jobs[job.ID] = job
+						break
+					}
+				}
+			}
+		}
+		return
+	}
 	delay := time.Until(time.UnixMilli(job.State.NextRunAt))
 	if delay < 0 {
 		delay = 0
@@ -299,6 +346,10 @@ func (s *Service) stopLocked(id string) {
 		timer.Stop()
 		delete(s.timers, id)
 	}
+	if entryID, ok := s.entries[id]; ok {
+		s.cron.Remove(entryID)
+		delete(s.entries, id)
+	}
 }
 
 func (s *Service) run(id string, requireEnabled bool) (string, error) {
@@ -311,7 +362,7 @@ func (s *Service) run(id string, requireEnabled bool) (string, error) {
 	s.mu.Unlock()
 
 	startedAt := time.Now().UnixMilli()
-	conversationID, err := s.runner.RunCronJob(job)
+	conversationID, err := s.runWithTimeout(job)
 
 	s.mu.Lock()
 	current, ok := s.jobs[job.ID]
@@ -337,7 +388,7 @@ func (s *Service) run(id string, requireEnabled bool) (string, error) {
 			current.ConversationID = conversationID
 		}
 	}
-	if current.Schedule.Type == "once" {
+	if current.Schedule.Type == ScheduleOnce {
 		current.Enabled = false
 		current.State.NextRunAt = 0
 	} else if current.Enabled {
@@ -362,6 +413,31 @@ func (s *Service) run(id string, requireEnabled bool) (string, error) {
 	return conversationID, persistErr
 }
 
+func (s *Service) runWithTimeout(job Job) (string, error) {
+	if s.runner == nil {
+		return "", errors.New("cron runner is not configured")
+	}
+	timeout := ExecutionTimeout(job)
+	if timeout <= 0 {
+		return s.runner.RunCronJob(job)
+	}
+	type result struct {
+		conversationID string
+		err            error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		conversationID, err := s.runner.RunCronJob(job)
+		ch <- result{conversationID: conversationID, err: err}
+	}()
+	select {
+	case res := <-ch:
+		return res.conversationID, res.err
+	case <-time.After(timeout):
+		return job.ConversationID, errors.New("cron job timed out")
+	}
+}
+
 func (s *Service) persistLocked() error {
 	jobs := make([]Job, 0, len(s.jobs))
 	for _, job := range s.jobs {
@@ -371,15 +447,31 @@ func (s *Service) persistLocked() error {
 }
 
 func validate(job Job) error {
-	if job.ID == "" || job.Name == "" || job.Prompt == "" || job.AgentID == "" || job.WorkspaceID == "" || job.Channel == "" || job.ConversationID == "" {
+	if job.ID == "" || job.Name == "" || job.AgentID == "" || job.WorkspaceID == "" || job.Channel == "" || job.ConversationID == "" {
 		return errors.New("missing required job fields")
 	}
+	if strings.TrimSpace(job.Prompt) == "" && strings.TrimSpace(job.Exec) == "" {
+		return errors.New("prompt or exec is required")
+	}
+	if strings.TrimSpace(job.Prompt) != "" && strings.TrimSpace(job.Exec) != "" {
+		return errors.New("prompt and exec are mutually exclusive")
+	}
+	if job.TimeoutMins != nil && *job.TimeoutMins < 0 {
+		return errors.New("timeoutMins must be non-negative")
+	}
 	switch job.Schedule.Type {
-	case "once":
+	case ScheduleCron:
+		if strings.TrimSpace(job.Schedule.CronExpr) == "" {
+			return errors.New("cronExpr is required")
+		}
+		if _, err := robfigcron.ParseStandard(job.Schedule.CronExpr); err != nil {
+			return errors.New("invalid cron expression: " + err.Error())
+		}
+	case ScheduleOnce:
 		if job.Schedule.RunAt <= 0 {
 			return errors.New("runAt is required")
 		}
-	case "interval":
+	case ScheduleInterval:
 		if job.Schedule.EverySeconds < MinIntervalSeconds {
 			return errors.New("everySeconds must be at least 60")
 		}
@@ -391,7 +483,43 @@ func validate(job Job) error {
 
 func normalizeJob(job Job) Job {
 	job.Channel = normalizeChannel(job.Channel)
+	job.Name = strings.TrimSpace(job.Name)
+	job.Description = strings.TrimSpace(job.Description)
+	job.AgentID = strings.TrimSpace(job.AgentID)
+	job.WorkspaceID = strings.TrimSpace(job.WorkspaceID)
+	job.ConversationID = strings.TrimSpace(job.ConversationID)
+	job.Prompt = strings.TrimSpace(job.Prompt)
+	job.Exec = strings.TrimSpace(job.Exec)
+	job.WorkDir = strings.TrimSpace(job.WorkDir)
+	job.Mode = strings.TrimSpace(job.Mode)
+	job.Schedule.Type = strings.TrimSpace(job.Schedule.Type)
+	job.Schedule.CronExpr = strings.TrimSpace(job.Schedule.CronExpr)
+	job.SessionMode = NormalizeSessionMode(job.SessionMode)
+	if job.Description == "" {
+		job.Description = job.Name
+	}
 	return job
+}
+
+func NormalizeSessionMode(mode string) string {
+	switch strings.TrimSpace(strings.ReplaceAll(mode, "-", "_")) {
+	case "", SessionModeReuse:
+		return SessionModeReuse
+	case SessionModeNewPerRun:
+		return SessionModeNewPerRun
+	default:
+		return strings.TrimSpace(strings.ReplaceAll(mode, "-", "_"))
+	}
+}
+
+func ExecutionTimeout(job Job) time.Duration {
+	if job.TimeoutMins == nil {
+		return time.Duration(DefaultTimeoutMins) * time.Minute
+	}
+	if *job.TimeoutMins <= 0 {
+		return 0
+	}
+	return time.Duration(*job.TimeoutMins) * time.Minute
 }
 
 func normalizeChannel(channel string) string {
@@ -409,9 +537,15 @@ func isOrphanScopedJob(job Job) bool {
 
 func nextRunAt(schedule Schedule, now int64) int64 {
 	switch schedule.Type {
-	case "once":
+	case ScheduleCron:
+		parsed, err := robfigcron.ParseStandard(schedule.CronExpr)
+		if err != nil {
+			return 0
+		}
+		return parsed.Next(time.UnixMilli(now)).UnixMilli()
+	case ScheduleOnce:
 		return schedule.RunAt
-	case "interval":
+	case ScheduleInterval:
 		next := now + schedule.EverySeconds*1000
 		return next
 	default:

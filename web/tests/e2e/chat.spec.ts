@@ -176,6 +176,66 @@ test('shows permission requests and confirms them through the API', async ({ pag
   ])
 })
 
+test('shows codex permission request while a newly created session is still sending', async ({ page }) => {
+  const state = await installMockBackend(page, {
+    chatResponses: [
+      buildSseStream([
+        {
+          data: {
+            conversationId: 'sess-1',
+            agent: 'codex',
+            sessionId: 'codex-session-1',
+          },
+        },
+        {
+          data: {
+            sessionId: 'codex-session-1',
+            options: [
+              {
+                optionId: 'approved',
+                name: 'Approve',
+                kind: 'allow_once',
+              },
+              {
+                optionId: 'denied',
+                name: 'Deny',
+                kind: 'reject_once',
+              },
+            ],
+            toolCall: {
+              toolCallId: 'codex-tool-1',
+              title: 'Run shell command',
+              kind: 'shell',
+              rawInput: {
+                command: 'lumi-cli cron add --cron "*/2 * * * *" --prompt "hello" --desc "hello"',
+              },
+            },
+          },
+        },
+      ]),
+    ],
+  })
+
+  await page.goto('/c')
+
+  const composer = page.getByRole('textbox', { name: /Message/ })
+  await composer.fill('@codex Create a task every two minutes')
+  await page.getByRole('button', { name: 'Send' }).click()
+
+  await expect(page.getByText('Permission Required')).toBeVisible()
+  await expect(page.getByText('Run shell command')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Approve' }).click()
+
+  expect(state.permissionConfirmations).toEqual([
+    {
+      agentId: 'codex',
+      toolCallId: 'codex-tool-1',
+      optionId: 'approved',
+    },
+  ])
+})
+
 test('hides the code preview header for yaml files', async ({ page }) => {
   await installMockBackend(page, {
     workspaceFiles: [

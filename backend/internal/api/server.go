@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -54,6 +55,9 @@ type Server struct {
 	agentSessions map[string]map[string]string
 	initialized   map[string]bool
 
+	pendingPermissions   map[string]pendingPermissionState
+	pendingPermissionsMu sync.RWMutex
+
 	// conversationID -> deviceID -> agentID -> remote sessionID
 	remoteAgentSessions map[string]map[string]map[string]string
 	remoteSessionsMu    sync.RWMutex
@@ -100,6 +104,7 @@ func NewServer(cfg *config.Config, staticFS fs.FS) *Server {
 		staticFS:            staticFS,
 		agentSessions:       make(map[string]map[string]string),
 		initialized:         make(map[string]bool),
+		pendingPermissions:  make(map[string]pendingPermissionState),
 		remoteAgentSessions: make(map[string]map[string]map[string]string),
 		agentCommands:       make(map[string][]SlashCommand),
 		setupSubs:           make(map[chan setupcheck.SetupStatus]struct{}),
@@ -277,6 +282,21 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 
 // ListenAndServe starts the server
 func (s *Server) ListenAndServe(addr string) error {
+	if s.config != nil && strings.TrimSpace(s.config.PublicServerURL) == "" {
+		host := "127.0.0.1"
+		port := strings.TrimPrefix(addr, ":")
+		if strings.Contains(addr, ":") && !strings.HasPrefix(addr, ":") {
+			if h, p, err := net.SplitHostPort(addr); err == nil {
+				if strings.TrimSpace(h) != "" {
+					host = h
+				}
+				port = p
+			}
+		}
+		if port != "" {
+			s.config.PublicServerURL = "http://" + net.JoinHostPort(host, port)
+		}
+	}
 	return http.ListenAndServe(addr, s.Handler())
 }
 

@@ -25,6 +25,8 @@ export function PermissionRequestCard({
   agentId: string
   onConfirmed: () => void
 }) {
+  const targetAgentId = request.agentId || agentId
+
   return (
     <div className="my-3 rounded-md border border-border bg-card px-5 py-5 shadow-panel">
       <div className="mb-4 flex items-center gap-2">
@@ -56,7 +58,7 @@ export function PermissionRequestCard({
             className={`rounded-md px-4 py-2 text-[13px] font-medium transition ${getOptionClass(option.kind)}`}
             key={option.optionId}
             onClick={async () => {
-              await confirmPermission(agentId, request.toolCall.toolCallId, option.optionId)
+              await confirmPermission(targetAgentId, request.toolCall.toolCallId, option.optionId)
               onConfirmed()
             }}
             type="button"
