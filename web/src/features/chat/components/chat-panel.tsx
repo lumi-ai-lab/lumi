@@ -175,6 +175,7 @@ export function ChatPanel({
   onConfirmPermission,
   onRetryWorkspaceAccess,
   onSend,
+  onSlashCommandsOpen,
   onWorkspaceFilesChanged,
 }: {
   agents: Agent[]
@@ -193,6 +194,7 @@ export function ChatPanel({
   onConfirmPermission: () => void
   onRetryWorkspaceAccess?: () => void
   onSend: (message: string, files: MessageFile[]) => Promise<void>
+  onSlashCommandsOpen?: () => void
   onWorkspaceFilesChanged?: () => void
 }) {
   const { t } = useI18n()
@@ -343,6 +345,7 @@ export function ChatPanel({
                 void onCancel()
               }}
               onSend={onSend}
+              onSlashCommandsOpen={onSlashCommandsOpen}
               onWorkspaceFilesChanged={onWorkspaceFilesChanged}
             />
           </div>

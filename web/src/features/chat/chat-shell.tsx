@@ -241,6 +241,9 @@ export function ChatShell() {
                   void controller.refreshWorkspaces()
                 }}
                 onSend={controller.sendCurrentMessage}
+                onSlashCommandsOpen={() => {
+                  void controller.refreshSkillCommands({ force: true })
+                }}
                 onWorkspaceFilesChanged={() => {
                   controller.requestWorkspaceTreeRefresh({ immediate: true })
                 }}

@@ -19,6 +19,7 @@ import (
 	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/device"
 	"github.com/pengmide/lumi/internal/jsonrpc"
+	"github.com/pengmide/lumi/internal/skills"
 	workspacepreview "github.com/pengmide/lumi/internal/workspace"
 )
 
@@ -203,10 +204,17 @@ func (s *Server) prepareChat(ctx context.Context, req chatRequest) (*chatPrepare
 	workspaceConfig, hasWorkspace := s.resolveWorkspace(workspaceID)
 
 	promptText := req.Message
+	skillCommand, err := s.prepareSkillCommand(req.Message, workspacePath, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if skillCommand.Handled {
+		promptText = skillCommand.PromptText
+	}
 	if len(req.Files) > 0 {
 		promptText = formatFileReferences(req.Files) + " " + promptText
 	}
-	if hasWorkspace && isRemoteWorkspaceConfig(*workspaceConfig) && req.DeviceID != "" {
+	if !skillCommand.Handled && hasWorkspace && isRemoteWorkspaceConfig(*workspaceConfig) && req.DeviceID != "" {
 		expandedPromptText, err := s.expandRemoteFileMentions(ctx, *workspaceConfig, req.Message, promptText)
 		if err != nil {
 			return nil, err
@@ -221,7 +229,7 @@ func (s *Server) prepareChat(ctx context.Context, req chatRequest) (*chatPrepare
 			promptText = context + "User: " + promptText
 		}
 	}
-	if !req.Hidden {
+	if !req.Hidden && !skillCommand.SkipCron {
 		promptText = lumicron.WithAgentToolInstructionsForContext(promptText, lumicron.ToolContext{
 			APIBase:        s.apiBaseForAgent(),
 			Channel:        lumicron.ChannelWeb,
@@ -252,6 +260,93 @@ func (s *Server) prepareChat(ctx context.Context, req chatRequest) (*chatPrepare
 		PromptText:    promptText,
 		MessageFiles:  messageFiles,
 	}, nil
+}
+
+type preparedSkillCommand struct {
+	Handled    bool
+	SkipCron   bool
+	PromptText string
+}
+
+func (s *Server) prepareSkillCommand(message, workspacePath, agentID string) (preparedSkillCommand, error) {
+	trimmed := strings.TrimSpace(message)
+	if !strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "//") {
+		return preparedSkillCommand{}, nil
+	}
+
+	commandLine := strings.TrimPrefix(trimmed, "/")
+	parts := strings.Fields(commandLine)
+	if len(parts) == 0 {
+		return preparedSkillCommand{}, nil
+	}
+	command := parts[0]
+	args := parts[1:]
+
+	agentCfg := s.config.FindAgent(agentID)
+	if agentCfg == nil {
+		return preparedSkillCommand{}, nil
+	}
+	dirs := skills.BuildDirs(workspacePath, *agentCfg)
+	s.skills.SetDirs(dirs)
+
+	if normalizeSkillCommand(command) == "skills" {
+		return preparedSkillCommand{
+			Handled:    true,
+			SkipCron:   true,
+			PromptText: renderSkillsListPrompt(s.skills.ListAll(), dirs),
+		}, nil
+	}
+
+	skill := s.skills.Resolve(command)
+	if skill == nil {
+		return preparedSkillCommand{}, nil
+	}
+	return preparedSkillCommand{
+		Handled:    true,
+		SkipCron:   true,
+		PromptText: skills.BuildInvocationPrompt(skill, args),
+	}, nil
+}
+
+func normalizeSkillCommand(value string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "-", "_"))
+}
+
+func renderSkillsListPrompt(found []*skills.Skill, dirs []string) string {
+	var sb strings.Builder
+	sb.WriteString("Available local skills:\n")
+	if len(found) == 0 {
+		sb.WriteString("No local skills were found.\n\nScan directories:\n")
+		for _, dir := range dirs {
+			sb.WriteString("- ")
+			sb.WriteString(dir)
+			sb.WriteString("\n")
+		}
+		return strings.TrimSpace(sb.String())
+	}
+
+	for _, skill := range found {
+		name := skill.DisplayName
+		if name == "" {
+			name = skill.Name
+		}
+		sb.WriteString("- /")
+		sb.WriteString(skill.Name)
+		sb.WriteString(" - ")
+		sb.WriteString(name)
+		if skill.Description != "" {
+			sb.WriteString(": ")
+			sb.WriteString(skill.Description)
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\nScan directories:\n")
+	for _, dir := range dirs {
+		sb.WriteString("- ")
+		sb.WriteString(dir)
+		sb.WriteString("\n")
+	}
+	return strings.TrimSpace(sb.String())
 }
 
 func (s *Server) expandRemoteFileMentions(ctx context.Context, workspace config.WorkspaceConfig, message string, promptText string) (string, error) {

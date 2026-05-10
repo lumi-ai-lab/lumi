@@ -1,9 +1,33 @@
 export interface SlashCommand {
   name: string;
+  aliases?: string[];
   description: string;
   input?: {
     hint?: string;
   } | null;
+  isSkill?: boolean;
+}
+
+export interface SkillInfo {
+  name: string;
+  aliases?: string[];
+  displayName?: string;
+  description?: string;
+  source: string;
+  skillFile: string;
+}
+
+export interface ProjectSkills {
+  project: string;
+  agentType: string;
+  workspacePath: string;
+  dirs: string[];
+  skillCount: number;
+  skills: SkillInfo[];
+}
+
+export interface SkillsResponse {
+  projects: ProjectSkills[];
 }
 
 export interface AgentModeOption {

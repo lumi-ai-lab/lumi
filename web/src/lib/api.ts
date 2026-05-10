@@ -13,6 +13,7 @@ import type {
   ShareFile,
   Session,
   SessionMeta,
+  SkillsResponse,
   StreamEvent,
   WeComConfig,
   WeComStatus,
@@ -106,6 +107,18 @@ export async function fetchWorkspaces(): Promise<{
 }> {
   const response = await fetch(`${API_BASE}/workspaces`);
   return readJson(response);
+}
+
+export async function fetchSkills(): Promise<SkillsResponse> {
+  const response = await fetch(`${API_BASE}/skills`, {
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+
+  const data = await readJson<Partial<SkillsResponse>>(response);
+  return { projects: data.projects || [] };
 }
 
 export async function fetchDevices(): Promise<DeviceDTO[]> {

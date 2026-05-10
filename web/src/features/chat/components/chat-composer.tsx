@@ -17,6 +17,7 @@ interface ChatComposerProps {
   isSending: boolean
   onCancel: () => void
   onSend: (message: string, files: MessageFile[]) => Promise<void>
+  onSlashCommandsOpen?: () => void
   onWorkspaceFilesChanged?: () => void
 }
 
@@ -29,6 +30,7 @@ export function ChatComposer({
   isSending,
   onCancel,
   onSend,
+  onSlashCommandsOpen,
   onWorkspaceFilesChanged,
 }: ChatComposerProps) {
   const { t } = useI18n()
@@ -222,6 +224,7 @@ export function ChatComposer({
       setShowMentions(false)
       setCommandQuery(slashMatch[1] || '')
       setSelectedIndex(0)
+      onSlashCommandsOpen?.()
       return
     }
 

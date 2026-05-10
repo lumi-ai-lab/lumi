@@ -21,6 +21,7 @@ import (
 	"github.com/pengmide/lumi/internal/router"
 	"github.com/pengmide/lumi/internal/sandbox"
 	"github.com/pengmide/lumi/internal/setupcheck"
+	"github.com/pengmide/lumi/internal/skills"
 	"github.com/pengmide/lumi/internal/storage"
 	"github.com/pengmide/lumi/internal/wechat"
 	"github.com/pengmide/lumi/internal/wecom"
@@ -38,6 +39,7 @@ type Server struct {
 	workspaceStore *storage.WorkspaceStore
 	workspaceSvc   *workspacepreview.Service
 	workspaceDiffs *workspacepreview.ChangesService
+	skills         *skills.Registry
 	devices        *device.Registry
 	sandbox        *sandbox.Manager
 	staticFS       fs.FS
@@ -99,6 +101,7 @@ func NewServer(cfg *config.Config, staticFS fs.FS) *Server {
 		workspaceStore:      storage.NewWorkspaceStore(""),
 		workspaceSvc:        workspacepreview.NewService(),
 		workspaceDiffs:      workspacepreview.NewChangesService(),
+		skills:              skills.NewRegistry(),
 		devices:             devices,
 		sandbox:             sandboxManager,
 		staticFS:            staticFS,
@@ -159,6 +162,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/setup/install", s.handleSetupInstall)
 	mux.HandleFunc("/api/agents", s.handleAgents)
 	mux.HandleFunc("/api/agents/update", s.handleAgentUpdate)
+	mux.HandleFunc("/api/skills/presets", s.handleSkillPresets)
+	mux.HandleFunc("/api/skills", s.handleSkills)
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("/api/workspaces/sandbox/preflight", s.handleSandboxPreflight)
 	mux.HandleFunc("/api/workspaces/files", s.handleWorkspaceFiles)

@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -82,6 +84,66 @@ func TestPrepareChatInjectsCronToolInstructionsForNaturalLanguage(t *testing.T) 
 	}
 	if !strings.Contains(prepared.PromptText, "User: 现在我们有哪些定时任务?") {
 		t.Fatalf("prepared.PromptText missing original user prompt: %q", prepared.PromptText)
+	}
+}
+
+func TestPrepareChatListsSkillsCommand(t *testing.T) {
+	server := newTestAPIServer(t)
+	workspace := server.config.Workspaces[0].Path
+	writeAPITestSkill(t, filepath.Join(workspace, ".claude", "skills", "pdf-helper"), "PDF Helper", "Use PDFs", "# PDF\nInstructions")
+
+	prepared, err := server.prepareChat(context.Background(), chatRequest{
+		Message:     "/skills",
+		WorkspaceID: "default",
+		AgentID:     "claude",
+	})
+	if err != nil {
+		t.Fatalf("prepareChat() error = %v", err)
+	}
+	if !strings.Contains(prepared.PromptText, "/pdf-helper - PDF Helper: Use PDFs") {
+		t.Fatalf("PromptText = %q, want skill list", prepared.PromptText)
+	}
+	if strings.Contains(prepared.PromptText, "Lumi scheduled task protocol:") {
+		t.Fatalf("PromptText includes cron protocol for /skills: %q", prepared.PromptText)
+	}
+}
+
+func TestPrepareChatInvokesSkillByHyphenOrUnderscore(t *testing.T) {
+	server := newTestAPIServer(t)
+	workspace := server.config.Workspaces[0].Path
+	writeAPITestSkill(t, filepath.Join(workspace, ".claude", "skills", "pdf-helper"), "PDF Helper", "Use PDFs", "# PDF\nInstructions")
+
+	prepared, err := server.prepareChat(context.Background(), chatRequest{
+		Message:     "/pdf_helper report.pdf",
+		WorkspaceID: "default",
+		AgentID:     "claude",
+	})
+	if err != nil {
+		t.Fatalf("prepareChat() error = %v", err)
+	}
+	for _, want := range []string{"## Skill: PDF Helper", "## Description: Use PDFs", "# PDF\nInstructions", "## User Arguments:\nreport.pdf"} {
+		if !strings.Contains(prepared.PromptText, want) {
+			t.Fatalf("PromptText missing %q:\n%s", want, prepared.PromptText)
+		}
+	}
+	if strings.Contains(prepared.PromptText, "Lumi scheduled task protocol:") {
+		t.Fatalf("PromptText includes cron protocol for skill invocation: %q", prepared.PromptText)
+	}
+}
+
+func TestPrepareChatLeavesUnknownSlashCommandForAgent(t *testing.T) {
+	server := newTestAPIServer(t)
+
+	prepared, err := server.prepareChat(context.Background(), chatRequest{
+		Message:     "/missing_skill arg",
+		WorkspaceID: "default",
+		AgentID:     "claude",
+	})
+	if err != nil {
+		t.Fatalf("prepareChat() error = %v", err)
+	}
+	if !strings.Contains(prepared.PromptText, "User: /missing_skill arg") {
+		t.Fatalf("prepared.PromptText = %q, want slash command passed through", prepared.PromptText)
 	}
 }
 
@@ -216,5 +278,16 @@ func testSessionUpdate(t *testing.T, params string) *jsonrpc.Message {
 		JSONRPC: "2.0",
 		Method:  "session/update",
 		Params:  json.RawMessage(params),
+	}
+}
+
+func writeAPITestSkill(t *testing.T, dir, name, description, body string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: " + name + "\ndescription: " + description + "\n---\n\n" + body
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

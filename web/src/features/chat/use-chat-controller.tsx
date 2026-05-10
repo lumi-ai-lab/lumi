@@ -27,6 +27,7 @@ interface UseChatControllerOptions {
 }
 
 const WORKSPACE_TREE_REFRESH_WINDOW_MS = 1500
+const SKILL_COMMAND_REFRESH_MS = 3000
 const thinkBlockPattern = /<\s*think(?:ing)?\s*>[\s\S]*?<\s*\/\s*think(?:ing)?\s*>/gi
 const orphanThinkClosePrefixPattern = /^[\s\S]*?<\s*\/\s*think(?:ing)?\s*>/i
 const thinkTagPattern = /<\s*\/?\s*think(?:ing)?\s*>/gi
@@ -38,6 +39,34 @@ function stripThinkTags(content: string) {
     .replace(thinkTagPattern, '')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/^\s*\n/, '')
+}
+
+function mergeSlashCommands(baseCommands: SlashCommand[], skillCommands: SlashCommand[]) {
+  const merged = new Map<string, SlashCommand>()
+  const skillAliases = new Map<string, string>()
+
+  for (const command of skillCommands) {
+    for (const alias of command.aliases || []) {
+      skillAliases.set(normalizeSlashCommandName(alias), command.name)
+    }
+  }
+
+  for (const command of baseCommands) {
+    if (!skillAliases.has(normalizeSlashCommandName(command.name))) {
+      merged.set(command.name, command)
+    }
+  }
+  for (const command of skillCommands) {
+    if (!merged.has(command.name)) {
+      merged.set(command.name, command)
+    }
+  }
+
+  return Array.from(merged.values())
+}
+
+function normalizeSlashCommandName(value: string) {
+  return value.trim().toLowerCase().replaceAll('-', '_')
 }
 
 function toToolStatus(update: SessionUpdate): ToolCall['status'] {
@@ -91,6 +120,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   const [agents, setAgents] = useState<Agent[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [commandsByAgent, setCommandsByAgent] = useState<Record<string, SlashCommand[]>>({})
+  const [skillCommandsByWorkspaceAgent, setSkillCommandsByWorkspaceAgent] = useState<Record<string, SlashCommand[]>>({})
   const [defaultAgent, setDefaultAgent] = useState('claude')
   const [defaultWorkspace, setDefaultWorkspace] = useState('')
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
@@ -118,6 +148,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   const workspacesRef = useRef<Workspace[]>([])
   const workspaceTreeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingWorkspaceTreeRefreshRef = useRef<string | null>(null)
+  const skillRefreshRef = useRef({ key: '', timestamp: 0 })
 
   useEffect(() => {
     sessionDetailsRef.current = sessionDetails
@@ -165,7 +196,11 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     (session) => !currentWorkspace || session.workspaceId === currentWorkspace || !session.workspaceId
   )
   const streamItems = currentSessionId ? streamItemsBySession[currentSessionId] || [] : []
-  const commands = commandsByAgent[currentAgent] || []
+  const skillCommandKey = currentWorkspace && currentAgent ? `${currentWorkspace}:${currentAgent}` : ''
+  const commands = mergeSlashCommands(
+    commandsByAgent[currentAgent] || [],
+    skillCommandKey ? skillCommandsByWorkspaceAgent[skillCommandKey] || [] : []
+  )
 
   const scheduleWorkspaceTreeRefreshWindow = () => {
     if (workspaceTreeRefreshTimerRef.current) {
@@ -442,6 +477,51 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     }))
   }
 
+  const refreshSkillCommands = useCallback(async (options?: { force?: boolean }) => {
+    const workspaceId = currentWorkspaceRef.current
+    const agentId = currentAgentRef.current
+    if (!workspaceId || !agentId) return
+
+    const key = `${workspaceId}:${agentId}`
+    const now = Date.now()
+    if (
+      !options?.force &&
+      skillRefreshRef.current.key === key &&
+      now - skillRefreshRef.current.timestamp < SKILL_COMMAND_REFRESH_MS
+    ) {
+      return
+    }
+
+    skillRefreshRef.current = { key, timestamp: now }
+
+    try {
+      const data = await api.fetchSkills()
+      const agent = agents.find((item) => item.id === agentId)
+      const project = data.projects.find((item) => {
+        if (item.project !== workspaceId) return false
+        if (!agent?.backend) return true
+        return item.agentType === agent.backend
+      })
+
+      setSkillCommandsByWorkspaceAgent((current) => ({
+        ...current,
+        [key]: (project?.skills || []).map((skill) => ({
+          name: skill.name,
+          aliases: skill.aliases || [],
+          description: skill.description || skill.displayName || 'Run local skill',
+          input: { hint: 'arguments' },
+          isSkill: true,
+        })),
+      }))
+    } catch (error) {
+      console.warn('Failed to load skills', error)
+      setSkillCommandsByWorkspaceAgent((current) => ({
+        ...current,
+        [key]: [],
+      }))
+    }
+  }, [agents])
+
   const loadWorkspaces = useCallback(async () => {
     const data = await api.fetchWorkspaces()
     const nextWorkspaces = data.workspaces.map(normalizeWorkspace)
@@ -569,6 +649,12 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
 
     return () => window.clearInterval(intervalId)
   }, [currentWorkspaceInfo, loadWorkspaces])
+
+  useEffect(() => {
+    if (!initialized || !currentWorkspace || !currentAgent) return
+
+    void refreshSkillCommands()
+  }, [currentAgent, currentWorkspace, initialized, refreshSkillCommands])
 
   const createNewSession = async () => {
     setIsLoading(true)
@@ -1008,6 +1094,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     handlePermissionConfirmed: () => setPendingPermission(null),
     loadSessions,
     refreshCronJobs: loadCronJobs,
+    refreshSkillCommands,
     removeSession,
     selectSession,
     sendCurrentMessage,
