@@ -54,7 +54,7 @@ func (c *Client) handleWorkspaceRequest(ctx context.Context, env Envelope) {
 func (c *Client) executeWorkspaceRequest(ctx context.Context, typ MessageType, payload WorkspaceRequestPayload) (any, error) {
 	switch typ {
 	case MsgWorkspaceTree:
-		tree, err := c.files.ListTree(payload.WorkspacePath)
+		tree, err := c.files.ListTreeDirectory(payload.WorkspacePath, payload.Path)
 		if err != nil {
 			return nil, err
 		}

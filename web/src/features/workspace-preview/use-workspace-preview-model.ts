@@ -54,6 +54,7 @@ function toWorkspaceTreeNode(entry: WorkspaceTreeEntry): WorkspaceTreeNode {
     type: entry.isDir ? "folder" : "file",
     kind: entry.isDir ? undefined : mapPreviewKind(entry.previewKind),
     previewPath: entry.path,
+    loaded: entry.isDir ? Boolean(entry.loaded) : true,
     children: entry.children?.map(toWorkspaceTreeNode),
   };
 }
@@ -212,6 +213,39 @@ function mergeTreeWithChanges(
   return mergedNodes;
 }
 
+function updateTreeNodeChildren(
+  nodes: WorkspaceTreeNode[],
+  targetPath: string,
+  children: WorkspaceTreeNode[],
+): WorkspaceTreeNode[] {
+  return nodes.map((node) => {
+    if (node.path === targetPath && node.type === "folder") {
+      return {
+        ...node,
+        children,
+        loaded: true,
+      };
+    }
+
+    if (!node.children?.length) {
+      return node;
+    }
+
+    return {
+      ...node,
+      children: updateTreeNodeChildren(node.children, targetPath, children),
+    };
+  });
+}
+
+function changesForLoadedDirectory(
+  changes: WorkspaceChange[],
+  directoryPath: string,
+) {
+  const prefix = `${directoryPath}/`;
+  return changes.filter((change) => change.path.startsWith(prefix));
+}
+
 function buildSummary(meta: WorkspaceFileMeta, truncated?: boolean) {
   const parts = [formatFileSize(meta.size)];
   if (meta.mime) {
@@ -327,6 +361,9 @@ export function useWorkspacePreviewModel(
     Record<string, WorkspacePreviewDocument>
   >({});
   const [isLoadingTree, setIsLoadingTree] = useState(false);
+  const [loadingDirectoryPaths, setLoadingDirectoryPaths] = useState<
+    Record<string, boolean>
+  >({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const treeRequestIdRef = useRef(0);
   const lastRefreshTokenRef = useRef(refreshToken);
@@ -416,6 +453,42 @@ export function useWorkspacePreviewModel(
     [workspace],
   );
 
+  const loadDirectory = useCallback(
+    async (path: string) => {
+      if (!workspace || !model) {
+        return;
+      }
+
+      setLoadingDirectoryPaths((current) => ({ ...current, [path]: true }));
+      try {
+        const children = (await fetchWorkspaceTree(workspace.id, path)).map(
+          toWorkspaceTreeNode,
+        );
+        setModel((current) => {
+          if (!current || current.workspaceId !== workspace.id) {
+            return current;
+          }
+          const nextChildren = mergeTreeWithChanges(
+            children,
+            changesForLoadedDirectory(current.changes, path),
+          );
+
+          return {
+            ...current,
+            nodes: updateTreeNodeChildren(current.nodes, path, nextChildren),
+          };
+        });
+      } finally {
+        setLoadingDirectoryPaths((current) => {
+          const next = { ...current };
+          delete next[path];
+          return next;
+        });
+      }
+    },
+    [model, workspace],
+  );
+
   useEffect(() => {
     if (!workspace) {
       setModel(null);
@@ -498,7 +571,9 @@ export function useWorkspacePreviewModel(
   return {
     documents,
     isLoadingTree,
+    loadingDirectoryPaths,
     loadError,
+    loadDirectory,
     loadDocument,
     model,
     reloadTree: () => loadTree(),

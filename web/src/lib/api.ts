@@ -205,8 +205,12 @@ export async function fetchWorkspaceFiles(
 
 export async function fetchWorkspaceTree(
   workspaceId: string,
+  path = "",
 ): Promise<WorkspaceTreeEntry[]> {
   const params = new URLSearchParams({ workspaceId });
+  if (path) {
+    params.set("path", path);
+  }
   const response = await fetch(`${API_BASE}/workspaces/tree?${params}`, {
     cache: "no-store",
   });

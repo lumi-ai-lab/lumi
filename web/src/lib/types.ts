@@ -418,6 +418,7 @@ export interface WorkspaceTreeEntry {
   isDir: boolean;
   previewKind?: WorkspacePreviewKind;
   children?: WorkspaceTreeEntry[];
+  loaded?: boolean;
 }
 
 export interface WorkspaceFileMeta {

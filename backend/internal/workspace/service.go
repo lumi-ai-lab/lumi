@@ -59,6 +59,7 @@ type TreeNode struct {
 	IsDir       bool        `json:"isDir"`
 	PreviewKind PreviewKind `json:"previewKind,omitempty"`
 	Children    []TreeNode  `json:"children,omitempty"`
+	Loaded      bool        `json:"loaded,omitempty"`
 }
 
 type FileMeta struct {
@@ -90,6 +91,10 @@ func NewService() *Service {
 }
 
 func (s *Service) ListTree(root string) ([]TreeNode, error) {
+	return s.ListTreeDirectory(root, "")
+}
+
+func (s *Service) ListTreeDirectory(root string, relativePath string) ([]TreeNode, error) {
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, ErrWorkspaceUnavailable
@@ -100,15 +105,24 @@ func (s *Service) ListTree(root string) ([]TreeNode, error) {
 		return nil, ErrWorkspaceUnavailable
 	}
 
-	return s.listDirectory(rootAbs, "")
-}
-
-func (s *Service) listDirectory(rootAbs string, relativePath string) ([]TreeNode, error) {
-	dirPath := rootAbs
-	if relativePath != "" {
-		dirPath = filepath.Join(rootAbs, relativePath)
+	resolvedPath := rootAbs
+	normalized := ""
+	if strings.TrimSpace(relativePath) != "" {
+		resolved, err := s.ResolveFile(root, relativePath)
+		if err != nil {
+			return nil, err
+		}
+		if !resolved.Info.IsDir() {
+			return nil, ErrIsDirectory
+		}
+		resolvedPath = resolved.AbsolutePath
+		normalized = resolved.RelativePath
 	}
 
+	return s.listDirectory(rootAbs, resolvedPath, normalized)
+}
+
+func (s *Service) listDirectory(rootAbs string, dirPath string, relativePath string) ([]TreeNode, error) {
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		return nil, err
@@ -132,11 +146,7 @@ func (s *Service) listDirectory(rootAbs string, relativePath string) ([]TreeNode
 		}
 
 		if entry.IsDir() {
-			children, err := s.listDirectory(rootAbs, entryRelative)
-			if err != nil {
-				return nil, err
-			}
-			node.Children = children
+			node.Loaded = false
 		} else {
 			node.PreviewKind = DetectPreviewKind(name)
 		}

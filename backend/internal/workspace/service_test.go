@@ -29,20 +29,40 @@ func TestListTreeSkipsHiddenAndBuildsKinds(t *testing.T) {
 		t.Fatalf("expected 4 top-level nodes, got %d", len(tree))
 	}
 
-	srcNode := findTreeNode(tree, "src/main.ts")
-	if srcNode == nil {
-		t.Fatalf("expected src/main.ts to exist in tree")
+	srcNode := findTreeNode(tree, "src")
+	if srcNode == nil || !srcNode.IsDir {
+		t.Fatalf("expected src folder to exist in tree")
 	}
-	if srcNode.PreviewKind != PreviewKindCode {
-		t.Fatalf("expected src/main.ts preview kind %q, got %q", PreviewKindCode, srcNode.PreviewKind)
+	if len(srcNode.Children) != 0 {
+		t.Fatalf("expected src folder children to be loaded lazily, got %#v", srcNode.Children)
 	}
 
-	mdNode := findTreeNode(tree, "docs/readme.md")
+	srcTree, err := service.ListTreeDirectory(root, "src")
+	if err != nil {
+		t.Fatalf("ListTreeDirectory(src) error = %v", err)
+	}
+	mainNode := findTreeNode(srcTree, "src/main.ts")
+	if mainNode == nil {
+		t.Fatalf("expected src/main.ts to exist in src tree")
+	}
+	if mainNode.PreviewKind != PreviewKindCode {
+		t.Fatalf("expected src/main.ts preview kind %q, got %q", PreviewKindCode, mainNode.PreviewKind)
+	}
+
+	docsTree, err := service.ListTreeDirectory(root, "docs")
+	if err != nil {
+		t.Fatalf("ListTreeDirectory(docs) error = %v", err)
+	}
+	mdNode := findTreeNode(docsTree, "docs/readme.md")
 	if mdNode == nil || mdNode.PreviewKind != PreviewKindMarkdown {
 		t.Fatalf("expected docs/readme.md markdown preview kind, got %#v", mdNode)
 	}
 
-	htmlNode := findTreeNode(tree, "public/index.html")
+	publicTree, err := service.ListTreeDirectory(root, "public")
+	if err != nil {
+		t.Fatalf("ListTreeDirectory(public) error = %v", err)
+	}
+	htmlNode := findTreeNode(publicTree, "public/index.html")
 	if htmlNode == nil || htmlNode.PreviewKind != PreviewKindHTML {
 		t.Fatalf("expected public/index.html html preview kind, got %#v", htmlNode)
 	}
@@ -52,6 +72,31 @@ func TestListTreeSkipsHiddenAndBuildsKinds(t *testing.T) {
 	}
 	if gitNode := findTreeNode(tree, ".git/HEAD"); gitNode != nil {
 		t.Fatalf("expected .git contents to be skipped")
+	}
+}
+
+func TestListTreeDirectorySkipsLargeGeneratedDirectories(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "src", "main.ts"), "export const ready = true\n")
+	mustWriteFile(t, filepath.Join(root, "node_modules", "pkg", "index.js"), "module.exports = {}\n")
+	mustWriteFile(t, filepath.Join(root, "dist", "bundle.js"), "compiled\n")
+
+	service := NewService()
+	tree, err := service.ListTreeDirectory(root, "")
+	if err != nil {
+		t.Fatalf("ListTreeDirectory(root) error = %v", err)
+	}
+
+	if node := findTreeNode(tree, "src"); node == nil {
+		t.Fatalf("expected src folder to be listed")
+	}
+	if node := findTreeNode(tree, "node_modules"); node != nil {
+		t.Fatalf("expected node_modules to be skipped")
+	}
+	if node := findTreeNode(tree, "dist"); node != nil {
+		t.Fatalf("expected dist to be skipped")
 	}
 }
 

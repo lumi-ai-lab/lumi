@@ -18,7 +18,7 @@ mkdir -p "$(dirname "$OUT")"
 
 cd "$ROOT_DIR/backend"
 CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
-  go build -trimpath -ldflags="-s -w" \
+  go build -buildvcs=false -trimpath -ldflags="-s -w" \
   -o "$OUT" ./cmd/device-executor
 
 chmod 0755 "$OUT"

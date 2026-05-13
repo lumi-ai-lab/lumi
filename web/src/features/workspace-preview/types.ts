@@ -27,6 +27,7 @@ export interface WorkspaceTreeNode {
   type: "folder" | "file";
   kind?: PreviewKind;
   previewPath?: string;
+  loaded?: boolean;
   changeStatus?: WorkspaceChange["status"];
   changePreviewPath?: string;
   isDeletedSynthetic?: boolean;

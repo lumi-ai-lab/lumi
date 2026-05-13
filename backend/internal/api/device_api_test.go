@@ -695,9 +695,18 @@ func TestRemoteWorkspaceTreeUsesConnectedDevice(t *testing.T) {
 			close(treeDone)
 			return
 		}
+		var payload device.WorkspaceRequestPayload
+		if err := json.Unmarshal(env.Payload, &payload); err != nil {
+			t.Errorf("json.Unmarshal(workspace request payload) error = %v", err)
+			close(treeDone)
+			return
+		}
+		if payload.Path != "docs" {
+			t.Errorf("workspace request path = %q, want docs", payload.Path)
+		}
 		resp, err := device.NewEnvelope(device.MsgWorkspaceResponse, env.ID, "dev-1", "", device.WorkspaceResponsePayload{
 			OK:      true,
-			Payload: json.RawMessage(`{"tree":[{"path":"README.md","name":"README.md","isDir":false,"previewKind":"markdown"}]}`),
+			Payload: json.RawMessage(`{"tree":[{"path":"docs/README.md","name":"README.md","isDir":false,"previewKind":"markdown"}]}`),
 		})
 		if err != nil {
 			t.Errorf("NewEnvelope(workspace.response) error = %v", err)
@@ -710,7 +719,7 @@ func TestRemoteWorkspaceTreeUsesConnectedDevice(t *testing.T) {
 		close(treeDone)
 	}()
 
-	resp, err := http.Get(httpServer.URL + "/api/workspaces/tree?workspaceId=remote-ws")
+	resp, err := http.Get(httpServer.URL + "/api/workspaces/tree?workspaceId=remote-ws&path=docs")
 	if err != nil {
 		t.Fatalf("GET tree error = %v", err)
 	}
@@ -726,8 +735,8 @@ func TestRemoteWorkspaceTreeUsesConnectedDevice(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	if len(response.Tree) != 1 || response.Tree[0]["path"] != "README.md" {
-		t.Fatalf("tree = %+v, want README.md", response.Tree)
+	if len(response.Tree) != 1 || response.Tree[0]["path"] != "docs/README.md" {
+		t.Fatalf("tree = %+v, want docs/README.md", response.Tree)
 	}
 	<-treeDone
 }
@@ -757,5 +766,36 @@ func TestLocalWorkspaceTreeStillReadsBackendFilesystem(t *testing.T) {
 	}
 	if len(response.Tree) != 1 || response.Tree[0]["path"] != "local.txt" {
 		t.Fatalf("tree = %+v, want local.txt", response.Tree)
+	}
+}
+
+func TestLocalWorkspaceTreeReadsRequestedDirectoryOnly(t *testing.T) {
+	server := newTestAPIServer(t)
+	workspaceDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspaceDir, "docs"), 0755); err != nil {
+		t.Fatalf("MkdirAll(docs) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceDir, "docs", "readme.md"), []byte("# docs"), 0644); err != nil {
+		t.Fatalf("WriteFile(readme.md) error = %v", err)
+	}
+	server.config.Workspaces = []config.WorkspaceConfig{
+		{ID: "local-ws", Name: "Local", Path: workspaceDir},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/tree?workspaceId=local-ws&path=docs", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var response struct {
+		Tree []map[string]any `json:"tree"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(response.Tree) != 1 || response.Tree[0]["path"] != "docs/readme.md" {
+		t.Fatalf("tree = %+v, want docs/readme.md", response.Tree)
 	}
 }

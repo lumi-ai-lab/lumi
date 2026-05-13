@@ -22,7 +22,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useI18n } from "@/features/i18n/i18n-provider";
-import { collectInitialExpandedPaths } from "@/features/workspace-preview/mock-data";
 import type {
   PreviewKind,
   WorkspacePreviewDocument,
@@ -408,6 +407,7 @@ function WorkspaceTree({
   onOpenChange,
   onToggleFolder,
   onOpenFile,
+  loadingDirectoryPaths,
   depth = 0,
 }: {
   nodes: WorkspaceTreeNode[];
@@ -416,6 +416,7 @@ function WorkspaceTree({
   onOpenChange: (previewPath: string, selectedPath: string) => void;
   onToggleFolder: (path: string) => void;
   onOpenFile: (previewPath: string, selectedPath: string) => void;
+  loadingDirectoryPaths: Record<string, boolean>;
   depth?: number;
 }) {
   const { t } = useI18n();
@@ -425,6 +426,7 @@ function WorkspaceTree({
       {nodes.map((node) => {
         const isFolder = node.type === "folder";
         const isExpanded = isFolder && expandedPaths.has(node.path);
+        const isLoadingFolder = isFolder && Boolean(loadingDirectoryPaths[node.path]);
         const previewPath = node.previewPath || node.path;
         const isSelected = !isFolder && selectedPath === previewPath;
         const Icon = getNodeIcon(node.kind, isExpanded, !isFolder);
@@ -442,7 +444,9 @@ function WorkspaceTree({
                 style={rowPadding}
                 type="button"
               >
-                {isExpanded ? (
+                {isLoadingFolder ? (
+                  <RefreshCw className="h-3.5 w-3.5 flex-shrink-0 animate-spin" />
+                ) : isExpanded ? (
                   <ChevronDown className="h-3.5 w-3.5 flex-shrink-0" />
                 ) : (
                   <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" />
@@ -455,6 +459,7 @@ function WorkspaceTree({
                 <WorkspaceTree
                   depth={depth + 1}
                   expandedPaths={expandedPaths}
+                  loadingDirectoryPaths={loadingDirectoryPaths}
                   nodes={node.children}
                   onOpenChange={onOpenChange}
                   onOpenFile={onOpenFile}
@@ -658,6 +663,7 @@ function WorkspacePanelContent({
   expandedPaths,
   filteredNodes,
   isLoadingTree,
+  loadingDirectoryPaths,
   onClose,
   onOpenChange,
   onOpenFile,
@@ -675,6 +681,7 @@ function WorkspacePanelContent({
   expandedPaths: Set<string>;
   filteredNodes: WorkspaceTreeNode[];
   isLoadingTree: boolean;
+  loadingDirectoryPaths: Record<string, boolean>;
   onClose?: () => void;
   onOpenChange: (previewPath: string, path: string) => void;
   onOpenFile: (previewPath: string, selectedPath: string) => void;
@@ -757,6 +764,7 @@ function WorkspacePanelContent({
                 {filteredNodes.length ? (
                   <WorkspaceTree
                     expandedPaths={expandedPaths}
+                    loadingDirectoryPaths={loadingDirectoryPaths}
                     nodes={filteredNodes}
                     onOpenChange={onOpenChange}
                     onOpenFile={onOpenFile}
@@ -773,6 +781,7 @@ function WorkspacePanelContent({
             ) : filteredNodes.length ? (
               <WorkspaceTree
                 expandedPaths={expandedPaths}
+                loadingDirectoryPaths={loadingDirectoryPaths}
                 nodes={filteredNodes}
                 onOpenChange={onOpenChange}
                 onOpenFile={onOpenFile}
@@ -819,9 +828,17 @@ export function WorkspacePreviewPane({
   const [activePreviewPath, setActivePreviewPath] = useState<string | null>(
     null,
   );
-  const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
+  const [workspaceCollapsed, setWorkspaceCollapsed] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const { isLoadingTree, loadDocument, loadError, model, reloadTree } =
+  const {
+    isLoadingTree,
+    loadDirectory,
+    loadingDirectoryPaths,
+    loadDocument,
+    loadError,
+    model,
+    reloadTree,
+  } =
     useWorkspacePreviewModel(workspace, refreshToken);
   const isWorkspaceBlocked = isWorkspaceInteractionBlocked(workspace);
 
@@ -832,14 +849,6 @@ export function WorkspacePreviewPane({
     setActivePreviewPath(null);
     setExpandedPaths([]);
   }, [model?.workspaceId]);
-
-  useEffect(() => {
-    if (!model?.nodes.length || expandedPaths.length > 0) {
-      return;
-    }
-
-    setExpandedPaths(collectInitialExpandedPaths(model.nodes));
-  }, [expandedPaths.length, model?.nodes]);
 
   useEffect(() => {
     if (!isCompact) {
@@ -965,6 +974,12 @@ export function WorkspacePreviewPane({
   };
 
   const toggleFolder = (path: string) => {
+    if (!model) {
+      return;
+    }
+
+    const node = findTreeNodeByPath(model.nodes, path);
+    const shouldExpand = !expandedPaths.includes(path);
     setExpandedPaths((current) => {
       if (current.includes(path)) {
         return current.filter((item) => item !== path);
@@ -972,6 +987,9 @@ export function WorkspacePreviewPane({
 
       return [...current, path];
     });
+    if (shouldExpand && node?.type === "folder" && !node.loaded) {
+      void loadDirectory(path);
+    }
   };
 
   const workspaceContent = (
@@ -979,6 +997,7 @@ export function WorkspacePreviewPane({
       expandedPaths={visibleExpandedPaths}
       filteredNodes={filteredNodes}
       isLoadingTree={isLoadingTree}
+      loadingDirectoryPaths={loadingDirectoryPaths}
       onClose={() => setWorkspaceCollapsed(true)}
       onOpenChange={openDocument}
       onOpenFile={openDocument}

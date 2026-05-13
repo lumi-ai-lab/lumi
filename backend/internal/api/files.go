@@ -119,7 +119,7 @@ func (s *Server) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
 		var response struct {
 			Tree []workspacepreview.TreeNode `json:"tree"`
 		}
-		if err := s.deviceWorkspacePayload(r.Context(), runtimeInfo.DeviceID, runtimeInfo.WorkspacePath, device.MsgWorkspaceTree, device.WorkspaceRequestPayload{}, &response); err != nil {
+		if err := s.deviceWorkspacePayload(r.Context(), runtimeInfo.DeviceID, runtimeInfo.WorkspacePath, device.MsgWorkspaceTree, device.WorkspaceRequestPayload{Path: r.URL.Query().Get("path")}, &response); err != nil {
 			writeRuntimeWorkspaceError(w, runtimeInfo, err)
 			return
 		}
@@ -131,9 +131,9 @@ func (s *Server) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tree, err := s.workspaceSvc.ListTree(runtimeInfo.WorkspacePath)
+	tree, err := s.workspaceSvc.ListTreeDirectory(runtimeInfo.WorkspacePath, r.URL.Query().Get("path"))
 	if err != nil {
-		writeError(w, "Failed to load workspace tree", http.StatusInternalServerError)
+		writeWorkspacePreviewError(w, err)
 		return
 	}
 
