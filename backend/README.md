@@ -20,6 +20,13 @@ go build -o lumi ./cmd/lumi
 
 # Default (uses embedded web files if available)
 ./lumi
+
+# Explicit server command
+./lumi server -config lumi.config.json -port 3000
+
+# CLI commands without opening the web UI
+./lumi setup
+./lumi cron list
 ```
 
 ## Configuration

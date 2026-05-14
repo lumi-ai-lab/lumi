@@ -40,13 +40,16 @@ func lumiAPIBaseForConfig(cfg *config.Config) string {
 func resolveLumiCLIPath() string {
 	candidates := []string{
 		os.Getenv("LUMI_CLI"),
-		filepath.Join(executableDir(), "lumi-cli"),
-		filepath.Join(executableDir(), "..", "cli", "lumi-cli"),
-		filepath.Join(executableDir(), "..", "cli", "lumi-cli.exe"),
-		filepath.Join(currentWorkingDir(), "cli", "lumi-cli"),
-		filepath.Join(currentWorkingDir(), "cli", "lumi-cli.exe"),
-		filepath.Join(currentWorkingDir(), "..", "cli", "lumi-cli"),
-		filepath.Join(currentWorkingDir(), "..", "cli", "lumi-cli.exe"),
+		filepath.Join(executableDir(), "lumi"),
+		filepath.Join(executableDir(), "lumi.exe"),
+		filepath.Join(executableDir(), "..", "backend", "lumi"),
+		filepath.Join(executableDir(), "..", "backend", "lumi.exe"),
+		filepath.Join(currentWorkingDir(), "backend", "lumi"),
+		filepath.Join(currentWorkingDir(), "backend", "lumi.exe"),
+		filepath.Join(currentWorkingDir(), "lumi"),
+		filepath.Join(currentWorkingDir(), "lumi.exe"),
+		filepath.Join(currentWorkingDir(), "..", "backend", "lumi"),
+		filepath.Join(currentWorkingDir(), "..", "backend", "lumi.exe"),
 	}
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)

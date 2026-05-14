@@ -198,6 +198,16 @@ cd ../backend && go build -o lumi ./cmd/lumi
 
 访问 http://localhost:3000
 
+`lumi` 也内置 CLI 子命令，可在不打开 Web 的情况下管理系统能力：
+
+```bash
+./lumi setup
+./lumi cron list
+./lumi wecom run --workspace <path> --agent <id> --bot-id <id> --bot-secret <secret>
+```
+
+`lumi wecom run` 不需要打开 Web 页面，但会启动本地 Lumi runtime，默认监听 `3000` 端口；如需避开端口冲突，可传 `--port` 或设置 `LUMI_PORT`。
+
 ### 5. Linux 上的 Claude ACP 运行注意事项
 
 如果你在 Linux 服务器上通过 `@agentclientprotocol/claude-agent-acp@0.30.0` 使用 Claude，且系统自带的 `glibc` 版本较老（例如部分 CentOS 7 / RHEL 7 环境），SDK 默认下载的 Linux native `claude` binary 可能无法启动。

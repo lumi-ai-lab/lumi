@@ -9,9 +9,9 @@ const AgentToolInstructions = `You are running inside Lumi.
 
 When the user asks you to do something on a schedule, use Bash:
 
-  lumi-cli cron add --cron "<min> <hour> <day> <month> <weekday>" --prompt "<task description>" --desc "<short label>"
+  lumi cron add --cron "<min> <hour> <day> <month> <weekday>" --prompt "<task description>" --desc "<short label>"
 
-If LUMI_CLI is set, use "$LUMI_CLI" instead of "lumi-cli":
+If LUMI_CLI is set, use "$LUMI_CLI" instead of "lumi":
 
   "$LUMI_CLI" cron add --cron "<min> <hour> <day> <month> <weekday>" --prompt "<task description>" --desc "<short label>"
 
@@ -27,19 +27,19 @@ Environment variables are already set:
 
 Examples:
 
-  lumi-cli cron add --cron "0 8 * * *" --prompt "检查项目状态并总结" --desc "每日项目状态"
-  lumi-cli cron add --cron "0 9 * * 1" --prompt "生成本周项目进展报告" --desc "每周项目报告"
-  lumi-cli cron add --cron "*/30 * * * *" --exec "df -h" --session-mode new-per-run --timeout-mins 5 --desc "磁盘空间检查"
-  lumi-cli cron list
-  lumi-cli cron info <job-id>
-  lumi-cli cron edit <job-id> cronExpr "0 10 * * *"
-  lumi-cli cron edit <job-id> enabled false
-  lumi-cli cron edit <job-id> enabled true
-  lumi-cli cron edit <job-id> mute true
-  lumi-cli cron edit <job-id> mute false
-  lumi-cli cron edit <job-id> silent true
-  lumi-cli cron edit <job-id> timeoutMins 60
-  lumi-cli cron del <job-id>
+  lumi cron add --cron "0 8 * * *" --prompt "检查项目状态并总结" --desc "每日项目状态"
+  lumi cron add --cron "0 9 * * 1" --prompt "生成本周项目进展报告" --desc "每周项目报告"
+  lumi cron add --cron "*/30 * * * *" --exec "df -h" --session-mode new-per-run --timeout-mins 5 --desc "磁盘空间检查"
+  lumi cron list
+  lumi cron info <job-id>
+  lumi cron edit <job-id> cronExpr "0 10 * * *"
+  lumi cron edit <job-id> enabled false
+  lumi cron edit <job-id> enabled true
+  lumi cron edit <job-id> mute true
+  lumi cron edit <job-id> mute false
+  lumi cron edit <job-id> silent true
+  lumi cron edit <job-id> timeoutMins 60
+  lumi cron del <job-id>
 
 Pause or stop a scheduled task by setting enabled false. Resume it with enabled true.
 Mute means the task still runs but sends no start or result messages. Silent only suppresses the start notification.
@@ -89,9 +89,9 @@ Current Lumi context:
 		instructions += `
 
 If your shell does not have these environment variables, pass the same values with CLI flags such as --channel, --conversation-id, --agent-id, and --workspace-id.`
-		command := `lumi-cli`
+		command := `lumi`
 		if ctx.APIBase != "" || ctx.Channel != "" || ctx.ConversationID != "" || ctx.AgentID != "" || ctx.WorkspaceID != "" {
-			command = fmt.Sprintf(`lumi-cli cron add --api-base %q --channel %q --conversation-id %q --agent-id %q --workspace-id %q --cron "<min> <hour> <day> <month> <weekday>" --prompt "<task description>" --desc "<short label>"`,
+			command = fmt.Sprintf(`lumi cron add --api-base %q --channel %q --conversation-id %q --agent-id %q --workspace-id %q --cron "<min> <hour> <day> <month> <weekday>" --prompt "<task description>" --desc "<short label>"`,
 				ctx.APIBase, ctx.Channel, ctx.ConversationID, ctx.AgentID, ctx.WorkspaceID)
 			if ctx.WorkspacePath != "" {
 				command = strings.Replace(command, ` --cron `, fmt.Sprintf(` --work-dir %q --cron `, ctx.WorkspacePath), 1)

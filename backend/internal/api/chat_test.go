@@ -76,7 +76,7 @@ func TestPrepareChatInjectsCronToolInstructionsForNaturalLanguage(t *testing.T) 
 	if err != nil {
 		t.Fatalf("prepareChat() error = %v", err)
 	}
-	if !strings.Contains(prepared.PromptText, "lumi-cli cron add") {
+	if !strings.Contains(prepared.PromptText, "lumi cron add") {
 		t.Fatalf("prepared.PromptText missing cron CLI instructions: %q", prepared.PromptText)
 	}
 	if strings.Contains(prepared.PromptText, "[CRON_") {

@@ -16,10 +16,5 @@ echo "Building backend binary..."
 cd "$REPO_DIR/backend"
 go build -buildvcs=false -o lumi ./cmd/lumi
 
-echo "Building Lumi CLI..."
-cd "$REPO_DIR/cli"
-go build -buildvcs=false -o lumi-cli .
-
 echo "Build complete:"
 echo "  $REPO_DIR/backend/lumi"
-echo "  $REPO_DIR/cli/lumi-cli"

@@ -10,7 +10,7 @@ import (
 )
 
 func TestInjectLumiAgentEnv(t *testing.T) {
-	cliPath := filepath.Join(t.TempDir(), "lumi-cli")
+	cliPath := filepath.Join(t.TempDir(), "lumi")
 	if err := os.WriteFile(cliPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

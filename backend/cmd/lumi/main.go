@@ -12,16 +12,49 @@ import (
 
 	"github.com/pengmide/lumi/internal/api"
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/pkg/lumicmd"
 	"github.com/pengmide/lumi/web"
 )
 
 func main() {
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "server":
+			return runServer(args[1:])
+		case "cron", "setup", "wecom":
+			return lumicmd.Run(args, os.Stdin, os.Stdout, os.Stderr)
+		case "help", "-h", "--help":
+			printUsage()
+			return nil
+		}
+		if !strings.HasPrefix(args[0], "-") {
+			return fmt.Errorf("unknown command: %s", args[0])
+		}
+	}
+	return runServer(args)
+}
+
+func runServer(args []string) error {
+	serverFlags := flag.NewFlagSet("server", flag.ContinueOnError)
+	serverFlags.SetOutput(os.Stdout)
 	var (
-		configPath = flag.String("config", "", "Config file path")
-		port       = flag.String("port", "3000", "Server port")
-		webDir     = flag.String("web", "", "Web directory (overrides embedded)")
+		configPath = serverFlags.String("config", "", "Config file path")
+		port       = serverFlags.String("port", "3000", "Server port")
+		webDir     = serverFlags.String("web", "", "Web directory (overrides embedded)")
 	)
-	flag.Parse()
+	if err := serverFlags.Parse(args); err != nil {
+		return err
+	}
+	if serverFlags.NArg() > 0 {
+		return fmt.Errorf("unexpected server argument: %s", serverFlags.Arg(0))
+	}
 
 	// Ensure config exists (copy example if needed)
 	if err := config.EnsureConfigExists(); err != nil {
@@ -31,13 +64,11 @@ func main() {
 	// Load config
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to load config: %w", err)
 	}
 
 	if err := cfg.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid config: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("invalid config: %w", err)
 	}
 
 	// Print startup info
@@ -94,9 +125,18 @@ func main() {
 	printServerBanner(*port)
 	addr := ":" + *port
 	if err := server.ListenAndServe(addr); err != nil {
-		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("server error: %w", err)
 	}
+	return nil
+}
+
+func printUsage() {
+	fmt.Fprintln(os.Stdout, "Usage:")
+	fmt.Fprintln(os.Stdout, "  lumi [--config <path>] [--port <port>] [--web <dir>]")
+	fmt.Fprintln(os.Stdout, "  lumi server [--config <path>] [--port <port>] [--web <dir>]")
+	fmt.Fprintln(os.Stdout, "  lumi cron <command> [flags]")
+	fmt.Fprintln(os.Stdout, "  lumi setup [flags]")
+	fmt.Fprintln(os.Stdout, "  lumi wecom <command> [flags]")
 }
 
 func printStartupInfo(cfg *config.Config, configPath string) {

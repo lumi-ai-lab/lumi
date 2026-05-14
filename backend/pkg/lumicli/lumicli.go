@@ -129,7 +129,7 @@ func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, er
 	}
 	cfg := state.Config
 	if len(cfg.Agents) == 0 {
-		return nil, "", errors.New("no agents configured; run `lumi-cli setup` first and prepare agents in lumi.config.json")
+		return nil, "", errors.New("no agents configured; run `lumi setup` first and prepare agents in lumi.config.json")
 	}
 
 	workspacePath, err := filepath.Abs(strings.TrimSpace(opts.Workspace))
@@ -149,7 +149,7 @@ func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, er
 		return nil, "", errors.New("agent is required")
 	}
 	if cfg.FindAgent(agentID) == nil {
-		return nil, "", fmt.Errorf("agent not found: %s; run `lumi-cli setup` first and configure it in lumi.config.json", agentID)
+		return nil, "", fmt.Errorf("agent not found: %s; run `lumi setup` first and configure it in lumi.config.json", agentID)
 	}
 
 	workspaceName := filepath.Base(workspacePath)

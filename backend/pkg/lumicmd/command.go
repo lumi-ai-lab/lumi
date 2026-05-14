@@ -1,4 +1,4 @@
-package main
+package lumicmd
 
 import (
 	"bufio"
@@ -21,28 +21,29 @@ import (
 	"github.com/pengmide/lumi/pkg/lumicli"
 )
 
-func main() {
-	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+func Run(args []string, stdin *os.File, stdout, stderr *os.File) error {
+	return RunAs("lumi", args, stdin, stdout, stderr)
 }
 
-func run(args []string, stdin *os.File, stdout, stderr *os.File) error {
+func RunAs(programName string, args []string, stdin *os.File, stdout, stderr *os.File) error {
+	programName = strings.TrimSpace(programName)
+	if programName == "" {
+		programName = "lumi"
+	}
 	if len(args) == 0 {
-		printUsage(stdout)
+		printUsage(stdout, programName)
 		return nil
 	}
 
 	switch args[0] {
 	case "cron":
-		return runCron(args[1:], stdout)
+		return runCron(args[1:], stdout, programName)
 	case "setup":
 		return runSetup(args[1:], stdin, stdout)
 	case "wecom":
-		return runWeCom(args[1:], stdin, stdout, stderr)
+		return runWeCom(args[1:], stdin, stdout, stderr, programName)
 	case "-h", "--help", "help":
-		printUsage(stdout)
+		printUsage(stdout, programName)
 		return nil
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
@@ -99,9 +100,9 @@ type cronWeComTargetPayload struct {
 	UserID   string `json:"userId,omitempty"`
 }
 
-func runCron(args []string, stdout *os.File) error {
+func runCron(args []string, stdout *os.File, programName string) error {
 	if len(args) == 0 {
-		printCronUsage(stdout)
+		printCronUsage(stdout, programName)
 		return nil
 	}
 	switch args[0] {
@@ -116,7 +117,7 @@ func runCron(args []string, stdout *os.File) error {
 	case "del", "delete", "rm":
 		return runCronDel(args[1:], stdout)
 	case "-h", "--help", "help":
-		printCronUsage(stdout)
+		printCronUsage(stdout, programName)
 		return nil
 	default:
 		return fmt.Errorf("unknown cron command: %s", args[0])
@@ -148,6 +149,9 @@ func runCronAdd(args []string, stdout *os.File) error {
 	silent := fs.Bool("silent", false, "Suppress start notification")
 	mute := fs.Bool("mute", false, "Suppress all messages")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if strings.TrimSpace(*cronExpr) == "" {
@@ -219,6 +223,9 @@ func runCronList(args []string, stdout *os.File) error {
 	conversationID := fs.String("conversation-id", envOrDefault("LUMI_CONVERSATION_ID", ""), "Conversation filter")
 	apiBase := fs.String("api-base", envOrDefault("LUMI_API_BASE", ""), "Lumi API base URL")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	query := map[string]string{}
@@ -474,6 +481,9 @@ func runSetup(args []string, stdin *os.File, stdout *os.File) error {
 
 	configPath := fs.String("config", "", "Config file path")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 
@@ -529,9 +539,9 @@ func runSetup(args []string, stdin *os.File, stdout *os.File) error {
 	return nil
 }
 
-func runWeCom(args []string, _ *os.File, stdout, stderr *os.File) error {
+func runWeCom(args []string, _ *os.File, stdout, stderr *os.File, programName string) error {
 	if len(args) == 0 {
-		printWeComUsage(stdout)
+		printWeComUsage(stdout, programName)
 		return nil
 	}
 
@@ -539,7 +549,7 @@ func runWeCom(args []string, _ *os.File, stdout, stderr *os.File) error {
 	case "run":
 		return runWeComRun(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		printWeComUsage(stdout)
+		printWeComUsage(stdout, programName)
 		return nil
 	default:
 		return fmt.Errorf("unknown wecom command: %s", args[0])
@@ -557,6 +567,9 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	botSecret := fs.String("bot-secret", envOrDefault("LUMI_BOT_SECRET", ""), "WeCom bot secret")
 	port := fs.String("port", envOrDefault("LUMI_PORT", "3000"), "Server port")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 
@@ -565,7 +578,7 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 		return err
 	}
 	if !state.Exists || !state.HasAgents {
-		return errors.New("no agents configured; run `lumi-cli setup` first, then prepare agents in lumi.config.json")
+		return errors.New("no agents configured; run `lumi setup` first, then prepare agents in lumi.config.json")
 	}
 
 	if strings.TrimSpace(*workspace) == "" || strings.TrimSpace(*agentID) == "" || strings.TrimSpace(*botID) == "" || strings.TrimSpace(*botSecret) == "" {
@@ -643,27 +656,27 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
-func printUsage(stdout *os.File) {
+func printUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
-	fmt.Fprintln(stdout, "  lumi-cli cron <command> [flags]")
-	fmt.Fprintln(stdout, "  lumi-cli setup [flags]")
-	fmt.Fprintln(stdout, "  lumi-cli wecom <command> [flags]")
+	fmt.Fprintf(stdout, "  %s cron <command> [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s setup [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s wecom <command> [flags]\n", programName)
 	fmt.Fprintln(stdout, "")
 	fmt.Fprintln(stdout, "setup checks and optionally installs runtime dependencies. It does not create agents or manage API keys.")
 }
 
-func printCronUsage(stdout *os.File) {
+func printCronUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
-	fmt.Fprintln(stdout, "  lumi-cli cron add --cron \"0 8 * * *\" (--prompt <text> | --exec <command>) --desc <label> [flags]")
-	fmt.Fprintln(stdout, "  lumi-cli cron list")
-	fmt.Fprintln(stdout, "  lumi-cli cron info <job-id>")
-	fmt.Fprintln(stdout, "  lumi-cli cron edit <job-id> <field> <value>")
-	fmt.Fprintln(stdout, "  lumi-cli cron del <job-id>")
+	fmt.Fprintf(stdout, "  %s cron add --cron \"0 8 * * *\" (--prompt <text> | --exec <command>) --desc <label> [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s cron list\n", programName)
+	fmt.Fprintf(stdout, "  %s cron info <job-id>\n", programName)
+	fmt.Fprintf(stdout, "  %s cron edit <job-id> <field> <value>\n", programName)
+	fmt.Fprintf(stdout, "  %s cron del <job-id>\n", programName)
 }
 
-func printWeComUsage(stdout *os.File) {
+func printWeComUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
-	fmt.Fprintln(stdout, "  lumi-cli wecom run --workspace <path> --agent <id> --bot-id <id> --bot-secret <secret> [flags]")
+	fmt.Fprintf(stdout, "  %s wecom run --workspace <path> --agent <id> --bot-id <id> --bot-secret <secret> [flags]\n", programName)
 }
 
 func printSetupStatus(stdout *os.File, status lumicli.SetupStatus) {
@@ -711,12 +724,12 @@ func printAgentGuidance(stdout *os.File, state *lumicli.ConfigState) {
 	fmt.Fprintln(stdout, "")
 	if !state.HasAgents {
 		fmt.Fprintln(stdout, "lumi.config.json 中还没有 agent 配置。")
-		fmt.Fprintln(stdout, "请手动准备 agents/defaultAgent；lumi-cli setup 只负责 /setup 的依赖检查和安装。")
+		fmt.Fprintln(stdout, "请手动准备 agents/defaultAgent；lumi setup 只负责 /setup 的依赖检查和安装。")
 		fmt.Fprintln(stdout, "Agent 运行时会继承当前 shell 环境变量。")
 		return
 	}
 	fmt.Fprintf(stdout, "可用 agents: %s\n", strings.Join(lumicli.AgentIDs(state), ", "))
-	fmt.Fprintln(stdout, "lumi-cli wecom run 会直接复用这些 agent 定义。")
+	fmt.Fprintln(stdout, "lumi wecom run 会直接复用这些 agent 定义。")
 }
 
 func promptYesNo(reader *bufio.Reader, stdout *os.File, label string, defaultYes bool) (bool, error) {
