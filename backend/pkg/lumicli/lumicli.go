@@ -11,19 +11,25 @@ import (
 
 	"github.com/pengmide/lumi/internal/api"
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/device"
+	"github.com/pengmide/lumi/internal/sandbox"
 	"github.com/pengmide/lumi/internal/setupcheck"
 	"github.com/pengmide/lumi/internal/wecom"
 )
 
 const WorkspaceID = "cli-local"
+const SandboxWorkspaceID = "cli-sandbox"
+const IMSandboxIdleTimeoutSec = 10 * 365 * 24 * 60 * 60
 
 type RunOptions struct {
-	ConfigPath string
-	Workspace  string
-	AgentID    string
-	BotID      string
-	BotSecret  string
-	Port       string
+	ConfigPath     string
+	Workspace      string
+	Kind           string
+	AgentID        string
+	BotID          string
+	BotSecret      string
+	Port           string
+	IdleTimeoutSec int
 }
 
 type ConfigState struct {
@@ -36,6 +42,37 @@ type ConfigState struct {
 type ServerRuntime struct {
 	server *api.Server
 	port   string
+}
+
+type sandboxPruner interface {
+	PruneAll(context.Context) ([]sandbox.RuntimeRecord, error)
+	ShutdownPreserveContainers() error
+}
+
+type SandboxPruneResult struct {
+	Containers []SandboxPrunedContainer
+}
+
+type SandboxPrunedContainer struct {
+	WorkspaceID    string
+	ContainerName  string
+	Status         string
+	CreatedAt      int64
+	StartedAt      int64
+	LastActivityAt int64
+	ExpiresAt      int64
+}
+
+var newSandboxPruner = func(cfg *config.Config) (sandboxPruner, error) {
+	deviceSecret, err := device.EnsureSecret("")
+	if err != nil {
+		return nil, err
+	}
+	devices, err := device.NewRegistry(device.NewStore(""), deviceSecret)
+	if err != nil {
+		return nil, err
+	}
+	return sandbox.NewManager(cfg, devices)
 }
 
 type SetupDependencyItem = setupcheck.DependencyItem
@@ -143,6 +180,16 @@ func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, er
 	if !info.IsDir() {
 		return nil, "", errors.New("workspace must be a directory")
 	}
+	kind := strings.TrimSpace(opts.Kind)
+	if kind == "" {
+		kind = "local"
+	}
+	if kind != "local" && kind != "sandbox" {
+		return nil, "", errors.New("kind must be local or sandbox")
+	}
+	if opts.IdleTimeoutSec < 0 {
+		return nil, "", errors.New("idle timeout sec must be non-negative")
+	}
 
 	agentID := strings.TrimSpace(opts.AgentID)
 	if agentID == "" {
@@ -156,17 +203,38 @@ func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, er
 	if workspaceName == "." || workspaceName == string(filepath.Separator) || workspaceName == "" {
 		workspaceName = "CLI Local Workspace"
 	}
-	upsertWorkspace(cfg, config.WorkspaceConfig{
-		ID:     WorkspaceID,
+	workspaceID := WorkspaceID
+	workspaceKind := "local"
+	if kind == "sandbox" {
+		workspaceID = SandboxWorkspaceID
+		workspaceKind = "sandbox"
+	}
+	workspace := config.WorkspaceConfig{
+		ID:     workspaceID,
 		Name:   workspaceName,
 		Path:   workspacePath,
-		Kind:   "local",
+		Kind:   workspaceKind,
 		Agents: []string{agentID},
-	})
-	cfg.DefaultWorkspace = WorkspaceID
+	}
+	if kind == "sandbox" {
+		workspace.Image = sandbox.ResolveImage(workspace)
+		workspace.IdleTimeoutSec = IMSandboxIdleTimeoutSec
+		if opts.IdleTimeoutSec > 0 {
+			workspace.IdleTimeoutSec = opts.IdleTimeoutSec
+		}
+	}
+	upsertWorkspace(cfg, workspace)
+	cfg.DefaultWorkspace = workspaceID
 
 	if err := cfg.Validate(); err != nil {
 		return nil, "", err
+	}
+	if strings.TrimSpace(cfg.PublicServerURL) == "" {
+		port := strings.TrimSpace(opts.Port)
+		if port == "" {
+			port = "3000"
+		}
+		cfg.PublicServerURL = "http://127.0.0.1:" + strings.TrimPrefix(port, ":")
 	}
 	if err := saveConfig(cfg, state.Path); err != nil {
 		return nil, "", err
@@ -177,7 +245,7 @@ func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, er
 		Mode:                "websocket",
 		BotID:               strings.TrimSpace(opts.BotID),
 		BotSecret:           strings.TrimSpace(opts.BotSecret),
-		WorkspaceID:         WorkspaceID,
+		WorkspaceID:         workspaceID,
 		AgentID:             agentID,
 		ConnectTimeoutMs:    15000,
 		HeartbeatIntervalMs: 30000,
@@ -234,6 +302,39 @@ func (r *ServerRuntime) ShutdownWithContext(ctx context.Context) error {
 
 func (r *ServerRuntime) Port() string {
 	return r.port
+}
+
+func PruneSandboxes(ctx context.Context, configPath string) (SandboxPruneResult, error) {
+	state, err := ResolveConfigState(configPath)
+	if err != nil {
+		return SandboxPruneResult{}, err
+	}
+	cfg := state.Config
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	pruner, err := newSandboxPruner(cfg)
+	if err != nil {
+		return SandboxPruneResult{}, err
+	}
+	defer pruner.ShutdownPreserveContainers()
+	records, err := pruner.PruneAll(ctx)
+	if err != nil {
+		return SandboxPruneResult{}, err
+	}
+	result := SandboxPruneResult{Containers: make([]SandboxPrunedContainer, 0, len(records))}
+	for _, record := range records {
+		result.Containers = append(result.Containers, SandboxPrunedContainer{
+			WorkspaceID:    record.WorkspaceID,
+			ContainerName:  record.ContainerName,
+			Status:         record.Status,
+			CreatedAt:      record.CreatedAt,
+			StartedAt:      record.StartedAt,
+			LastActivityAt: record.LastActivityAt,
+			ExpiresAt:      record.ExpiresAt,
+		})
+	}
+	return result, nil
 }
 
 func DefaultConfigPath() string {

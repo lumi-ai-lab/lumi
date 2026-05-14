@@ -69,7 +69,7 @@ func (s *Server) resolveWorkspaceRuntime(ctx context.Context, workspaceID string
 func (s *Server) resolveSandboxRuntime(ctx context.Context, workspace config.WorkspaceConfig, req *http.Request) (ResolvedRuntime, error) {
 	runtimeState, runtimeErr := s.sandbox.Ensure(ctx, sandbox.EnsureOptions{
 		Workspace:  workspace,
-		BackendURL: inferServerURL(req),
+		BackendURL: s.backendURLForSandbox(req),
 	})
 	if runtimeErr != nil {
 		return ResolvedRuntime{
@@ -98,6 +98,16 @@ func (s *Server) resolveSandboxRuntime(ctx context.Context, workspace config.Wor
 		ExpiresAt:     runtimeState.ExpiresAt,
 		ErrorCode:     runtimeState.ErrorCode,
 	}, nil
+}
+
+func (s *Server) backendURLForSandbox(req *http.Request) string {
+	if req != nil {
+		return inferServerURL(req)
+	}
+	if s != nil && s.config != nil && strings.TrimSpace(s.config.PublicServerURL) != "" {
+		return strings.TrimRight(strings.TrimSpace(s.config.PublicServerURL), "/")
+	}
+	return inferServerURL(nil)
 }
 
 func (s *Server) deviceWorkspacePayload(ctx context.Context, deviceID string, workspacePath string, typ device.MessageType, payload device.WorkspaceRequestPayload, out any) error {

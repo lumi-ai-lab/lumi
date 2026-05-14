@@ -79,6 +79,7 @@ func TestShutdownPreserveContainersStopsSchedulerAndClosesClient(t *testing.T) {
 	fakeDocker := &fakeDockerClient{}
 	manager := &Manager{
 		docker: fakeDocker,
+		store:  NewStore(t.TempDir() + "/sandboxes.json"),
 		runtimes: map[string]*RuntimeRecord{
 			"running": {WorkspaceID: "running", Status: StatusRunning, ContainerName: "lumi-running"},
 		},
@@ -105,6 +106,7 @@ func TestShutdownPreservesContainers(t *testing.T) {
 	fakeDocker := &fakeDockerClient{}
 	manager := &Manager{
 		docker: fakeDocker,
+		store:  NewStore(t.TempDir() + "/sandboxes.json"),
 		runtimes: map[string]*RuntimeRecord{
 			"running": {WorkspaceID: "running", Status: StatusRunning, ContainerName: "lumi-running"},
 		},
@@ -118,6 +120,60 @@ func TestShutdownPreservesContainers(t *testing.T) {
 	}
 	if fakeDocker.stopRemoveCalls != 0 {
 		t.Fatalf("StopRemoveContainer calls = %d, want 0", fakeDocker.stopRemoveCalls)
+	}
+}
+
+func TestTerminateAllRemovesActiveRuntimesAndMarksTerminated(t *testing.T) {
+	fakeDocker := &fakeDockerClient{}
+	manager := &Manager{
+		docker: fakeDocker,
+		store:  NewStore(t.TempDir() + "/sandboxes.json"),
+		runtimes: map[string]*RuntimeRecord{
+			"running": {
+				WorkspaceID:    "running",
+				Status:         StatusRunning,
+				ContainerName:  "lumi-running",
+				StartedAt:      100,
+				ExpiresAt:      200,
+				LastActivityAt: 150,
+			},
+			"pending": {
+				WorkspaceID:   "pending",
+				Status:        StatusPending,
+				ContainerName: "lumi-pending",
+			},
+			"terminated": {
+				WorkspaceID:   "terminated",
+				Status:        StatusTerminated,
+				ContainerName: "lumi-terminated",
+			},
+		},
+	}
+
+	pruned, err := manager.PruneAll(context.Background())
+	if err != nil {
+		t.Fatalf("PruneAll() error = %v", err)
+	}
+	if fakeDocker.stopRemoveCalls != 2 {
+		t.Fatalf("StopRemoveContainer calls = %d, want 2", fakeDocker.stopRemoveCalls)
+	}
+	if len(pruned) != 2 {
+		t.Fatalf("pruned records = %d, want 2: %+v", len(pruned), pruned)
+	}
+	if pruned[0].WorkspaceID != "pending" || pruned[1].WorkspaceID != "running" {
+		t.Fatalf("pruned records = %+v, want pending then running", pruned)
+	}
+	if pruned[1].StartedAt != 100 || pruned[1].ExpiresAt != 200 || pruned[1].LastActivityAt != 150 {
+		t.Fatalf("running prune snapshot lost timestamps: %+v", pruned[1])
+	}
+	for _, workspaceID := range []string{"running", "pending"} {
+		record := manager.runtimes[workspaceID]
+		if record.Status != StatusTerminated {
+			t.Fatalf("%s status = %q, want terminated", workspaceID, record.Status)
+		}
+		if record.StartedAt != 0 || record.ExpiresAt != 0 || record.LastActivityAt != 0 {
+			t.Fatalf("%s timestamps not cleared: %+v", workspaceID, record)
+		}
 	}
 }
 

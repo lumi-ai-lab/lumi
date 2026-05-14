@@ -187,8 +187,8 @@ func (s *Service) RunCronJob(ctx context.Context, job lumicron.Job) (string, err
 	if workspace == nil {
 		return job.ConversationID, errors.New("workspace not found")
 	}
-	if workspace.Kind != "" && workspace.Kind != "local" {
-		return job.ConversationID, errors.New("workspace must be local")
+	if !isSupportedWorkspaceKind(workspace.Kind) {
+		return job.ConversationID, errors.New("workspace must be local or sandbox")
 	}
 	if s.config.FindAgent(job.AgentID) == nil {
 		return job.ConversationID, errors.New("agent not found")
@@ -326,8 +326,8 @@ func (s *Service) validateConfigForSave(cfg Config) error {
 	if workspace == nil {
 		return errors.New("workspace not found")
 	}
-	if workspace.Kind != "" && workspace.Kind != "local" {
-		return errors.New("workspace must be local")
+	if !isSupportedWorkspaceKind(workspace.Kind) {
+		return errors.New("workspace must be local or sandbox")
 	}
 	if strings.TrimSpace(cfg.AgentID) == "" {
 		return errors.New("agentId is required")
@@ -345,6 +345,10 @@ func (s *Service) validateConfigForSave(cfg Config) error {
 		return errors.New("messageAckTimeoutMs must be at least 1000")
 	}
 	return nil
+}
+
+func isSupportedWorkspaceKind(kind string) bool {
+	return kind == "" || kind == "local" || kind == "sandbox"
 }
 
 func (s *Service) validateConfigForRuntime(cfg Config) error {

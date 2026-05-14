@@ -129,8 +129,8 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCh
 	if workspace == nil {
 		return errors.New("workspace not found")
 	}
-	if workspace.Kind != "" && workspace.Kind != "local" {
-		return errors.New("workspace must be local")
+	if !isSupportedWorkspaceKind(workspace.Kind) {
+		return errors.New("workspace must be local or sandbox")
 	}
 	if s.config.FindAgent(cfg.AgentID) == nil {
 		return errors.New("agent not found")

@@ -21,6 +21,8 @@ import (
 	"github.com/pengmide/lumi/pkg/lumicli"
 )
 
+var pruneSandboxes = lumicli.PruneSandboxes
+
 func Run(args []string, stdin *os.File, stdout, stderr *os.File) error {
 	return RunAs("lumi", args, stdin, stdout, stderr)
 }
@@ -38,6 +40,8 @@ func RunAs(programName string, args []string, stdin *os.File, stdout, stderr *os
 	switch args[0] {
 	case "cron":
 		return runCron(args[1:], stdout, programName)
+	case "sandbox":
+		return runSandbox(args[1:], stdout, programName)
 	case "setup":
 		return runSetup(args[1:], stdin, stdout)
 	case "wecom":
@@ -98,6 +102,81 @@ type cronWeComTargetPayload struct {
 	ChatID   string `json:"chatId,omitempty"`
 	ChatType string `json:"chatType,omitempty"`
 	UserID   string `json:"userId,omitempty"`
+}
+
+func runSandbox(args []string, stdout *os.File, programName string) error {
+	if len(args) == 0 {
+		printSandboxUsage(stdout, programName)
+		return nil
+	}
+
+	switch args[0] {
+	case "prune":
+		return runSandboxPrune(args[1:], stdout)
+	case "-h", "--help", "help":
+		printSandboxUsage(stdout, programName)
+		return nil
+	default:
+		return fmt.Errorf("unknown sandbox command: %s", args[0])
+	}
+}
+
+func runSandboxPrune(args []string, stdout *os.File) error {
+	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
+	fs.SetOutput(stdout)
+
+	configPath := fs.String("config", "", "Config file path")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+
+	result, err := pruneSandboxes(context.Background(), *configPath)
+	if err != nil {
+		return err
+	}
+	printSandboxPruneResult(stdout, result)
+	return nil
+}
+
+func printSandboxPruneResult(stdout *os.File, result lumicli.SandboxPruneResult) {
+	if len(result.Containers) == 0 {
+		fmt.Fprintln(stdout, "No active Lumi sandbox containers found.")
+		return
+	}
+	fmt.Fprintln(stdout, "Pruned Lumi sandbox containers:")
+	fmt.Fprintln(stdout)
+	fmt.Fprintf(stdout, "%-18s %-32s %-12s %-19s %-19s %-19s\n", "WORKSPACE", "CONTAINER", "STATUS", "CREATED", "STARTED", "LAST ACTIVE")
+	for _, item := range result.Containers {
+		fmt.Fprintf(
+			stdout,
+			"%-18s %-32s %-12s %-19s %-19s %-19s\n",
+			blankDash(item.WorkspaceID),
+			blankDash(item.ContainerName),
+			blankDash(item.Status),
+			formatUnixMillis(item.CreatedAt),
+			formatUnixMillis(item.StartedAt),
+			formatUnixMillis(item.LastActivityAt),
+		)
+	}
+	fmt.Fprintln(stdout)
+	fmt.Fprintf(stdout, "Total: %d\n", len(result.Containers))
+}
+
+func blankDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
+}
+
+func formatUnixMillis(value int64) string {
+	if value <= 0 {
+		return "-"
+	}
+	return time.UnixMilli(value).Local().Format("2006-01-02 15:04:05")
 }
 
 func runCron(args []string, stdout *os.File, programName string) error {
@@ -562,10 +641,12 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 
 	configPath := fs.String("config", "", "Config file path")
 	workspace := fs.String("workspace", envOrDefault("LUMI_WORKSPACE", ""), "Local workspace path")
+	kind := fs.String("kind", envOrDefault("LUMI_WORKSPACE_KIND", "local"), "Workspace kind: local or sandbox")
 	agentID := fs.String("agent", envOrDefault("LUMI_AGENT", ""), "Configured agent ID")
 	botID := fs.String("bot-id", envOrDefault("LUMI_BOT_ID", ""), "WeCom bot ID")
 	botSecret := fs.String("bot-secret", envOrDefault("LUMI_BOT_SECRET", ""), "WeCom bot secret")
 	port := fs.String("port", envOrDefault("LUMI_PORT", "3000"), "Server port")
+	idleTimeoutSec := fs.Int("idle-timeout-sec", 0, "Sandbox idle timeout in seconds for IM CLI runs; defaults to 10 years")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -586,12 +667,14 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	}
 
 	cfg, workspacePath, err := lumicli.PrepareRun(state, lumicli.RunOptions{
-		ConfigPath: *configPath,
-		Workspace:  *workspace,
-		AgentID:    *agentID,
-		BotID:      *botID,
-		BotSecret:  *botSecret,
-		Port:       *port,
+		ConfigPath:     *configPath,
+		Workspace:      *workspace,
+		Kind:           *kind,
+		AgentID:        *agentID,
+		BotID:          *botID,
+		BotSecret:      *botSecret,
+		Port:           *port,
+		IdleTimeoutSec: *idleTimeoutSec,
 	})
 	if err != nil {
 		return err
@@ -604,6 +687,7 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 
 	fmt.Fprintf(stdout, "Config file: %s\n", state.Path)
 	fmt.Fprintf(stdout, "Workspace: %s\n", workspacePath)
+	fmt.Fprintf(stdout, "Workspace kind: %s\n", strings.TrimSpace(*kind))
 	fmt.Fprintf(stdout, "Agent: %s\n", *agentID)
 	fmt.Fprintf(stdout, "Server: http://localhost:%s\n", runtime.Port())
 	fmt.Fprintf(stdout, "WeCom: enabled for bot %s\n", *botID)
@@ -659,6 +743,7 @@ func envOrDefault(key, fallback string) string {
 func printUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
 	fmt.Fprintf(stdout, "  %s cron <command> [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s sandbox <command> [flags]\n", programName)
 	fmt.Fprintf(stdout, "  %s setup [flags]\n", programName)
 	fmt.Fprintf(stdout, "  %s wecom <command> [flags]\n", programName)
 	fmt.Fprintln(stdout, "")
@@ -676,7 +761,12 @@ func printCronUsage(stdout *os.File, programName string) {
 
 func printWeComUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
-	fmt.Fprintf(stdout, "  %s wecom run --workspace <path> --agent <id> --bot-id <id> --bot-secret <secret> [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s wecom run --workspace <path> --kind local|sandbox --agent <id> --bot-id <id> --bot-secret <secret> [--idle-timeout-sec <seconds>] [flags]\n", programName)
+}
+
+func printSandboxUsage(stdout *os.File, programName string) {
+	fmt.Fprintln(stdout, "Usage:")
+	fmt.Fprintf(stdout, "  %s sandbox prune [--config <path>]\n", programName)
 }
 
 func printSetupStatus(stdout *os.File, status lumicli.SetupStatus) {

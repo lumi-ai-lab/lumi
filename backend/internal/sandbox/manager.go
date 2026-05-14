@@ -366,13 +366,22 @@ func (m *Manager) doEnsure(ctx context.Context, opts EnsureOptions) (RuntimeStat
 }
 
 func (m *Manager) TerminateAll(ctx context.Context) error {
+	_, err := m.PruneAll(ctx)
+	return err
+}
+
+func (m *Manager) PruneAll(ctx context.Context) ([]RuntimeRecord, error) {
 	workspaceIDs := m.activeRuntimeWorkspaceIDs()
+	pruned := make([]RuntimeRecord, 0, len(workspaceIDs))
 	for _, workspaceID := range workspaceIDs {
+		if record, ok := m.runtimeRecord(workspaceID); ok {
+			pruned = append(pruned, record)
+		}
 		if err := m.Terminate(ctx, workspaceID); err != nil {
-			return err
+			return pruned, err
 		}
 	}
-	return nil
+	return pruned, nil
 }
 
 func (m *Manager) Terminate(ctx context.Context, workspaceID string) error {
@@ -424,6 +433,17 @@ func (m *Manager) activeRuntimeWorkspaceIDs() []string {
 	}
 	sort.Strings(workspaceIDs)
 	return workspaceIDs
+}
+
+func (m *Manager) runtimeRecord(workspaceID string) (RuntimeRecord, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	record := m.runtimes[workspaceID]
+	if record == nil {
+		return RuntimeRecord{}, false
+	}
+	return *record, true
 }
 
 func (m *Manager) markTerminated(workspaceID string) {

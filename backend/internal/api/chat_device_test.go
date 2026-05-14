@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,10 @@ import (
 	"github.com/pengmide/lumi/internal/agentmode"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/device"
+	"github.com/pengmide/lumi/internal/sandbox"
+	"github.com/pengmide/lumi/internal/storage"
+	"github.com/pengmide/lumi/internal/wechat"
+	"github.com/pengmide/lumi/internal/wecom"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 )
@@ -220,6 +225,192 @@ func TestHandleDeviceChatBridgesSSEAndRoutesPermissionConfirm(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for second SSE response")
+	}
+}
+
+func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
+	server := newTestAPIServer(t)
+	server.config.FindAgent("claude").SessionMode = agentmode.ClaudeModeBypassPermissions
+	workspace := config.WorkspaceConfig{
+		ID:    "sandbox-ws",
+		Name:  "Sandbox",
+		Path:  t.TempDir(),
+		Kind:  "sandbox",
+		Image: sandbox.DefaultImage,
+	}
+	server.config.Workspaces = append(server.config.Workspaces, workspace)
+	server.sandbox = &fakeSandboxManager{ensureState: sandbox.RuntimeState{
+		WorkspaceID:   workspace.ID,
+		DeviceID:      "dev-1",
+		WorkspacePath: sandbox.WorkspacePath,
+		Status:        sandbox.StatusRunning,
+	}}
+
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	secret, err := device.EnsureSecret("")
+	if err != nil {
+		t.Fatalf("EnsureSecret() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn := connectTestDevice(t, ctx, httpServer.URL, secret)
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	registerAndReadyDevice(t, ctx, conn)
+
+	sink := &recordingWeComSink{}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.RunWeComChat(ctx, wecom.ChatRunInput{
+			Message:           "hello sandbox",
+			ConversationID:    "wecom_test",
+			WorkspaceID:       workspace.ID,
+			WorkspacePath:     workspace.Path,
+			AgentID:           "claude",
+			PromptPrefix:      "prefix",
+			ConversationStore: &memoryIMStore{},
+		}, sink)
+	}()
+
+	taskExecute := readEnvelope(t, ctx, conn)
+	if taskExecute.Type != device.MsgTaskExecute {
+		t.Fatalf("taskExecute.Type = %q, want %q", taskExecute.Type, device.MsgTaskExecute)
+	}
+	var taskPayload device.TaskExecutePayload
+	if err := json.Unmarshal(taskExecute.Payload, &taskPayload); err != nil {
+		t.Fatalf("Unmarshal(task.execute) error = %v", err)
+	}
+	if taskPayload.WorkspacePath != sandbox.WorkspacePath {
+		t.Fatalf("WorkspacePath = %q, want %q", taskPayload.WorkspacePath, sandbox.WorkspacePath)
+	}
+	if !strings.Contains(taskPayload.Prompt, "prefix") || !strings.Contains(taskPayload.Prompt, "hello sandbox") {
+		t.Fatalf("Prompt missing IM content: %q", taskPayload.Prompt)
+	}
+	if err := wsjson.Write(ctx, conn, device.AckEnvelope(taskExecute.ID)); err != nil {
+		t.Fatalf("wsjson.Write(task.execute ack) error = %v", err)
+	}
+
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskSession, "msg-im-session", "dev-1", taskExecute.TaskID, device.TaskSessionPayload{
+		SessionID: "sandbox-session",
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskEvent, "msg-im-event", "dev-1", taskExecute.TaskID, device.TaskEventPayload{
+		SessionID: "sandbox-session",
+		Notification: device.ACPNotification{
+			JSONRPC: "2.0",
+			Method:  "session/update",
+			Params:  json.RawMessage(`{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello from sandbox"}}}`),
+		},
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskDone, "msg-im-done", "dev-1", taskExecute.TaskID, device.TaskDonePayload{
+		Result: json.RawMessage(`{"stopReason":"end_turn"}`),
+	}))
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("RunWeComChat() error = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for RunWeComChat")
+	}
+	if !sink.hasUpdateText("hello from sandbox") {
+		t.Fatalf("sink events missing sandbox response: %+v", sink.events)
+	}
+}
+
+func TestRunWeChatChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
+	server := newTestAPIServer(t)
+	server.config.FindAgent("claude").SessionMode = agentmode.ClaudeModeBypassPermissions
+	workspace := config.WorkspaceConfig{
+		ID:    "sandbox-ws",
+		Name:  "Sandbox",
+		Path:  t.TempDir(),
+		Kind:  "sandbox",
+		Image: sandbox.DefaultImage,
+	}
+	server.config.Workspaces = append(server.config.Workspaces, workspace)
+	server.sandbox = &fakeSandboxManager{ensureState: sandbox.RuntimeState{
+		WorkspaceID:   workspace.ID,
+		DeviceID:      "dev-1",
+		WorkspacePath: sandbox.WorkspacePath,
+		Status:        sandbox.StatusRunning,
+	}}
+
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	secret, err := device.EnsureSecret("")
+	if err != nil {
+		t.Fatalf("EnsureSecret() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn := connectTestDevice(t, ctx, httpServer.URL, secret)
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	registerAndReadyDevice(t, ctx, conn)
+
+	sink := &recordingWeChatSink{}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.RunWeChatChat(ctx, wechat.ChatRunInput{
+			Message:           "hello sandbox",
+			ConversationID:    "wechat_test",
+			WorkspaceID:       workspace.ID,
+			WorkspacePath:     workspace.Path,
+			AgentID:           "claude",
+			PromptPrefix:      "prefix",
+			ConversationStore: &memoryIMStore{},
+		}, sink)
+	}()
+
+	taskExecute := readEnvelope(t, ctx, conn)
+	if taskExecute.Type != device.MsgTaskExecute {
+		t.Fatalf("taskExecute.Type = %q, want %q", taskExecute.Type, device.MsgTaskExecute)
+	}
+	var taskPayload device.TaskExecutePayload
+	if err := json.Unmarshal(taskExecute.Payload, &taskPayload); err != nil {
+		t.Fatalf("Unmarshal(task.execute) error = %v", err)
+	}
+	if taskPayload.WorkspacePath != sandbox.WorkspacePath {
+		t.Fatalf("WorkspacePath = %q, want %q", taskPayload.WorkspacePath, sandbox.WorkspacePath)
+	}
+	if !strings.Contains(taskPayload.Prompt, "prefix") || !strings.Contains(taskPayload.Prompt, "hello sandbox") {
+		t.Fatalf("Prompt missing IM content: %q", taskPayload.Prompt)
+	}
+	if err := wsjson.Write(ctx, conn, device.AckEnvelope(taskExecute.ID)); err != nil {
+		t.Fatalf("wsjson.Write(task.execute ack) error = %v", err)
+	}
+
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskSession, "msg-im-session", "dev-1", taskExecute.TaskID, device.TaskSessionPayload{
+		SessionID: "sandbox-session",
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskEvent, "msg-im-event", "dev-1", taskExecute.TaskID, device.TaskEventPayload{
+		SessionID: "sandbox-session",
+		Notification: device.ACPNotification{
+			JSONRPC: "2.0",
+			Method:  "session/update",
+			Params:  json.RawMessage(`{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello from sandbox"}}}`),
+		},
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskDone, "msg-im-done", "dev-1", taskExecute.TaskID, device.TaskDonePayload{
+		Result: json.RawMessage(`{"stopReason":"end_turn"}`),
+	}))
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("RunWeChatChat() error = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for RunWeChatChat")
+	}
+	if !sink.hasUpdateText("hello from sandbox") {
+		t.Fatalf("sink events missing sandbox response: %+v", sink.events)
 	}
 }
 
@@ -593,6 +784,80 @@ func mustEnvelope(t *testing.T, typ device.MessageType, id, deviceID, taskID str
 		t.Fatalf("NewEnvelope(%s) error = %v", typ, err)
 	}
 	return env
+}
+
+type recordingWeComSink struct {
+	events []wecom.ChatEvent
+}
+
+func (s *recordingWeComSink) Emit(event wecom.ChatEvent) error {
+	s.events = append(s.events, event)
+	return nil
+}
+
+func (s *recordingWeComSink) hasUpdateText(text string) bool {
+	for _, event := range s.events {
+		if event.Name != "update" {
+			continue
+		}
+		asMap, ok := event.Data.(map[string]any)
+		if !ok {
+			continue
+		}
+		update, ok := asMap["update"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if content, _ := update["content"].(map[string]any); strings.Contains(extractTextContent(content), text) {
+			return true
+		}
+	}
+	return false
+}
+
+type recordingWeChatSink struct {
+	events []wechat.ChatEvent
+}
+
+func (s *recordingWeChatSink) Emit(event wechat.ChatEvent) error {
+	s.events = append(s.events, event)
+	return nil
+}
+
+func (s *recordingWeChatSink) hasUpdateText(text string) bool {
+	for _, event := range s.events {
+		if event.Name != "update" {
+			continue
+		}
+		asMap, ok := event.Data.(map[string]any)
+		if !ok {
+			continue
+		}
+		update, ok := asMap["update"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if content, _ := update["content"].(map[string]any); strings.Contains(extractTextContent(content), text) {
+			return true
+		}
+	}
+	return false
+}
+
+type memoryIMStore struct {
+	session *storage.StoredSession
+}
+
+func (s *memoryIMStore) Load(id string) (*storage.StoredSession, error) {
+	if s.session == nil || s.session.ID != id {
+		return nil, os.ErrNotExist
+	}
+	return s.session, nil
+}
+
+func (s *memoryIMStore) Save(session *storage.StoredSession) error {
+	s.session = session
+	return nil
 }
 
 func TestHandleDeviceChatReturnsOfflineError(t *testing.T) {

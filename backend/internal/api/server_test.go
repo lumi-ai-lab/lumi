@@ -68,14 +68,26 @@ func TestShutdownLogsFailedStep(t *testing.T) {
 	}
 }
 
+func TestBackendURLForSandboxUsesConfiguredPublicServerURLWithoutRequest(t *testing.T) {
+	server := &Server{config: &config.Config{PublicServerURL: "http://127.0.0.1:39231/"}}
+
+	if got := server.backendURLForSandbox(nil); got != "http://127.0.0.1:39231" {
+		t.Fatalf("backendURLForSandbox(nil) = %q, want configured URL", got)
+	}
+}
+
 type fakeSandboxManager struct {
 	shutdownPreserveCalls int
 	terminateCalls        int
 	shutdownErr           error
+	ensureState           sandbox.RuntimeState
+	ensureErr             *sandbox.RuntimeError
+	ensureCalls           int
 }
 
 func (f *fakeSandboxManager) Ensure(context.Context, sandbox.EnsureOptions) (sandbox.RuntimeState, *sandbox.RuntimeError) {
-	return sandbox.RuntimeState{}, nil
+	f.ensureCalls++
+	return f.ensureState, f.ensureErr
 }
 
 func (f *fakeSandboxManager) KeepAlive(config.WorkspaceConfig) {}

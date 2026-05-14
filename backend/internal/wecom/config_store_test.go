@@ -147,9 +147,46 @@ func newTestService(t *testing.T, runner ChatRunner) *Service {
 		DefaultAgent: "claude",
 		Workspaces: []config.WorkspaceConfig{
 			{ID: "default", Name: "Default", Path: home},
+			{ID: "sandbox", Name: "Sandbox", Path: home, Kind: "sandbox"},
 			{ID: "remote", Name: "Remote", Path: home, Kind: "remote"},
 		},
 		DefaultWorkspace: "default",
 	}
 	return NewService(cfg, runner)
+}
+
+func TestSaveConfigAllowsSandboxWorkspace(t *testing.T) {
+	service := newTestService(t, dummyRunner{})
+
+	_, err := service.SaveConfig(context.Background(), Config{
+		Mode:                "websocket",
+		BotID:               "bot-1",
+		BotSecret:           "secret-1",
+		WorkspaceID:         "sandbox",
+		AgentID:             "claude",
+		ConnectTimeoutMs:    defaultConnectTimeoutMs,
+		HeartbeatIntervalMs: defaultHeartbeatMs,
+		MessageAckTimeoutMs: defaultMessageAckTimeoutMs,
+	})
+	if err != nil {
+		t.Fatalf("SaveConfig(sandbox) error = %v", err)
+	}
+}
+
+func TestSaveConfigRejectsRemoteWorkspace(t *testing.T) {
+	service := newTestService(t, dummyRunner{})
+
+	_, err := service.SaveConfig(context.Background(), Config{
+		Mode:                "websocket",
+		BotID:               "bot-1",
+		BotSecret:           "secret-1",
+		WorkspaceID:         "remote",
+		AgentID:             "claude",
+		ConnectTimeoutMs:    defaultConnectTimeoutMs,
+		HeartbeatIntervalMs: defaultHeartbeatMs,
+		MessageAckTimeoutMs: defaultMessageAckTimeoutMs,
+	})
+	if err == nil || !strings.Contains(err.Error(), "workspace must be local or sandbox") {
+		t.Fatalf("SaveConfig(remote) error = %v, want workspace kind error", err)
+	}
 }

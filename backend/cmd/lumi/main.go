@@ -28,7 +28,7 @@ func run(args []string) error {
 		switch args[0] {
 		case "server":
 			return runServer(args[1:])
-		case "cron", "setup", "wecom":
+		case "cron", "sandbox", "setup", "wecom":
 			return lumicmd.Run(args, os.Stdin, os.Stdout, os.Stderr)
 		case "help", "-h", "--help":
 			printUsage()
@@ -135,6 +135,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stdout, "  lumi [--config <path>] [--port <port>] [--web <dir>]")
 	fmt.Fprintln(os.Stdout, "  lumi server [--config <path>] [--port <port>] [--web <dir>]")
 	fmt.Fprintln(os.Stdout, "  lumi cron <command> [flags]")
+	fmt.Fprintln(os.Stdout, "  lumi sandbox <command> [flags]")
 	fmt.Fprintln(os.Stdout, "  lumi setup [flags]")
 	fmt.Fprintln(os.Stdout, "  lumi wecom <command> [flags]")
 }

@@ -130,9 +130,9 @@ func NewServer(cfg *config.Config, staticFS fs.FS) *Server {
 	}
 	s.cron = lumicron.NewService(lumicron.NewStore(""), s, s.broadcastCronEvent)
 	s.wechatChat = newWeChatChatRuntime(cfg, s.cron)
-	s.wechat = wechat.NewService(cfg, s.wechatChat)
+	s.wechat = wechat.NewService(cfg, s)
 	s.wecomChat = newWeComChatRuntime(cfg, s.cron)
-	s.wecom = wecom.NewService(cfg, s.wecomChat)
+	s.wecom = wecom.NewService(cfg, s)
 	s.devices.SetDeviceResetHook(s.clearRemoteSessionsForDevice)
 
 	s.loadPersistedWorkspaces()
