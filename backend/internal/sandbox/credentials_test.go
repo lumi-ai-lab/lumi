@@ -9,6 +9,74 @@ import (
 	sandboxdocker "github.com/pengmide/lumi/internal/sandbox/docker"
 )
 
+func TestResolveCredentialMountsUsesWritableClaudeRoot(t *testing.T) {
+	home := t.TempDir()
+	runtimeDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"projects":{}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile(.claude.json) error = %v", err)
+	}
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(.claude) error = %v", err)
+	}
+	settingsPath := filepath.Join(home, ".config", "claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(settings dir) error = %v", err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{"model":"test"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile(settings target) error = %v", err)
+	}
+	if err := os.Symlink(settingsPath, filepath.Join(claudeDir, "settings.json")); err != nil {
+		t.Fatalf("Symlink(settings.json) error = %v", err)
+	}
+
+	mounts := resolveCredentialMountsFromHome(home, runtimeDir)
+
+	claudeMount := findCredentialMount(mounts, "/root")
+	if claudeMount == nil {
+		t.Fatalf("claude root mount not found in %#v", mounts)
+	}
+	if claudeMount.ReadOnly {
+		t.Fatalf("claude root mount ReadOnly = true, want false")
+	}
+	if claudeMount.Source == home {
+		t.Fatalf("claude root mount source points at host home, want runtime copy")
+	}
+
+	data, err := os.ReadFile(filepath.Join(claudeMount.Source, ".claude.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(runtime .claude.json copy) error = %v", err)
+	}
+	if string(data) != `{"projects":{}}` {
+		t.Fatalf("runtime .claude.json copy = %q", data)
+	}
+
+	data, err = os.ReadFile(filepath.Join(claudeMount.Source, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(runtime settings copy) error = %v", err)
+	}
+	if string(data) != `{"model":"test"}` {
+		t.Fatalf("runtime settings copy = %q", data)
+	}
+	if _, err := os.Lstat(filepath.Join(claudeMount.Source, ".claude", "settings.json")); err != nil {
+		t.Fatalf("Lstat(runtime settings copy) error = %v", err)
+	} else if info, _ := os.Lstat(filepath.Join(claudeMount.Source, ".claude", "settings.json")); info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("runtime settings copy is symlink, want regular file")
+	}
+}
+
+func TestResolveCredentialMountsSkipsClaudeRootWithoutClaudeFiles(t *testing.T) {
+	home := t.TempDir()
+	runtimeDir := t.TempDir()
+
+	mounts := resolveCredentialMountsFromHome(home, runtimeDir)
+
+	if mount := findCredentialMount(mounts, "/root"); mount != nil {
+		t.Fatalf("claude root mount = %#v, want nil", mount)
+	}
+}
+
 func TestResolveCredentialMountsUsesWritableCodexHome(t *testing.T) {
 	home := t.TempDir()
 	runtimeDir := t.TempDir()
@@ -109,7 +177,7 @@ func TestSanitizeAgentsForCredentialMountsRemovesMountedClaudeCredentialEnv(t *t
 		},
 	}
 	mounts := []sandboxdocker.CredentialMount{
-		{Target: "/root/.claude.json"},
+		{Target: "/root"},
 		{Source: codexHome, Target: "/root/.codex"},
 	}
 

@@ -697,28 +697,14 @@ func (m *Manager) resolveCredentialMounts(workspaceID string) []sandboxdocker.Cr
 }
 
 func resolveCredentialMountsFromHome(home string, runtimeDir string) []sandboxdocker.CredentialMount {
-	readOnlyCandidates := []struct {
-		source string
-		target string
-	}{
-		{filepath.Join(home, ".claude.json"), "/root/.claude.json"},
-		{filepath.Join(home, ".claude", ".credentials.json"), "/root/.claude/.credentials.json"},
-		{filepath.Join(home, ".claude", "settings.json"), "/root/.claude/settings.json"},
-		{filepath.Join(home, ".claude", "settings.local.json"), "/root/.claude/settings.local.json"},
-	}
-
-	mounts := make([]sandboxdocker.CredentialMount, 0, len(readOnlyCandidates)+1)
-	seenTargets := make(map[string]bool, len(readOnlyCandidates)+1)
-	for _, candidate := range readOnlyCandidates {
-		source, ok := resolveCredentialFile(candidate.source)
-		if !ok || seenTargets[candidate.target] {
-			continue
-		}
-		seenTargets[candidate.target] = true
+	mounts := make([]sandboxdocker.CredentialMount, 0, 2)
+	seenTargets := make(map[string]bool, 2)
+	if source, ok := prepareWritableClaudeRoot(home, filepath.Join(runtimeDir, "claude-root")); ok {
+		seenTargets["/root"] = true
 		mounts = append(mounts, sandboxdocker.CredentialMount{
 			Source:   source,
-			Target:   candidate.target,
-			ReadOnly: true,
+			Target:   "/root",
+			ReadOnly: false,
 		})
 	}
 
@@ -743,25 +729,56 @@ func resolveCredentialFile(path string) (string, bool) {
 	return path, true
 }
 
+func prepareWritableClaudeRoot(home string, targetDir string) (string, bool) {
+	if err := os.MkdirAll(filepath.Join(targetDir, ".claude"), 0o700); err != nil {
+		return "", false
+	}
+	for _, dir := range []string{".codex", ".config", ".npm", ".cache"} {
+		_ = os.MkdirAll(filepath.Join(targetDir, dir), 0o700)
+	}
+
+	copied := false
+	if copyCredentialFile(filepath.Join(home, ".claude.json"), filepath.Join(targetDir, ".claude.json")) {
+		copied = true
+	}
+	for _, name := range []string{".credentials.json", "settings.json", "settings.local.json"} {
+		if copyCredentialFile(filepath.Join(home, ".claude", name), filepath.Join(targetDir, ".claude", name)) {
+			copied = true
+		}
+	}
+	if !copied {
+		return "", false
+	}
+	return targetDir, true
+}
+
 func prepareWritableCodexHome(home string, targetDir string) (string, bool) {
 	if err := os.MkdirAll(targetDir, 0o700); err != nil {
 		return "", false
 	}
 
 	for _, name := range []string{"auth.json", "config.toml"} {
-		source, ok := resolveCredentialFile(filepath.Join(home, ".codex", name))
-		if !ok {
-			continue
-		}
-		data, err := os.ReadFile(source)
-		if err != nil {
-			continue
-		}
-		if err := os.WriteFile(filepath.Join(targetDir, name), data, 0o600); err != nil {
-			continue
-		}
+		_ = copyCredentialFile(filepath.Join(home, ".codex", name), filepath.Join(targetDir, name))
 	}
 	return targetDir, true
+}
+
+func copyCredentialFile(sourcePath string, targetPath string) bool {
+	source, ok := resolveCredentialFile(sourcePath)
+	if !ok {
+		return false
+	}
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return false
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+		return false
+	}
+	if err := os.WriteFile(targetPath, data, 0o600); err != nil {
+		return false
+	}
+	return true
 }
 
 func sanitizeAgentsForCredentialMounts(agents []config.AgentConfig, mounts []sandboxdocker.CredentialMount) []config.AgentConfig {
@@ -769,7 +786,7 @@ func sanitizeAgentsForCredentialMounts(agents []config.AgentConfig, mounts []san
 		return agents
 	}
 
-	hasClaudeAuth := hasCredentialTarget(mounts, "/root/.claude.json") || hasCredentialTarget(mounts, "/root/.claude/.credentials.json")
+	hasClaudeAuth := hasClaudeCredentialMount(mounts)
 
 	sanitized := make([]config.AgentConfig, len(agents))
 	copy(sanitized, agents)
@@ -792,6 +809,16 @@ func sanitizeAgentsForCredentialMounts(agents []config.AgentConfig, mounts []san
 func hasCredentialTarget(mounts []sandboxdocker.CredentialMount, target string) bool {
 	for _, mount := range mounts {
 		if mount.Target == target {
+			return true
+		}
+	}
+	return false
+}
+
+func hasClaudeCredentialMount(mounts []sandboxdocker.CredentialMount) bool {
+	for _, mount := range mounts {
+		switch mount.Target {
+		case "/root", "/root/.claude.json", "/root/.claude", "/root/.claude/.credentials.json":
 			return true
 		}
 	}

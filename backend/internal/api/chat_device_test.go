@@ -230,7 +230,6 @@ func TestHandleDeviceChatBridgesSSEAndRoutesPermissionConfirm(t *testing.T) {
 
 func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	server := newTestAPIServer(t)
-	server.config.FindAgent("claude").SessionMode = agentmode.ClaudeModeBypassPermissions
 	workspace := config.WorkspaceConfig{
 		ID:    "sandbox-ws",
 		Name:  "Sandbox",
@@ -296,6 +295,32 @@ func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskSession, "msg-im-session", "dev-1", taskExecute.TaskID, device.TaskSessionPayload{
 		SessionID: "sandbox-session",
 	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgPermissionRequest, "msg-im-permission", "dev-1", taskExecute.TaskID, device.PermissionRequestPayload{
+		SessionID: "sandbox-session",
+		Options: []device.PermissionOption{
+			{OptionID: "allow-once", Name: "Allow once", Kind: "allow_once"},
+		},
+		ToolCall: device.PermissionToolCall{
+			ToolCallID: "tool-im",
+			Title:      "Write file",
+			Kind:       "edit",
+			RawInput:   json.RawMessage(`{"file_path":"a.txt"}`),
+		},
+	}))
+	permissionConfirm := readEnvelope(t, ctx, conn)
+	if permissionConfirm.Type != device.MsgPermissionConfirm {
+		t.Fatalf("permissionConfirm.Type = %q, want %q", permissionConfirm.Type, device.MsgPermissionConfirm)
+	}
+	var permissionPayload device.PermissionConfirmPayload
+	if err := json.Unmarshal(permissionConfirm.Payload, &permissionPayload); err != nil {
+		t.Fatalf("Unmarshal(permission.confirm) error = %v", err)
+	}
+	if permissionPayload.ToolCallID != "tool-im" || permissionPayload.OptionID != "allow-once" {
+		t.Fatalf("permission confirm payload = %+v, want tool-im allow-once", permissionPayload)
+	}
+	if err := wsjson.Write(ctx, conn, device.AckEnvelope(permissionConfirm.ID)); err != nil {
+		t.Fatalf("wsjson.Write(permission.confirm ack) error = %v", err)
+	}
 	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskEvent, "msg-im-event", "dev-1", taskExecute.TaskID, device.TaskEventPayload{
 		SessionID: "sandbox-session",
 		Notification: device.ACPNotification{

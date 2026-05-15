@@ -332,11 +332,6 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 					_ = sink.Emit("error", map[string]string{"message": "Invalid permission request"})
 					return nil, errors.New("invalid permission request")
 				}
-				if !s.shouldAutoApproveAgent(input.AgentID) {
-					_ = sink.Emit("error", map[string]string{"message": "permission request requires interactive approval"})
-					sendCancel("permission_requires_interactive_approval")
-					return nil, errors.New("permission request requires interactive approval")
-				}
 				optionID, ok := selectRemotePermissionOption(payload)
 				if !ok {
 					_ = sink.Emit("error", map[string]string{"message": "permission request does not allow auto approval"})
