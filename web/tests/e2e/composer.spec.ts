@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test'
 import { installMockBackend } from './support/mock-backend'
 
 test('supports agent and file mentions from the composer', async ({ page }) => {
-  await installMockBackend(page, {
+  const state = await installMockBackend(page, {
     workspaceFiles: [
       {
         path: 'src/features/chat/use-chat.ts',
@@ -26,6 +26,16 @@ test('supports agent and file mentions from the composer', async ({ page }) => {
   await expect(page.getByText('src/features/chat/use-chat.ts')).toBeVisible()
   await page.getByText('src/features/chat/use-chat.ts').click()
   await expect(composer).toHaveValue('@src/features/chat/use-chat.ts ')
+
+  await composer.fill('@qw')
+  await expect(page.getByText('Qwen Code')).toBeVisible()
+  await page.getByText('Qwen Code').click()
+  await expect(composer).toHaveValue('@qwen ')
+
+  await composer.fill('@qwen hello')
+  await page.getByRole('button', { name: 'Send' }).click()
+  await expect.poll(() => state.chatRequests.at(-1)?.message).toBe('@qwen hello')
+  expect(state.chatRequests.at(-1)?.agentId).toBe('qwen')
 })
 
 test('supports slash command completion from the keyboard', async ({ page }) => {

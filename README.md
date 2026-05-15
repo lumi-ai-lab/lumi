@@ -75,7 +75,7 @@
 │   │                                                              │   │
 │   │   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐       │   │
 │   │   │   Agent 1   │   │   Agent 2   │   │   Agent N   │       │   │
-│   │   │ (claude)    │   │  (codex)    │   │   (...)     │       │   │
+│   │   │ (claude)    │   │  (codex)    │   │   (qwen)    │       │   │
 │   │   └──────┬──────┘   └──────┬──────┘   └──────┬──────┘       │   │
 │   │          │                 │                 │               │   │
 │   └──────────┼─────────────────┼─────────────────┼───────────────┘   │
@@ -84,7 +84,7 @@
                │ JSON-RPC        │ JSON-RPC        │ JSON-RPC
                ▼                 ▼                 ▼
         ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-        │ claude-code │   │   codex     │   │    ...      │
+        │ claude-code │   │   codex     │   │ qwen-code   │
         │  process    │   │  process    │   │  process    │
         └─────────────┘   └─────────────┘   └─────────────┘
 ```
@@ -265,13 +265,25 @@ export CLAUDE_CODE_EXECUTABLE=/opt/nodejs/bin/claude
       "id": "codex",
       "name": "Codex CLI",
       "permissionMode": "default"
+    },
+    {
+      "args": [
+        "-y",
+        "@qwen-code/qwen-code",
+        "--acp"
+      ],
+      "command": "npx",
+      "id": "qwen",
+      "name": "Qwen Code",
+      "sessionMode": "default"
     }
   ],
   "defaultAgent": "claude",
   "routing": {
     "keywords": {
       "@claude": "claude",
-      "@codex": "codex"
+      "@codex": "codex",
+      "@qwen": "qwen"
     },
     "meta": true
   }
@@ -280,7 +292,8 @@ export CLAUDE_CODE_EXECUTABLE=/opt/nodejs/bin/claude
 
 说明：
 
-- `claude` 这类 agent 默认会继承当前 shell 环境变量；sample 配置里不再内置 Claude/Codex 的占位鉴权信息。
+- `claude` / `codex` / `qwen` 这类 agent 默认会继承当前 shell 环境变量；sample 配置里不再内置 Claude/Codex/Qwen 的占位鉴权信息。
+- 高级用户也可以把 Qwen 改为全局 CLI 启动：`"command": "qwen", "args": ["--acp"]`。若本机缺少 `qwen`，setup 会提示执行 `npm install -g @qwen-code/qwen-code`。
 - 如果在 Linux 服务器上使用 `@agentclientprotocol/claude-agent-acp@0.30.0`，并且系统的 `glibc` 版本不足以运行 SDK 自带的 native `claude` binary，需要在启动前设置 `CLAUDE_CODE_EXECUTABLE` 指向系统中可用的 `claude` 可执行文件。
 
 `publicServerURL` 是可选项。配置后，远程设备配对命令会优先使用这个地址；未配置时，系统会自动尝试使用当前服务机器的局域网 IP，而不是默认写成 `localhost`。

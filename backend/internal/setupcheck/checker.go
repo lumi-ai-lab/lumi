@@ -34,6 +34,7 @@ var installInstructions = map[string]string{
 	"node":   "https://nodejs.org/en/download",
 	"claude": "npm install -g @anthropic-ai/claude-code",
 	"codex":  "npm install -g @openai/codex",
+	"qwen":   "npm install -g @qwen-code/qwen-code",
 }
 
 var acpToAgentCommand = map[string]struct {
@@ -44,6 +45,7 @@ var acpToAgentCommand = map[string]struct {
 	"@zed-industries/claude-agent-acp":      {Name: "Claude", Command: "claude"},
 	"@zed-industries/claude-code-acp":       {Name: "Claude", Command: "claude"},
 	"@zed-industries/codex-acp":             {Name: "Codex", Command: "codex"},
+	"@qwen-code/qwen-code":                  {Name: "Qwen Code", Command: "qwen"},
 }
 
 // InitialStatus builds the initial "checking" state for the provided agents.

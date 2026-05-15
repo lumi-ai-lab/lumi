@@ -19,6 +19,8 @@ func BuildDirs(workspacePath string, agent config.AgentConfig) []string {
 		return ClaudeDirs(absDir)
 	case agentmode.BackendCodex:
 		return CodexDirs(absDir, "")
+	case agentmode.BackendQwen:
+		return QwenDirs(absDir)
 	default:
 		return nil
 	}
@@ -60,26 +62,17 @@ func CodexDirs(workDir, explicitCodexHome string) []string {
 	return uniqueDirs(append(projectDirs, userDirs...))
 }
 
-func walkUpClaudeSkillDirs(workDir, home string) []string {
-	current := filepath.Clean(workDir)
-	home = filepath.Clean(home)
-	stopAt := findProjectRoot(current, ".git")
-	var dirs []string
-	for {
-		if home != "" && sameCleanPath(current, home) {
-			break
-		}
-		dirs = append(dirs, filepath.Join(current, ".claude", "skills"))
-		if stopAt != "" && sameCleanPath(current, stopAt) {
-			break
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-		current = parent
+func QwenDirs(workDir string) []string {
+	home, _ := os.UserHomeDir()
+	projectDirs := walkUpSkillDirs(workDir, home, ".qwen")
+	if home == "" {
+		return projectDirs
 	}
-	return uniqueDirs(dirs)
+	return uniqueDirs(append(projectDirs, filepath.Join(home, ".qwen", "skills")))
+}
+
+func walkUpClaudeSkillDirs(workDir, home string) []string {
+	return walkUpSkillDirs(workDir, home, ".claude")
 }
 
 func walkUpCodexSkillDirs(workDir, home string) []string {
@@ -95,6 +88,28 @@ func walkUpCodexSkillDirs(workDir, home string) []string {
 			filepath.Join(current, ".agents", "skills"),
 			filepath.Join(current, ".codex", "skills"),
 		)
+		if stopAt != "" && sameCleanPath(current, stopAt) {
+			break
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return uniqueDirs(dirs)
+}
+
+func walkUpSkillDirs(workDir, home, dirName string) []string {
+	current := filepath.Clean(workDir)
+	home = filepath.Clean(home)
+	stopAt := findProjectRoot(current, ".git")
+	var dirs []string
+	for {
+		if home != "" && sameCleanPath(current, home) {
+			break
+		}
+		dirs = append(dirs, filepath.Join(current, dirName, "skills"))
 		if stopAt != "" && sameCleanPath(current, stopAt) {
 			break
 		}

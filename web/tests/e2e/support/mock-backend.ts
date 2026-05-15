@@ -199,6 +199,7 @@ export interface ChatRequestBody {
   workspaceId: string | null
   files?: MockMessageFile[]
   deviceId?: string | null
+  agentId?: string | null
 }
 
 type ChatResponseFactory =
@@ -395,6 +396,21 @@ export const DEFAULT_AGENTS: MockAgent[] = [
       { name: 'test', description: 'Run the relevant test suite' },
     ],
   },
+  {
+    id: 'qwen',
+    name: 'Qwen Code',
+    backend: 'qwen',
+    permissionMode: 'default',
+    sessionMode: 'default',
+    command: 'npx',
+    args: ['-y', '@qwen-code/qwen-code', '--acp'],
+    env: {},
+    availableModes: [
+      { value: 'default', label: 'Default' },
+      { value: 'yolo', label: 'YOLO' },
+    ],
+    commands: [],
+  },
 ]
 
 export const DEFAULT_WORKSPACES: MockWorkspace[] = [
@@ -466,6 +482,7 @@ export async function installMockBackend(
           this.dispatchEvent(event)
           this.onopen?.(event)
         }, 0)
+        void this.readStream()
       }
 
       close() {
@@ -480,6 +497,38 @@ export async function installMockBackend(
         this.dispatchEvent(message)
         if (detail.type === 'message') {
           this.onmessage?.(message)
+        }
+      }
+
+      private async readStream() {
+        try {
+          const response = await fetch(this.url, { headers: { Accept: 'text/event-stream' } })
+          if (!response.ok) throw new Error(`EventSource request failed: ${response.status}`)
+          const text = await response.text()
+          if (this.readyState === 2) return
+          for (const frame of text.split('\n\n')) {
+            const lines = frame.split('\n')
+            let eventType = 'message'
+            const dataLines: string[] = []
+            for (const line of lines) {
+              if (line.startsWith('event: ')) {
+                eventType = line.slice(7)
+              } else if (line.startsWith('data: ')) {
+                dataLines.push(line.slice(6))
+              }
+            }
+            if (dataLines.length === 0) continue
+            const message = new MessageEvent(eventType, { data: dataLines.join('\n') })
+            this.dispatchEvent(message)
+            if (eventType === 'message') {
+              this.onmessage?.(message)
+            }
+          }
+        } catch {
+          if (this.readyState === 2) return
+          const event = new Event('error')
+          this.dispatchEvent(event)
+          this.onerror?.(event)
         }
       }
     }
@@ -1353,8 +1402,21 @@ function createMockBackendState(options: MockBackendOptions): MockBackendState {
               status: 'ready',
               message: 'Installed',
             },
+            {
+              name: 'Qwen Code',
+              command: 'qwen',
+              status: 'ready',
+              message: 'Installed',
+            },
           ],
-          acpPackages: [],
+          acpPackages: [
+            {
+              name: 'Qwen Code',
+              package: '@qwen-code/qwen-code',
+              status: 'ready',
+              message: 'Cached',
+            },
+          ],
         },
       ]
     ),

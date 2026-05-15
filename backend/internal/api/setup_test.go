@@ -26,6 +26,11 @@ func TestNormalizePackageName(t *testing.T) {
 			want:        "@zed-industries/claude-code-acp",
 		},
 		{
+			name:        "qwen scoped package",
+			packageSpec: "@qwen-code/qwen-code@1.0.0",
+			want:        "@qwen-code/qwen-code",
+		},
+		{
 			name:        "unscoped package with version",
 			packageSpec: "typescript@5.9.3",
 			want:        "typescript",

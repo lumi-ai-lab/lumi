@@ -28,7 +28,7 @@ func TestEnsureConfigFileCreatesExampleConfig(t *testing.T) {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 	text := string(data)
-	if !strings.Contains(text, `"id": "claude"`) || !strings.Contains(text, `"id": "codex"`) {
+	if !strings.Contains(text, `"id": "claude"`) || !strings.Contains(text, `"id": "codex"`) || !strings.Contains(text, `"id": "qwen"`) {
 		t.Fatalf("saved config missing example agents: %s", text)
 	}
 	if !state.Exists {
@@ -91,7 +91,8 @@ func TestAgentIDsReturnsExistingAgents(t *testing.T) {
 	original := `{
   "agents": [
     {"id": "claude", "name": "Claude Code", "command": "npx"},
-    {"id": "codex", "name": "Codex CLI", "command": "npx"}
+    {"id": "codex", "name": "Codex CLI", "command": "npx"},
+    {"id": "qwen", "name": "Qwen Code", "command": "npx"}
   ],
   "defaultAgent": "claude"
 }
@@ -106,8 +107,8 @@ func TestAgentIDsReturnsExistingAgents(t *testing.T) {
 	}
 
 	got := strings.Join(AgentIDs(state), ",")
-	if got != "claude,codex" {
-		t.Fatalf("AgentIDs() = %q, want %q", got, "claude,codex")
+	if got != "claude,codex,qwen" {
+		t.Fatalf("AgentIDs() = %q, want %q", got, "claude,codex,qwen")
 	}
 	if !HasAgent(state, "claude") {
 		t.Fatal("HasAgent(claude) = false, want true")

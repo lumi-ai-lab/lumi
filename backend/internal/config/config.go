@@ -52,6 +52,8 @@ type Config struct {
 	Routing          *RoutingConfig    `json:"routing,omitempty"`
 	Workspaces       []WorkspaceConfig `json:"workspaces,omitempty"`
 	DefaultWorkspace string            `json:"defaultWorkspace,omitempty"`
+
+	builtInDefaultsChanged bool
 }
 
 // rawConfig supports legacy field names
@@ -75,7 +77,7 @@ func (r *rawConfig) normalize() *Config {
 	if defaultAgent == "" {
 		defaultAgent = r.DefaultBackend
 	}
-	return &Config{
+	cfg := &Config{
 		PublicServerURL:  r.PublicServerURL,
 		Agents:           agents,
 		DefaultAgent:     defaultAgent,
@@ -83,6 +85,8 @@ func (r *rawConfig) normalize() *Config {
 		Workspaces:       r.Workspaces,
 		DefaultWorkspace: r.DefaultWorkspace,
 	}
+	cfg.builtInDefaultsChanged = cfg.EnsureBuiltInDefaults()
+	return cfg
 }
 
 // LoadedConfigPath stores the path of loaded config file
@@ -177,7 +181,7 @@ func EnsureConfigExists() error {
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
 	cwd, _ := os.Getwd()
-	return &Config{
+	cfg := &Config{
 		Agents: []AgentConfig{
 			{
 				ID:      "claude",
@@ -185,13 +189,58 @@ func DefaultConfig() *Config {
 				Command: "npx",
 				Args:    []string{"@anthropics/claude-code", "--acp"},
 			},
+			{
+				ID:      "qwen",
+				Name:    "Qwen Code",
+				Command: "npx",
+				Args:    []string{"-y", "@qwen-code/qwen-code", "--acp"},
+			},
 		},
 		DefaultAgent: "claude",
-		Routing:      &RoutingConfig{Meta: true},
+		Routing:      &RoutingConfig{Keywords: map[string]string{"@qwen": "qwen"}, Meta: true},
 		Workspaces: []WorkspaceConfig{
 			{ID: "default", Name: "Default", Path: cwd},
 		},
 		DefaultWorkspace: "default",
+	}
+	cfg.builtInDefaultsChanged = cfg.EnsureBuiltInDefaults()
+	return cfg
+}
+
+func (c *Config) BuiltInDefaultsChanged() bool {
+	return c != nil && c.builtInDefaultsChanged
+}
+
+// EnsureBuiltInDefaults non-destructively adds built-in agents and routing
+// introduced after a user's config file may already have been created.
+func (c *Config) EnsureBuiltInDefaults() bool {
+	changed := false
+	if c.FindAgent("qwen") == nil {
+		c.Agents = append(c.Agents, defaultQwenAgent())
+		changed = true
+	}
+	if c.Routing == nil {
+		c.Routing = &RoutingConfig{}
+		changed = true
+	}
+	if c.Routing.Keywords == nil {
+		c.Routing.Keywords = map[string]string{}
+		changed = true
+	}
+	if c.Routing.Keywords["@qwen"] != "qwen" {
+		c.Routing.Keywords["@qwen"] = "qwen"
+		changed = true
+	}
+	return changed
+}
+
+func defaultQwenAgent() AgentConfig {
+	return AgentConfig{
+		ID:          "qwen",
+		Name:        "Qwen Code",
+		Command:     "npx",
+		Args:        []string{"-y", "@qwen-code/qwen-code", "--acp"},
+		SessionMode: "default",
 	}
 }
 

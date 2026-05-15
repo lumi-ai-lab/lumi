@@ -980,6 +980,7 @@ export function sendMessage(
   files: MessageFile[],
   onEvent: (event: unknown) => void,
   deviceId?: string,
+  agentId?: string,
 ) {
   const controller = new AbortController();
 
@@ -988,7 +989,7 @@ export function sendMessage(
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ message, conversationId, workspaceId, files, deviceId }),
+    body: JSON.stringify({ message, conversationId, workspaceId, files, deviceId, agentId }),
     signal: controller.signal,
   })
     .then(async (response) => {

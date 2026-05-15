@@ -13,6 +13,7 @@ import (
 var agentNpmPackages = map[string]string{
 	"claude": "@anthropic-ai/claude-code",
 	"codex":  "@openai/codex",
+	"qwen":   "@qwen-code/qwen-code",
 }
 
 func printSetupStatus(status setupcheck.SetupStatus) {

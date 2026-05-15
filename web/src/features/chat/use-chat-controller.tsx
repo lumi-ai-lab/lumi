@@ -146,6 +146,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   const pendingStreamAgentRef = useRef<Record<string, string>>({})
   const streamItemsRef = useRef<Record<string, StreamItem[]>>({})
   const workspacesRef = useRef<Workspace[]>([])
+  const agentsRef = useRef<Agent[]>([])
   const workspaceTreeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingWorkspaceTreeRefreshRef = useRef<string | null>(null)
   const skillRefreshRef = useRef({ key: '', timestamp: 0 })
@@ -181,6 +182,10 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   useEffect(() => {
     workspacesRef.current = workspaces
   }, [workspaces])
+
+  useEffect(() => {
+    agentsRef.current = agents
+  }, [agents])
 
   useEffect(() => {
     return () => {
@@ -1015,6 +1020,10 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       workspacesRef.current.find((item) => item.id === currentWorkspaceRef.current) || null
     const deviceId =
       workspace?.kind === 'remote' && workspace.deviceId ? workspace.deviceId : undefined
+    const agentMention = message.match(/@([\w-]+)/)?.[1]
+    const mentionedAgent = agentMention
+      ? agentsRef.current.find((agent) => agent.id === agentMention)?.id
+      : undefined
 
     api.sendMessage(
       message,
@@ -1025,6 +1034,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
         handleStreamEvent(event as StreamEvent & Record<string, unknown>, targetSessionId)
       },
       deviceId,
+      mentionedAgent,
     )
   }
 

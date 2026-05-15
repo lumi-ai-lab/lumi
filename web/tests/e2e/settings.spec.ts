@@ -9,6 +9,7 @@ test('updates language, theme, and agent mode from settings', async ({ page }) =
 
   await page.getByRole('button', { name: 'Settings' }).click()
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
+  await expect(page.locator('span', { hasText: 'Qwen Code' }).first()).toBeVisible()
 
   await page.getByRole('button', { name: '中文' }).click()
   await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible()

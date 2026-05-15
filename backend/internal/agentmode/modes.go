@@ -12,6 +12,7 @@ const (
 	BackendUnknown Backend = ""
 	BackendClaude  Backend = "claude"
 	BackendCodex   Backend = "codex"
+	BackendQwen    Backend = "qwen"
 )
 
 const (
@@ -25,6 +26,8 @@ const (
 
 	CodexModeYolo          = "yolo"
 	CodexModeYoloNoSandbox = "yoloNoSandbox"
+
+	QwenModeYolo = "yolo"
 )
 
 type ModeOption struct {
@@ -52,6 +55,10 @@ var modeRegistry = map[Backend][]ModeOption{
 		{Value: CodexModeYolo, Label: "Full Auto", Description: "Auto-approve all tool calls with workspace-write sandbox."},
 		{Value: CodexModeYoloNoSandbox, Label: "Full Auto (No Sandbox)", Description: "Auto-approve all tool calls with danger-full-access sandbox."},
 	},
+	BackendQwen: {
+		{Value: ModeDefault, Label: "Default", Description: "Prompt for permissions when needed."},
+		{Value: QwenModeYolo, Label: "YOLO", Description: "Auto-approve supported Qwen tool calls."},
+	},
 }
 
 func DetectBackend(id, command string, args []string) Backend {
@@ -61,6 +68,10 @@ func DetectBackend(id, command string, args []string) Backend {
 	haystack := commandLower + " " + argsLower
 
 	switch {
+	case strings.Contains(commandLower, "@qwen-code/qwen-code"), strings.Contains(haystack, "@qwen-code/qwen-code"):
+		return BackendQwen
+	case strings.Contains(commandLower, "qwen-code"), strings.Contains(haystack, "qwen-code"):
+		return BackendQwen
 	case strings.Contains(commandLower, "codex-acp"), strings.Contains(haystack, "codex-acp"):
 		return BackendCodex
 	case strings.Contains(commandLower, "claude-agent-acp"), strings.Contains(haystack, "claude-agent-acp"):
@@ -69,6 +80,8 @@ func DetectBackend(id, command string, args []string) Backend {
 		return BackendCodex
 	case idLower == "claude":
 		return BackendClaude
+	case idLower == "qwen":
+		return BackendQwen
 	default:
 		return BackendUnknown
 	}
@@ -114,6 +127,10 @@ func ResolveSessionMode(backend Backend, sessionMode, permissionMode string) str
 		if strings.TrimSpace(permissionMode) == "bypass" {
 			return CodexModeYolo
 		}
+	case BackendQwen:
+		if strings.TrimSpace(permissionMode) == "bypass" {
+			return QwenModeYolo
+		}
 	}
 
 	return ModeDefault
@@ -134,13 +151,17 @@ func LegacyPermissionMode(backend Backend, sessionMode string) string {
 		if mode == CodexModeYolo || mode == CodexModeYoloNoSandbox {
 			return "bypass"
 		}
+	case BackendQwen:
+		if mode == QwenModeYolo {
+			return "bypass"
+		}
 	}
 
 	return ""
 }
 
 func SupportsACPSetMode(backend Backend) bool {
-	return backend == BackendClaude
+	return backend == BackendClaude || backend == BackendQwen
 }
 
 func ShouldSetACPMode(backend Backend, sessionMode string) bool {
@@ -156,9 +177,14 @@ func ShouldSetACPMode(backend Backend, sessionMode string) bool {
 }
 
 func IsAutoApproveMode(backend Backend, sessionMode string) bool {
-	switch ResolveSessionMode(backend, sessionMode, "") {
-	case ClaudeModeBypassPermissions, CodexModeYolo, CodexModeYoloNoSandbox:
-		return true
+	mode := ResolveSessionMode(backend, sessionMode, "")
+	switch backend {
+	case BackendClaude:
+		return mode == ClaudeModeBypassPermissions
+	case BackendCodex:
+		return mode == CodexModeYolo || mode == CodexModeYoloNoSandbox
+	case BackendQwen:
+		return mode == QwenModeYolo
 	default:
 		return false
 	}

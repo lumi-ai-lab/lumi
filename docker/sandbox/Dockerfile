@@ -22,6 +22,7 @@ RUN apt-get update \
 RUN npm install -g \
       @anthropic-ai/claude-code \
       @openai/codex \
+      @qwen-code/qwen-code \
       @agentclientprotocol/claude-agent-acp@0.30.0 \
       @zed-industries/codex-acp \
     && npm cache clean --force

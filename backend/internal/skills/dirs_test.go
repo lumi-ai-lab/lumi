@@ -94,3 +94,25 @@ func TestCodexDirsStopsAtGitRootAndUsesHomeFallback(t *testing.T) {
 		t.Fatalf("CodexDirs did not include git root dirs before stopping: %#v", got)
 	}
 }
+
+func TestQwenDirsWalkParentsStopAtGitRootAndUseHomeFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	repo := filepath.Join(home, "repo")
+	work := filepath.Join(repo, "apps", "web")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := QwenDirs(work)
+	want := []string{
+		filepath.Join(work, ".qwen", "skills"),
+		filepath.Join(repo, "apps", ".qwen", "skills"),
+		filepath.Join(repo, ".qwen", "skills"),
+		filepath.Join(home, ".qwen", "skills"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("QwenDirs() = %#v, want %#v", got, want)
+	}
+}

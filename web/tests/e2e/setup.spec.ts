@@ -52,7 +52,14 @@ test('enters chat when the setup event stream reports ready', async ({ page }) =
             message: 'Installed',
           },
         ],
-        acpPackages: [],
+        acpPackages: [
+          {
+            name: 'Qwen Code',
+            package: '@qwen-code/qwen-code',
+            status: 'ready',
+            message: 'Cached',
+          },
+        ],
       },
     ],
   })
@@ -66,4 +73,54 @@ test('enters chat when the setup event stream reports ready', async ({ page }) =
   }
   await expect(page).toHaveURL(/\/c$/)
   await expect(page.getByText('Start chatting!')).toBeVisible()
+})
+
+test('shows Qwen package setup status', async ({ page }) => {
+  await installMockBackend(page, {
+    setupReady: false,
+    setupSubscribeEvents: [],
+  })
+
+  await page.goto('/setup')
+  await expect(page.getByRole('heading', { name: 'Lumi Setup' })).toBeVisible()
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('mock-cron-event', {
+      detail: {
+        type: 'message',
+        payload: {
+          ready: false,
+          environment: [
+            {
+              name: 'Node.js',
+              command: 'node -v',
+              status: 'ready',
+              message: 'v22.0.0',
+            },
+          ],
+          agents: [
+            {
+              name: 'Qwen Code',
+              command: 'qwen',
+              status: 'missing',
+              message: 'Not found',
+              install: 'npm install -g @qwen-code/qwen-code',
+            },
+          ],
+          acpPackages: [
+            {
+              name: 'Qwen Code',
+              package: '@qwen-code/qwen-code',
+              status: 'not_installed',
+              message: 'Not installed',
+              install: 'npm install -g @qwen-code/qwen-code',
+            },
+          ],
+        },
+      },
+    }))
+  })
+
+  await expect(page.locator('section', { hasText: 'Agents' }).getByText('Qwen Code')).toBeVisible()
+  await expect(page.locator('section', { hasText: 'ACP Packages' }).getByText('@qwen-code/qwen-code')).toBeVisible()
+  await expect(page.getByText('npm install -g @qwen-code/qwen-code').first()).toBeVisible()
 })

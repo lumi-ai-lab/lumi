@@ -20,13 +20,25 @@
       "id": "codex",
       "name": "Codex CLI",
       "sessionMode": "default"
+    },
+    {
+      "args": [
+        "-y",
+        "@qwen-code/qwen-code",
+        "--acp"
+      ],
+      "command": "npx",
+      "id": "qwen",
+      "name": "Qwen Code",
+      "sessionMode": "default"
     }
   ],
   "defaultAgent": "claude",
   "routing": {
     "keywords": {
       "@claude": "claude",
-      "@codex": "codex"
+      "@codex": "codex",
+      "@qwen": "qwen"
     },
     "meta": true
   }  

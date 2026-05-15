@@ -31,6 +31,7 @@ func newTestAPIServer(t *testing.T) *Server {
 		Agents: []config.AgentConfig{
 			{ID: "claude", Name: "Claude Code", Command: "echo"},
 			{ID: "codex", Name: "Codex CLI", Command: "echo"},
+			{ID: "qwen", Name: "Qwen Code", Command: "echo", Args: []string{"@qwen-code/qwen-code"}},
 		},
 		DefaultAgent: "claude",
 		Workspaces: []config.WorkspaceConfig{

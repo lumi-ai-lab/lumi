@@ -33,6 +33,7 @@ type InstallResult struct {
 var agentNpmPackages = map[string]string{
 	"claude": "@anthropic-ai/claude-code",
 	"codex":  "@openai/codex",
+	"qwen":   "@qwen-code/qwen-code",
 }
 
 var npmRegistries = []struct {

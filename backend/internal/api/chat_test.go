@@ -3,12 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/pengmide/lumi/internal/agentmode"
+	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 )
 
@@ -32,7 +35,7 @@ func TestCollectFileMentionsSkipsAgentsAndDeduplicates(t *testing.T) {
 	server := newTestAPIServer(t)
 
 	got := collectFileMentions(
-		"Review @claude and @src/app.ts plus @README.md and @src/app.ts again",
+		"Review @claude and @qwen plus @src/app.ts plus @README.md and @src/app.ts again",
 		server.router,
 	)
 
@@ -44,6 +47,62 @@ func TestCollectFileMentionsSkipsAgentsAndDeduplicates(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("mentions[%d] = %q, want %q (all: %v)", i, got[i], want[i], got)
 		}
+	}
+}
+
+func TestPrepareChatRoutesQwenMention(t *testing.T) {
+	server := newTestAPIServer(t)
+
+	prepared, err := server.prepareChat(context.Background(), chatRequest{
+		Message:     "@qwen hello",
+		WorkspaceID: "default",
+	})
+	if err != nil {
+		t.Fatalf("prepareChat() error = %v", err)
+	}
+	if prepared.AgentID != "qwen" {
+		t.Fatalf("prepared.AgentID = %q, want qwen", prepared.AgentID)
+	}
+	if !prepared.AgentChanged {
+		t.Fatal("prepared.AgentChanged = false, want true")
+	}
+}
+
+func TestServerWithMigratedConfigExposesQwenAgentAndSetup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{ID: "claude", Name: "Claude Code", Command: "echo"},
+			{ID: "codex", Name: "Codex CLI", Command: "echo"},
+		},
+		DefaultAgent: "claude",
+		Workspaces: []config.WorkspaceConfig{
+			{ID: "default", Name: "Default", Path: home},
+		},
+		DefaultWorkspace: "default",
+	}
+	cfg.EnsureBuiltInDefaults()
+	server := NewServer(cfg, nil)
+
+	agentsRec := httptest.NewRecorder()
+	agentsReq := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	server.Handler().ServeHTTP(agentsRec, agentsReq)
+	if agentsRec.Code != http.StatusOK {
+		t.Fatalf("/api/agents status = %d, body = %s", agentsRec.Code, agentsRec.Body.String())
+	}
+	if !strings.Contains(agentsRec.Body.String(), `"id":"qwen"`) {
+		t.Fatalf("/api/agents missing qwen: %s", agentsRec.Body.String())
+	}
+
+	setupRec := httptest.NewRecorder()
+	setupReq := httptest.NewRequest(http.MethodGet, "/api/setup/status", nil)
+	server.Handler().ServeHTTP(setupRec, setupReq)
+	if setupRec.Code != http.StatusOK {
+		t.Fatalf("/api/setup/status status = %d, body = %s", setupRec.Code, setupRec.Body.String())
+	}
+	if !strings.Contains(setupRec.Body.String(), `@qwen-code/qwen-code`) {
+		t.Fatalf("/api/setup/status missing qwen package: %s", setupRec.Body.String())
 	}
 }
 
