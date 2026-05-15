@@ -432,6 +432,7 @@ func dialWebSocket(ctx context.Context, serverURL, token string) (*websocketConn
 	if err != nil {
 		return nil, err
 	}
+	conn.SetReadLimit(device.WebSocketReadLimit)
 	return &websocketConn{conn: conn}, nil
 }
 

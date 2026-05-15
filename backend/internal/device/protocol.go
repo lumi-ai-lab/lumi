@@ -8,6 +8,8 @@ import (
 
 type MessageType string
 
+const WebSocketReadLimit = 8 << 20 // 8 MiB
+
 const (
 	MsgAck               MessageType = "ack"
 	MsgError             MessageType = "error"

@@ -22,6 +22,7 @@ func (r *Registry) HandleWebSocket(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		return
 	}
+	conn.SetReadLimit(WebSocketReadLimit)
 
 	deviceConn := NewConnection(conn)
 	ctx, cancel := context.WithCancel(req.Context())
