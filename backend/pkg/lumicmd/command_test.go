@@ -76,6 +76,8 @@ func TestWeComRunParsesIdleTimeoutFlag(t *testing.T) {
 	}
 	state.Config.Agents = []config.AgentConfig{
 		{ID: "claude", Name: "Claude Code", Command: "npx"},
+		{ID: "codex", Name: "Codex CLI", Command: "npx"},
+		{ID: "qwen", Name: "Qwen Code", Command: "npx"},
 	}
 	state.Config.DefaultAgent = "claude"
 	if err := state.Config.Save(state.Path); err != nil {
@@ -154,6 +156,61 @@ func TestWeChatRunUsesSavedCredentials(t *testing.T) {
 	}
 	if !stdoutContains(t, stdout, "WeChat: using saved account wx-saved") {
 		t.Fatalf("stdout missing saved account message")
+	}
+	if !stdoutContains(t, stdout, "Workspace agents: claude, codex, qwen") {
+		t.Fatalf("stdout missing workspace agents")
+	}
+}
+
+func TestWeChatRunParsesWorkspaceAgentsFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := createCLIConfigWithAgent(t, home)
+	if err := wechat.NewConfigStore().Save(wechat.Config{
+		Enabled:   true,
+		AccountID: "wx-saved",
+		BotToken:  "saved-token",
+		BaseURL:   "https://saved.test",
+	}); err != nil {
+		t.Fatalf("Save(wechat) error = %v", err)
+	}
+
+	originalStartServer := startServer
+	originalLoginClient := newWeChatLoginClient
+	defer func() {
+		startServer = originalStartServer
+		newWeChatLoginClient = originalLoginClient
+	}()
+	var startedConfig *config.Config
+	startServer = func(cfg *config.Config, staticFS fs.FS, port string) (serverRuntime, error) {
+		startedConfig = cfg
+		return &fakeServerRuntime{port: port}, nil
+	}
+	newWeChatLoginClient = func(baseURL string) wechatLoginClient {
+		t.Fatalf("newWeChatLoginClient called for saved credentials")
+		return nil
+	}
+
+	stdout, stderr := tempStdoutStderr(t)
+	if err := runWeChatRun([]string{
+		"--workspace", workspace,
+		"--agent", "codex",
+		"--agents", "claude,codex",
+	}, stdout, stderr); err != nil {
+		t.Fatalf("runWeChatRun() error = %v", err)
+	}
+	if startedConfig == nil {
+		t.Fatal("startServer was not called")
+	}
+	ws := startedConfig.FindWorkspace(lumicli.WorkspaceID)
+	if ws == nil {
+		t.Fatal("cli-local workspace not found")
+	}
+	if got := strings.Join(ws.Agents, ","); got != "claude,codex" {
+		t.Fatalf("workspace agents = %q, want claude,codex", got)
+	}
+	if !stdoutContains(t, stdout, "Default agent: codex") || !stdoutContains(t, stdout, "Workspace agents: claude, codex") {
+		t.Fatalf("stdout missing default/workspace agents")
 	}
 }
 
@@ -431,6 +488,8 @@ func createCLIConfigWithAgent(t *testing.T, home string) string {
 	}
 	state.Config.Agents = []config.AgentConfig{
 		{ID: "claude", Name: "Claude Code", Command: "npx"},
+		{ID: "codex", Name: "Codex CLI", Command: "npx"},
+		{ID: "qwen", Name: "Qwen Code", Command: "npx"},
 	}
 	state.Config.DefaultAgent = "claude"
 	if err := state.Config.Save(state.Path); err != nil {

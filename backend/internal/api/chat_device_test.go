@@ -14,6 +14,7 @@ import (
 
 	"github.com/pengmide/lumi/internal/agentmode"
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/conversation"
 	"github.com/pengmide/lumi/internal/device"
 	"github.com/pengmide/lumi/internal/sandbox"
 	"github.com/pengmide/lumi/internal/storage"
@@ -258,7 +259,17 @@ func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 
 	conn := connectTestDevice(t, ctx, httpServer.URL, secret)
 	defer conn.Close(websocket.StatusNormalClosure, "done")
-	registerAndReadyDevice(t, ctx, conn)
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgDeviceRegister, "msg-register-codex", "dev-1", "", device.DeviceRegisterPayload{
+		DeviceID: "dev-1",
+		Name:     "Office Mac",
+		Agents: []device.DeviceAgentInfo{
+			{ID: "claude", Name: "Claude Code"},
+			{ID: "codex", Name: "Codex CLI"},
+		},
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgSetupStatus, "msg-setup-codex", "dev-1", "", device.SetupStatusPayload{
+		Ready: true,
+	}))
 
 	sink := &recordingWeComSink{}
 	errCh := make(chan error, 1)
@@ -343,6 +354,114 @@ func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	}
 	if !sink.hasUpdateText("hello from sandbox") {
 		t.Fatalf("sink events missing sandbox response: %+v", sink.events)
+	}
+}
+
+func TestRunWeComChatSandboxSwitchPersistsActiveAgentAndInjectsContext(t *testing.T) {
+	server := newTestAPIServer(t)
+	workspace := config.WorkspaceConfig{
+		ID:    "sandbox-ws",
+		Name:  "Sandbox",
+		Path:  t.TempDir(),
+		Kind:  "sandbox",
+		Image: sandbox.DefaultImage,
+	}
+	server.config.Workspaces = append(server.config.Workspaces, workspace)
+	server.sandbox = &fakeSandboxManager{ensureState: sandbox.RuntimeState{
+		WorkspaceID:   workspace.ID,
+		DeviceID:      "dev-1",
+		WorkspacePath: sandbox.WorkspacePath,
+		Status:        sandbox.StatusRunning,
+	}}
+
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	secret, err := device.EnsureSecret("")
+	if err != nil {
+		t.Fatalf("EnsureSecret() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn := connectTestDevice(t, ctx, httpServer.URL, secret)
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgDeviceRegister, "msg-register-codex-context", "dev-1", "", device.DeviceRegisterPayload{
+		DeviceID: "dev-1",
+		Name:     "Office Mac",
+		Agents: []device.DeviceAgentInfo{
+			{ID: "claude", Name: "Claude Code"},
+			{ID: "codex", Name: "Codex CLI"},
+		},
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgSetupStatus, "msg-setup-codex-context", "dev-1", "", device.SetupStatusPayload{
+		Ready: true,
+	}))
+
+	store := &memoryIMStore{session: &storage.StoredSession{
+		ID:          "wecom_context",
+		ActiveAgent: "claude",
+		WorkspaceID: workspace.ID,
+		CreatedAt:   time.Now().UnixMilli(),
+		UpdatedAt:   time.Now().UnixMilli(),
+		Messages: []conversation.Message{
+			{Role: "user", Content: "previous question", Timestamp: time.Now().UnixMilli()},
+			{Role: "assistant", Agent: "claude", Content: "previous answer", Timestamp: time.Now().UnixMilli()},
+		},
+	}}
+
+	sink := &recordingWeComSink{}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.RunWeComChat(ctx, wecom.ChatRunInput{
+			Message:           "new question",
+			ConversationID:    "wecom_context",
+			WorkspaceID:       workspace.ID,
+			WorkspacePath:     workspace.Path,
+			AgentID:           "codex",
+			PromptPrefix:      "prefix",
+			ConversationStore: store,
+		}, sink)
+	}()
+
+	taskExecute := readEnvelope(t, ctx, conn)
+	if taskExecute.Type != device.MsgTaskExecute {
+		t.Fatalf("taskExecute.Type = %q, want %q", taskExecute.Type, device.MsgTaskExecute)
+	}
+	var taskPayload device.TaskExecutePayload
+	if err := json.Unmarshal(taskExecute.Payload, &taskPayload); err != nil {
+		t.Fatalf("Unmarshal(task.execute) error = %v", err)
+	}
+	if taskPayload.AgentID != "codex" {
+		t.Fatalf("taskPayload.AgentID = %q, want codex", taskPayload.AgentID)
+	}
+	for _, want := range []string{"[Previous conversation context]", "User: previous question", "Assistant (claude): previous answer", "prefix", "new question"} {
+		if !strings.Contains(taskPayload.Prompt, want) {
+			t.Fatalf("task prompt missing %q:\n%s", want, taskPayload.Prompt)
+		}
+	}
+	if err := wsjson.Write(ctx, conn, device.AckEnvelope(taskExecute.ID)); err != nil {
+		t.Fatalf("wsjson.Write(task.execute ack) error = %v", err)
+	}
+
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskSession, "msg-im-session", "dev-1", taskExecute.TaskID, device.TaskSessionPayload{
+		SessionID: "sandbox-session",
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskDone, "msg-im-done", "dev-1", taskExecute.TaskID, device.TaskDonePayload{
+		Result: json.RawMessage(`{"stopReason":"end_turn"}`),
+	}))
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("RunWeComChat() error = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for RunWeComChat")
+	}
+	if store.session == nil || store.session.ActiveAgent != "codex" {
+		t.Fatalf("stored session = %+v, want active codex", store.session)
 	}
 }
 

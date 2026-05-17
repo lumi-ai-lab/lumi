@@ -14,6 +14,7 @@ import (
 	"time"
 
 	lumicron "github.com/pengmide/lumi/internal/cron"
+	"github.com/pengmide/lumi/internal/imagent"
 )
 
 const (
@@ -132,10 +133,6 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCh
 	if !isSupportedWorkspaceKind(workspace.Kind) {
 		return errors.New("workspace must be local or sandbox")
 	}
-	if s.config.FindAgent(cfg.AgentID) == nil {
-		return errors.New("agent not found")
-	}
-
 	conversationID := deriveConversationID(msg.ConversationKey)
 	client := NewClient(cfg)
 	unlock, ok := s.locks.TryLock(conversationID)
@@ -143,6 +140,18 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCh
 		return client.SendText(ctx, msg.ConversationKey, busyReplyText, msg.ContextToken)
 	}
 	defer unlock()
+
+	if reply, handled, err := imagent.HandleCommand(msg.Text, conversationID, workspace.ID, cfg.AgentID, s.config, workspace, s.convStore); handled {
+		if err != nil {
+			return err
+		}
+		return client.SendText(ctx, msg.ConversationKey, reply, msg.ContextToken)
+	}
+
+	agentID, err := imagent.ResolveActiveAgent(s.convStore, conversationID, workspace.ID, cfg.AgentID, s.config, workspace)
+	if err != nil {
+		return err
+	}
 
 	messageWithAttachments, files, fatalAttachmentFailure, err := s.prepareMessageWithAttachments(ctx, client, workspace.Path, conversationID, msg)
 	if err != nil {
@@ -161,10 +170,10 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCh
 		ConversationID:      conversationID,
 		WorkspaceID:         workspace.ID,
 		WorkspacePath:       workspace.Path,
-		AgentID:             cfg.AgentID,
+		AgentID:             agentID,
 		Files:               files,
 		PromptPrefix:        wechatSourceInstruction,
-		SessionModeOverride: deriveSessionMode(cfg.AgentID),
+		SessionModeOverride: deriveSessionMode(agentID),
 		ConversationStore:   s.convStore,
 		CronTarget: lumicron.Target{WeChat: &lumicron.WeChatTarget{
 			ConversationKey: msg.ConversationKey,

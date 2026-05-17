@@ -672,7 +672,8 @@ func runWeChatRun(args []string, stdout, stderr *os.File) error {
 	configPath := fs.String("config", "", "Config file path")
 	workspace := fs.String("workspace", envOrDefault("LUMI_WORKSPACE", ""), "Local workspace path")
 	kind := fs.String("kind", envOrDefault("LUMI_WORKSPACE_KIND", "local"), "Workspace kind: local or sandbox")
-	agentID := fs.String("agent", envOrDefault("LUMI_AGENT", ""), "Configured agent ID")
+	agentID := fs.String("agent", envOrDefault("LUMI_AGENT", ""), "Default agent ID")
+	agentIDs := fs.String("agents", envOrDefault("LUMI_AGENTS", ""), "Comma-separated agent IDs available to this IM workspace; defaults to all configured agents")
 	baseURL := fs.String("base-url", envOrDefault("LUMI_WECHAT_BASE_URL", ""), "WeChat login API base URL")
 	port := fs.String("port", envOrDefault("LUMI_PORT", "3000"), "Server port")
 	idleTimeoutSec := fs.Int("idle-timeout-sec", 0, "Sandbox idle timeout in seconds for IM CLI runs; defaults to 10 years")
@@ -712,6 +713,7 @@ func runWeChatRun(args []string, stdout, stderr *os.File) error {
 		Workspace:      *workspace,
 		Kind:           *kind,
 		AgentID:        *agentID,
+		AgentIDs:       parseAgentIDs(*agentIDs),
 		AccountID:      credentials.AccountID,
 		BotToken:       credentials.BotToken,
 		BaseURL:        credentials.BaseURL,
@@ -730,7 +732,8 @@ func runWeChatRun(args []string, stdout, stderr *os.File) error {
 	fmt.Fprintf(stdout, "Config file: %s\n", state.Path)
 	fmt.Fprintf(stdout, "Workspace: %s\n", workspacePath)
 	fmt.Fprintf(stdout, "Workspace kind: %s\n", strings.TrimSpace(*kind))
-	fmt.Fprintf(stdout, "Agent: %s\n", *agentID)
+	fmt.Fprintf(stdout, "Default agent: %s\n", *agentID)
+	fmt.Fprintf(stdout, "Workspace agents: %s\n", strings.Join(workspaceAgentIDs(cfg), ", "))
 	fmt.Fprintf(stdout, "Server: http://localhost:%s\n", runtime.Port())
 	if reusedLogin {
 		fmt.Fprintf(stdout, "WeChat: using saved account %s\n", credentials.AccountID)
@@ -853,7 +856,8 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	configPath := fs.String("config", "", "Config file path")
 	workspace := fs.String("workspace", envOrDefault("LUMI_WORKSPACE", ""), "Local workspace path")
 	kind := fs.String("kind", envOrDefault("LUMI_WORKSPACE_KIND", "local"), "Workspace kind: local or sandbox")
-	agentID := fs.String("agent", envOrDefault("LUMI_AGENT", ""), "Configured agent ID")
+	agentID := fs.String("agent", envOrDefault("LUMI_AGENT", ""), "Default agent ID")
+	agentIDs := fs.String("agents", envOrDefault("LUMI_AGENTS", ""), "Comma-separated agent IDs available to this IM workspace; defaults to all configured agents")
 	botID := fs.String("bot-id", envOrDefault("LUMI_BOT_ID", ""), "WeCom bot ID")
 	botSecret := fs.String("bot-secret", envOrDefault("LUMI_BOT_SECRET", ""), "WeCom bot secret")
 	port := fs.String("port", envOrDefault("LUMI_PORT", "3000"), "Server port")
@@ -882,6 +886,7 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 		Workspace:      *workspace,
 		Kind:           *kind,
 		AgentID:        *agentID,
+		AgentIDs:       parseAgentIDs(*agentIDs),
 		BotID:          *botID,
 		BotSecret:      *botSecret,
 		Port:           *port,
@@ -899,7 +904,8 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	fmt.Fprintf(stdout, "Config file: %s\n", state.Path)
 	fmt.Fprintf(stdout, "Workspace: %s\n", workspacePath)
 	fmt.Fprintf(stdout, "Workspace kind: %s\n", strings.TrimSpace(*kind))
-	fmt.Fprintf(stdout, "Agent: %s\n", *agentID)
+	fmt.Fprintf(stdout, "Default agent: %s\n", *agentID)
+	fmt.Fprintf(stdout, "Workspace agents: %s\n", strings.Join(workspaceAgentIDs(cfg), ", "))
 	fmt.Fprintf(stdout, "Server: http://localhost:%s\n", runtime.Port())
 	fmt.Fprintf(stdout, "WeCom: enabled for bot %s\n", *botID)
 	fmt.Fprintln(stdout, "Agent credentials are inherited from the current shell environment or existing config env.")
@@ -1042,6 +1048,35 @@ func printAgentGuidance(stdout *os.File, state *lumicli.ConfigState) {
 	}
 	fmt.Fprintf(stdout, "可用 agents: %s\n", strings.Join(lumicli.AgentIDs(state), ", "))
 	fmt.Fprintln(stdout, "lumi wechat run / lumi wecom run 会直接复用这些 agent 定义。")
+}
+
+func parseAgentIDs(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	ids := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if id := strings.TrimSpace(part); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func workspaceAgentIDs(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	workspaceID := cfg.DefaultWorkspace
+	if workspaceID == "" {
+		return nil
+	}
+	workspace := cfg.FindWorkspace(workspaceID)
+	if workspace == nil {
+		return nil
+	}
+	return append([]string(nil), workspace.Agents...)
 }
 
 func promptYesNo(reader *bufio.Reader, stdout *os.File, label string, defaultYes bool) (bool, error) {

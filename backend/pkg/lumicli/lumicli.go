@@ -27,6 +27,7 @@ type RunOptions struct {
 	Workspace      string
 	Kind           string
 	AgentID        string
+	AgentIDs       []string
 	BotID          string
 	BotSecret      string
 	Port           string
@@ -38,6 +39,7 @@ type WeChatRunOptions struct {
 	Workspace      string
 	Kind           string
 	AgentID        string
+	AgentIDs       []string
 	AccountID      string
 	BotToken       string
 	BaseURL        string
@@ -178,6 +180,7 @@ func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, er
 		Workspace:      opts.Workspace,
 		Kind:           opts.Kind,
 		AgentID:        opts.AgentID,
+		AgentIDs:       opts.AgentIDs,
 		Port:           opts.Port,
 		IdleTimeoutSec: opts.IdleTimeoutSec,
 	})
@@ -214,6 +217,7 @@ func PrepareWeChatRun(state *ConfigState, opts WeChatRunOptions) (*config.Config
 		Workspace:      opts.Workspace,
 		Kind:           opts.Kind,
 		AgentID:        opts.AgentID,
+		AgentIDs:       opts.AgentIDs,
 		Port:           opts.Port,
 		IdleTimeoutSec: opts.IdleTimeoutSec,
 	})
@@ -247,6 +251,7 @@ type imRunWorkspaceOptions struct {
 	Workspace      string
 	Kind           string
 	AgentID        string
+	AgentIDs       []string
 	Port           string
 	IdleTimeoutSec int
 }
@@ -289,6 +294,10 @@ func prepareIMRunWorkspace(state *ConfigState, opts imRunWorkspaceOptions) (*con
 	if cfg.FindAgent(agentID) == nil {
 		return nil, "", "", "", fmt.Errorf("agent not found: %s; run `lumi setup` first and configure it in lumi.config.json", agentID)
 	}
+	workspaceAgents, err := resolveIMWorkspaceAgents(cfg, opts.AgentIDs, agentID)
+	if err != nil {
+		return nil, "", "", "", err
+	}
 
 	workspaceName := filepath.Base(workspacePath)
 	if workspaceName == "." || workspaceName == string(filepath.Separator) || workspaceName == "" {
@@ -305,7 +314,7 @@ func prepareIMRunWorkspace(state *ConfigState, opts imRunWorkspaceOptions) (*con
 		Name:   workspaceName,
 		Path:   workspacePath,
 		Kind:   workspaceKind,
-		Agents: []string{agentID},
+		Agents: workspaceAgents,
 	}
 	if kind == "sandbox" {
 		workspace.Image = sandbox.ResolveImage(workspace)
@@ -332,6 +341,47 @@ func prepareIMRunWorkspace(state *ConfigState, opts imRunWorkspaceOptions) (*con
 	}
 
 	return cfg, workspacePath, workspaceID, agentID, nil
+}
+
+func resolveIMWorkspaceAgents(cfg *config.Config, requested []string, defaultAgent string) ([]string, error) {
+	if cfg == nil {
+		return nil, errors.New("config is required")
+	}
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(requested))
+	add := func(id string) error {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil
+		}
+		if cfg.FindAgent(id) == nil {
+			return fmt.Errorf("agent not found: %s; run `lumi setup` first and configure it in lumi.config.json", id)
+		}
+		if _, ok := seen[id]; ok {
+			return nil
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+		return nil
+	}
+
+	if len(requested) == 0 {
+		for _, agent := range cfg.Agents {
+			if err := add(agent.ID); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		for _, id := range requested {
+			if err := add(id); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if _, ok := seen[defaultAgent]; !ok {
+		return nil, fmt.Errorf("default agent %s must be included in --agents", defaultAgent)
+	}
+	return result, nil
 }
 
 func StartServer(cfg *config.Config, staticFS fs.FS, port string) (*ServerRuntime, error) {

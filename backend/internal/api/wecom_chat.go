@@ -49,6 +49,8 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 	if err != nil {
 		return err
 	}
+	agentChanged := shouldInjectIMAgentContext(conv.Messages, input.AgentID)
+	r.conversations.SetActiveAgent(input.ConversationID, input.AgentID)
 
 	agentProc, err := r.agents.Get(input.AgentID)
 	if err != nil {
@@ -134,6 +136,11 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 	defer close(stopCancelWatcher)
 
 	promptText := input.Message
+	if agentChanged {
+		if contextSummary := r.conversations.GetContextSummary(input.ConversationID, 10); contextSummary != "" {
+			promptText = contextSummary + "User: " + promptText
+		}
+	}
 	promptText = lumicron.WithAgentToolInstructionsForContext(promptText, lumicron.ToolContext{
 		APIBase:        lumiAPIBaseForConfig(r.config),
 		Channel:        lumicron.ChannelWeCom,

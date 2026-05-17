@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pengmide/lumi/internal/storage"
 )
 
 type scriptedRunner struct {
@@ -108,6 +110,156 @@ func TestGatewayHandlesPureTextReply(t *testing.T) {
 	}
 	if typingStatuses[0] != typingStatusActive || typingStatuses[len(typingStatuses)-1] != typingStatusCancel {
 		t.Fatalf("typingStatuses = %v", typingStatuses)
+	}
+}
+
+func TestGatewayAgentCommandListSkipsRunner(t *testing.T) {
+	runner := &scriptedRunner{}
+	service := newTestService(t, runner)
+	sentTexts := useSendTextRecorder(t)
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeChatInboundMessage{
+		ConversationKey: "wx-agent-list",
+		MessageID:       "msg-agent-list",
+		ContextToken:    "ctx-agent-list",
+		Text:            " /agent ",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("runner inputs = %d, want 0", len(runner.inputs))
+	}
+	if len(*sentTexts) != 1 || !strings.Contains((*sentTexts)[0], "当前 Agent：claude") || !strings.Contains((*sentTexts)[0], "* codex") {
+		t.Fatalf("sentTexts = %v", *sentTexts)
+	}
+}
+
+func TestGatewayAgentCommandSwitchPersistsAndNextMessageUsesAgent(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			return sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "codex reply"},
+				},
+			}})
+		},
+	}
+	service := newTestService(t, runner)
+	sentTexts := useSendTextRecorder(t)
+	cfg := testGatewayConfig()
+	conversationKey := "wx-agent-switch"
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeChatInboundMessage{
+		ConversationKey: conversationKey,
+		MessageID:       "msg-agent-switch",
+		ContextToken:    "ctx-agent-switch",
+		Text:            "/agent codex",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage(switch) error = %v", err)
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("runner inputs after switch = %d, want 0", len(runner.inputs))
+	}
+	if len(*sentTexts) != 1 || !strings.Contains((*sentTexts)[0], "已切换当前 Agent 为 codex。") {
+		t.Fatalf("switch sentTexts = %v", *sentTexts)
+	}
+
+	err = service.handleInboundMessage(context.Background(), cfg, WeChatInboundMessage{
+		ConversationKey: conversationKey,
+		MessageID:       "msg-after-switch",
+		ContextToken:    "ctx-after-switch",
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage(normal) error = %v", err)
+	}
+	if len(runner.inputs) != 1 || runner.inputs[0].AgentID != "codex" {
+		t.Fatalf("runner inputs = %+v, want one codex input", runner.inputs)
+	}
+	stored, err := service.convStore.Load(deriveConversationID(conversationKey))
+	if err != nil {
+		t.Fatalf("Load(stored conversation) error = %v", err)
+	}
+	if stored.ActiveAgent != "codex" || stored.WorkspaceID != "default" {
+		t.Fatalf("stored = %+v, want active codex default workspace", stored)
+	}
+}
+
+func TestGatewayAgentCommandFormatErrorSkipsRunner(t *testing.T) {
+	runner := &scriptedRunner{}
+	service := newTestService(t, runner)
+	sentTexts := useSendTextRecorder(t)
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeChatInboundMessage{
+		ConversationKey: "wx-agent-format",
+		MessageID:       "msg-agent-format",
+		ContextToken:    "ctx-agent-format",
+		Text:            "/agent codex hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("runner inputs = %d, want 0", len(runner.inputs))
+	}
+	if len(*sentTexts) != 1 || !strings.Contains((*sentTexts)[0], "格式：/agent 或 /agent \\u003cid\\u003e") {
+		t.Fatalf("sentTexts = %v", *sentTexts)
+	}
+}
+
+func TestGatewayAgentCommandHonorsWorkspaceWhitelist(t *testing.T) {
+	runner := &scriptedRunner{}
+	service := newTestService(t, runner)
+	service.config.Workspaces[0].Agents = []string{"claude"}
+	sentTexts := useSendTextRecorder(t)
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeChatInboundMessage{
+		ConversationKey: "wx-agent-limited",
+		MessageID:       "msg-agent-limited",
+		ContextToken:    "ctx-agent-limited",
+		Text:            "/agent codex",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("runner inputs = %d, want 0", len(runner.inputs))
+	}
+	if len(*sentTexts) != 1 || !strings.Contains((*sentTexts)[0], "未找到可用 Agent：codex") || !strings.Contains((*sentTexts)[0], "可用 Agent：claude") {
+		t.Fatalf("sentTexts = %v", *sentTexts)
+	}
+}
+
+func TestGatewayFallsBackWhenStoredAgentUnavailable(t *testing.T) {
+	runner := &scriptedRunner{}
+	service := newTestService(t, runner)
+	service.config.Workspaces[0].Agents = []string{"claude"}
+	conversationID := deriveConversationID("wx-agent-fallback")
+	if err := service.convStore.Save(storage.CreateSession(conversationID, "codex", "default")); err != nil {
+		t.Fatalf("Save(seed) error = %v", err)
+	}
+	_ = useSendTextRecorder(t)
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeChatInboundMessage{
+		ConversationKey: "wx-agent-fallback",
+		MessageID:       "msg-agent-fallback",
+		ContextToken:    "ctx-agent-fallback",
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 1 || runner.inputs[0].AgentID != "claude" {
+		t.Fatalf("runner inputs = %+v, want fallback claude", runner.inputs)
 	}
 }
 
@@ -343,4 +495,36 @@ func TestGatewayHandlesAttachmentFailuresAndBusyState(t *testing.T) {
 			t.Fatalf("typingStatuses = %v, want final cancel", typingStatuses)
 		}
 	})
+}
+
+func testGatewayConfig() Config {
+	return Config{
+		AccountID:   "wx-bot",
+		BotToken:    "bot-token",
+		BaseURL:     "https://wechat.test",
+		WorkspaceID: "default",
+		AgentID:     "claude",
+	}
+}
+
+func useSendTextRecorder(t *testing.T) *[]string {
+	t.Helper()
+
+	sentTexts := []string{}
+	useHTTPClientFactory(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/ilink/bot/getconfig":
+			return jsonResponse(http.StatusOK, `{"ret":0,"errcode":0,"typing_ticket":"ticket-1"}`), nil
+		case "/ilink/bot/sendtyping":
+			return jsonResponse(http.StatusOK, `{"ret":0,"errcode":0}`), nil
+		case "/ilink/bot/sendmessage":
+			body, _ := io.ReadAll(req.Body)
+			sentTexts = append(sentTexts, string(body))
+			return jsonResponse(http.StatusOK, `{"ret":0,"errcode":0}`), nil
+		default:
+			t.Fatalf("unexpected request path: %s", req.URL.String())
+			return nil, nil
+		}
+	}))
+	return &sentTexts
 }

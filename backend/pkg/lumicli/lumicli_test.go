@@ -137,6 +137,8 @@ func TestPrepareRunUpsertsWorkspaceAndWecomConfig(t *testing.T) {
 	}
 	state.Config.Agents = []config.AgentConfig{
 		{ID: "claude", Name: "Claude Code", Command: "npx"},
+		{ID: "codex", Name: "Codex CLI", Command: "npx"},
+		{ID: "qwen", Name: "Qwen Code", Command: "npx"},
 	}
 	state.Config.DefaultAgent = "claude"
 	if err := saveConfig(state.Config, state.Path); err != nil {
@@ -167,6 +169,9 @@ func TestPrepareRunUpsertsWorkspaceAndWecomConfig(t *testing.T) {
 	if cfg.DefaultWorkspace != WorkspaceID {
 		t.Fatalf("default workspace = %q, want %q", cfg.DefaultWorkspace, WorkspaceID)
 	}
+	if got := strings.Join(ws.Agents, ","); got != "claude,codex,qwen" {
+		t.Fatalf("workspace agents = %q, want claude,codex,qwen", got)
+	}
 	if cfg.PublicServerURL != "http://127.0.0.1:3344" {
 		t.Fatalf("public server URL = %q, want http://127.0.0.1:3344", cfg.PublicServerURL)
 	}
@@ -178,6 +183,59 @@ func TestPrepareRunUpsertsWorkspaceAndWecomConfig(t *testing.T) {
 	text := string(wecomData)
 	if !strings.Contains(text, `"enabled": true`) || !strings.Contains(text, `"agentId": "claude"`) {
 		t.Fatalf("wecom config missing expected fields: %s", text)
+	}
+}
+
+func TestPrepareRunUsesExplicitWorkspaceAgents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	state, err := ResolveConfigState("")
+	if err != nil {
+		t.Fatalf("ResolveConfigState() error = %v", err)
+	}
+	if err := EnsureConfigFile(state); err != nil {
+		t.Fatalf("EnsureConfigFile() error = %v", err)
+	}
+	state.Config.Agents = []config.AgentConfig{
+		{ID: "claude", Name: "Claude Code", Command: "npx"},
+		{ID: "codex", Name: "Codex CLI", Command: "npx"},
+		{ID: "qwen", Name: "Qwen Code", Command: "npx"},
+	}
+	state.Config.DefaultAgent = "claude"
+	if err := saveConfig(state.Config, state.Path); err != nil {
+		t.Fatalf("saveConfig() error = %v", err)
+	}
+	state.HasAgents = true
+
+	cfg, _, err := PrepareRun(state, RunOptions{
+		Workspace: workspace,
+		AgentID:   "codex",
+		AgentIDs:  []string{"claude", "codex", "codex"},
+		BotID:     "bot-123",
+		BotSecret: "secret-456",
+	})
+	if err != nil {
+		t.Fatalf("PrepareRun() error = %v", err)
+	}
+	ws := cfg.FindWorkspace(WorkspaceID)
+	if got := strings.Join(ws.Agents, ","); got != "claude,codex" {
+		t.Fatalf("workspace agents = %q, want claude,codex", got)
+	}
+
+	_, _, err = PrepareRun(state, RunOptions{
+		Workspace: workspace,
+		AgentID:   "qwen",
+		AgentIDs:  []string{"claude", "codex"},
+		BotID:     "bot-123",
+		BotSecret: "secret-456",
+	})
+	if err == nil || !strings.Contains(err.Error(), "default agent qwen must be included in --agents") {
+		t.Fatalf("PrepareRun(missing default) error = %v, want default inclusion error", err)
 	}
 }
 

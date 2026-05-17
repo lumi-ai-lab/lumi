@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -183,6 +184,14 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 	if err != nil {
 		return err
 	}
+	agentChanged := shouldInjectIMAgentContext(conv.Messages, input.AgentID)
+	prompt := input.Prompt
+	if agentChanged {
+		if contextSummary := imContextSummary(conv.Messages, 10); contextSummary != "" {
+			prompt = contextSummary + prompt
+		}
+	}
+	conv.ActiveAgent = input.AgentID
 	isNew := len(conv.Messages) == 0
 	conv.Messages = append(conv.Messages, conversation.Message{
 		Role:      "user",
@@ -210,7 +219,7 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 		SessionID:      remoteSessionID,
 		WorkspaceID:    input.WorkspaceID,
 		WorkspacePath:  input.WorkspacePath,
-		Prompt:         input.Prompt,
+		Prompt:         prompt,
 		Files:          input.Files,
 	}
 	if err := s.devices.SendToDevice(ctx, deviceID, device.MsgTaskExecute, task.ID, payload); err != nil {
@@ -421,6 +430,53 @@ func saveIMConversation(store imHiddenConversationStore, conv *conversation.Conv
 		UpdatedAt:   time.Now().UnixMilli(),
 	}
 	return store.Save(session)
+}
+
+func shouldInjectIMAgentContext(messages []conversation.Message, agentID string) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != "assistant" || msg.Agent == "" {
+			continue
+		}
+		return msg.Agent != agentID
+	}
+	return true
+}
+
+func imContextSummary(messages []conversation.Message, maxMessages int) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	if maxMessages <= 0 {
+		maxMessages = 10
+	}
+	start := 0
+	if len(messages) > maxMessages {
+		start = len(messages) - maxMessages
+	}
+
+	lines := []string{"[Previous conversation context]"}
+	for _, msg := range messages[start:] {
+		prefix := "User"
+		if msg.Role == "assistant" {
+			prefix = fmt.Sprintf("Assistant (%s)", msg.Agent)
+		}
+		content := msg.Content
+		if len(content) > 500 {
+			content = content[:500] + "..."
+		}
+		lines = append(lines, fmt.Sprintf("%s: %s", prefix, content))
+	}
+	lines = append(lines, "[End of context]", "")
+
+	result := ""
+	for _, line := range lines {
+		result += line + "\n"
+	}
+	return result
 }
 
 func appendStreamItems(messages *[]conversation.Message, agentID string, streamItems []streamItem) {
