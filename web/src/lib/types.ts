@@ -82,7 +82,8 @@ export type SandboxStage =
   | "checking_docker"
   | "preparing_image"
   | "starting_container"
-  | "connecting_executor";
+  | "connecting_executor"
+  | "bootstrapping_runtime";
 
 export type SandboxErrorCode =
   | "ready"

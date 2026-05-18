@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { WorkspaceSelector } from '@/features/chat/components/workspace-selector'
 import type { CreateWorkspaceOptions } from '@/lib/api'
+import type * as api from '@/lib/api'
 import type { Agent, CronJob, SessionMeta, Workspace } from '@/lib/types'
 import { useI18n } from '@/features/i18n/i18n-provider'
 import { formatTime } from '@/utils/format'
@@ -27,6 +28,8 @@ export function Sidebar({
   onCreateSession,
   onRemoveSession,
   onSetWorkspace,
+  onPollSandboxReady,
+  onWarmupSandbox,
   onShowScheduled,
   onSelectSession,
   sessions,
@@ -40,11 +43,13 @@ export function Sidebar({
     name: string,
     path: string,
     options?: CreateWorkspaceOptions,
-  ) => Promise<string | null>
+  ) => Promise<{ workspace: Workspace | null; error?: string }>
   onCollapse: () => void
   onCreateSession: () => Promise<void>
   onRemoveSession: (sessionId: string) => Promise<void>
   onSetWorkspace: (workspaceId: string) => void
+  onPollSandboxReady: (workspaceId: string) => Promise<api.SandboxRuntimeState>
+  onWarmupSandbox: (workspaceId: string) => Promise<api.SandboxRuntimeState>
   onShowScheduled?: () => void
   onSelectSession: (sessionId: string) => Promise<void>
   sessions: SessionMeta[]
@@ -64,6 +69,8 @@ export function Sidebar({
         onAddWorkspace={onAddWorkspace}
         onCollapse={onCollapse}
         onSelectWorkspace={onSetWorkspace}
+        onPollSandboxReady={onPollSandboxReady}
+        onWarmupSandbox={onWarmupSandbox}
         workspaces={workspaces}
       />
       <div className="flex items-center justify-between px-4 pb-3 pt-5">

@@ -4,6 +4,7 @@ import { CheckCircle2, ChevronDown, Copy, ExternalLink, LoaderCircle, PanelLeftC
 import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { SandboxWorkspaceAlert } from '@/components/sandbox-workspace-alert'
 import {
   Dialog,
   DialogContent,
@@ -13,7 +14,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import * as api from '@/lib/api'
-import type { CreateWorkspaceOptions } from '@/lib/api'
+import type { CreateWorkspaceOptions, SandboxRuntimeState } from '@/lib/api'
 import {
   getSandboxErrorDisplay,
   getWorkspaceStatusBadgeMeta,
@@ -160,6 +161,8 @@ export function WorkspaceSelector({
   onAddWorkspace,
   onCollapse,
   onSelectWorkspace,
+  onPollSandboxReady,
+  onWarmupSandbox,
   workspaces,
 }: {
   agents: Agent[]
@@ -168,9 +171,11 @@ export function WorkspaceSelector({
     name: string,
     path: string,
     options?: CreateWorkspaceOptions,
-  ) => Promise<string | null>
+  ) => Promise<{ workspace: Workspace | null; error?: string }>
   onCollapse: () => void
   onSelectWorkspace: (workspaceId: string) => void
+  onPollSandboxReady: (workspaceId: string) => Promise<SandboxRuntimeState>
+  onWarmupSandbox: (workspaceId: string) => Promise<SandboxRuntimeState>
   workspaces: Workspace[]
 }) {
   const [isOpen, setIsOpen] = useState(false)
@@ -209,6 +214,9 @@ export function WorkspaceSelector({
   const [sandboxPreflightCode, setSandboxPreflightCode] = useState('')
   const [isSandboxPreflightLoading, setIsSandboxPreflightLoading] = useState(false)
   const [sandboxPreflightReady, setSandboxPreflightReady] = useState(false)
+  const [sandboxCreationWorkspace, setSandboxCreationWorkspace] = useState<Workspace | null>(null)
+  const [sandboxCreationState, setSandboxCreationState] = useState<SandboxRuntimeState | null>(null)
+  const isSandboxCreating = Boolean(sandboxCreationWorkspace)
 
   const currentWorkspace =
     workspaces.find((workspace) => workspace.id === currentWorkspaceId) || null
@@ -726,11 +734,11 @@ export function WorkspaceSelector({
                       }
 
                       setIsAddingWorkspace(true)
-                      const maybeError = await onAddWorkspace(trimmedName, trimmedPath)
+                      const result = await onAddWorkspace(trimmedName, trimmedPath)
                       setIsAddingWorkspace(false)
 
-                      if (maybeError) {
-                        setLocalError(maybeError)
+                      if (result.error) {
+                        setLocalError(result.error)
                         return
                       }
 
@@ -1142,7 +1150,7 @@ export function WorkspaceSelector({
                           }
 
                           setIsAddingWorkspace(true)
-                          const maybeError = await onAddWorkspace(trimmedName, trimmedPath, {
+                          const result = await onAddWorkspace(trimmedName, trimmedPath, {
                             kind: 'remote',
                             deviceId: device.id,
                             deviceName: device.displayName,
@@ -1150,8 +1158,8 @@ export function WorkspaceSelector({
                           })
                           setIsAddingWorkspace(false)
 
-                          if (maybeError) {
-                            setRemoteError(maybeError)
+                          if (result.error) {
+                            setRemoteError(result.error)
                             return
                           }
 
@@ -1167,6 +1175,26 @@ export function WorkspaceSelector({
               </div>
             ) : (
               <div className="space-y-4">
+                {isSandboxCreating && sandboxCreationWorkspace ? (
+                  <div className="space-y-3">
+                    <SandboxWorkspaceAlert
+                      compact={false}
+                      workspace={{
+                        ...sandboxCreationWorkspace,
+                        sandboxStatus: sandboxCreationState?.status || 'pending',
+                        sandboxStage: sandboxCreationState?.stage || 'checking_docker',
+                        sandboxReady: sandboxCreationState?.status === 'running',
+                        sandboxExpiresAt: sandboxCreationState?.expiresAt,
+                        sandboxError: sandboxCreationState?.errorCode,
+                      }}
+                    />
+                    {sandboxError ? (
+                      <div className="rounded-sm bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                        {sandboxError}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="space-y-2">
                   <label className="text-[11px] font-medium text-[rgb(var(--color-text-secondary))]">
                     Workspace name
@@ -1177,6 +1205,7 @@ export function WorkspaceSelector({
                     onChange={(event) => setSandboxName(event.target.value)}
                     placeholder="Sandbox App"
                     value={sandboxName}
+                    disabled={isSandboxCreating}
                   />
                 </div>
                 <div className="space-y-2">
@@ -1189,6 +1218,7 @@ export function WorkspaceSelector({
                     onChange={(event) => setSandboxPath(event.target.value)}
                     placeholder="/Users/me/project"
                     value={sandboxPath}
+                    disabled={isSandboxCreating}
                   />
                   {sandboxPathError ? (
                     <div className="rounded-sm bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -1200,6 +1230,7 @@ export function WorkspaceSelector({
                 <button
                   className="flex w-full items-center justify-between rounded-md border border-border bg-background/50 px-3 py-2 text-left text-sm text-foreground transition hover:bg-background"
                   onClick={() => setShowSandboxAdvanced((current) => !current)}
+                  disabled={isSandboxCreating}
                   type="button"
                 >
                   <span>Advanced settings</span>
@@ -1319,6 +1350,7 @@ export function WorkspaceSelector({
                 <div className="flex justify-between gap-3">
                   <Button
                     className="rounded-md"
+                    disabled={isSandboxCreating}
                     onClick={() => {
                       void runSandboxPreflight({
                         path: sandboxPath.trim() || undefined,
@@ -1334,6 +1366,7 @@ export function WorkspaceSelector({
                   <div className="flex gap-3">
                     <Button
                       className="rounded-md"
+                      disabled={isSandboxCreating}
                       onClick={() => setShowAddDialog(false)}
                       type="button"
                       variant="outline"
@@ -1359,20 +1392,35 @@ export function WorkspaceSelector({
                         }
 
                         setIsAddingWorkspace(true)
-                        const maybeError = await onAddWorkspace(trimmedName, trimmedPath, {
+                        const result = await onAddWorkspace(trimmedName, trimmedPath, {
                           kind: 'sandbox',
                           image: trimmedImage,
                           idleTimeoutSec,
                           agents: sandboxSelectedAgentIds,
                         })
-                        setIsAddingWorkspace(false)
 
-                        if (maybeError) {
-                          setSandboxError(maybeError)
+                        if (result.error || !result.workspace) {
+                          setIsAddingWorkspace(false)
+                          setSandboxError(result.error || 'Failed to create workspace')
                           return
                         }
 
-                        setShowAddDialog(false)
+                        setSandboxCreationWorkspace(result.workspace)
+                        setSandboxError('')
+                        try {
+                          const initialState = await onWarmupSandbox(result.workspace.id)
+                          setSandboxCreationState(initialState)
+                          const readyState = initialState.status === 'running'
+                            ? initialState
+                            : await onPollSandboxReady(result.workspace.id)
+                          setSandboxCreationState(readyState)
+                          setShowAddDialog(false)
+                        } catch (error) {
+                          setSandboxError(error instanceof Error ? error.message : 'Sandbox initialization failed')
+                        } finally {
+                          setIsAddingWorkspace(false)
+                          setSandboxCreationWorkspace(null)
+                        }
                       }}
                       type="button"
                     >

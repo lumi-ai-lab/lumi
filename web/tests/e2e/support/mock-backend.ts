@@ -39,7 +39,7 @@ export interface MockWorkspace {
   deviceStatus?: 'setup_required' | 'online' | 'offline' | 'busy' | 'error'
   setupReady?: boolean
   sandboxStatus?: 'pending' | 'running' | 'failed' | 'terminating' | 'terminated'
-  sandboxStage?: 'checking_docker' | 'preparing_image' | 'starting_container' | 'connecting_executor'
+  sandboxStage?: 'checking_docker' | 'preparing_image' | 'starting_container' | 'connecting_executor' | 'bootstrapping_runtime'
   sandboxReady?: boolean
   sandboxExpiresAt?: number
   sandboxError?: string

@@ -715,15 +715,52 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     }
   }
 
+  const mergeSandboxRuntimeState = useCallback((workspaceId: string, state: api.SandboxRuntimeState) => {
+    setWorkspaces((current) =>
+      current.map((workspace) =>
+        workspace.id === workspaceId
+          ? normalizeWorkspace({
+              ...workspace,
+              sandboxStatus: state.status,
+              sandboxStage: state.stage,
+              sandboxReady: state.status === 'running',
+              sandboxExpiresAt: state.expiresAt,
+              sandboxError: state.errorCode,
+            })
+          : workspace,
+      ),
+    )
+  }, [])
+
+  const warmupSandboxWorkspace = useCallback(async (workspaceId: string) => {
+    const state = await api.warmupSandboxWorkspace(workspaceId)
+    mergeSandboxRuntimeState(workspaceId, state)
+    return state
+  }, [mergeSandboxRuntimeState])
+
+  const pollSandboxWorkspaceUntilReady = useCallback(async (workspaceId: string) => {
+    const deadline = Date.now() + 10 * 60 * 1000
+    while (Date.now() < deadline) {
+      const state = await api.fetchSandboxStatus(workspaceId)
+      mergeSandboxRuntimeState(workspaceId, state)
+      if (state.status === 'running') return state
+      if (state.status === 'failed') {
+        throw new Error(getReadableSandboxErrorMessage(state.errorCode))
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1500))
+    }
+    throw new Error('Sandbox runtime did not become ready in time')
+  }, [mergeSandboxRuntimeState])
+
   const addWorkspace = async (
     name: string,
     path: string,
     options?: api.CreateWorkspaceOptions,
-  ) => {
+  ): Promise<{ workspace: Workspace | null; error?: string }> => {
     const result = await api.createWorkspace(name, path, options)
     const workspace = result.workspace
     if (result.error || !workspace) {
-      return result.error || 'Failed to create workspace'
+      return { workspace: null, error: result.error || 'Failed to create workspace' }
     }
 
     const normalizedWorkspace = normalizeWorkspace(workspace)
@@ -732,7 +769,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     setCurrentSessionId(null)
     lastPushedRouteRef.current = null
     pushRoute(null)
-    return null
+    return { workspace: normalizedWorkspace }
   }
 
   const setWorkspace = (workspaceId: string) => {
@@ -741,6 +778,13 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     setPendingPermission(null)
     lastPushedRouteRef.current = null
     pushRoute(null)
+
+    const workspace = workspacesRef.current.find((item) => item.id === workspaceId)
+    if (workspace?.kind === 'sandbox' && isWorkspaceInteractionBlocked(workspace)) {
+      void warmupSandboxWorkspace(workspaceId).catch((error) => {
+        console.warn('Failed to warm up sandbox workspace', error)
+      })
+    }
   }
 
   const handleToolUpdate = (update: SessionUpdate, targetSessionId?: string | null) => {
@@ -1109,12 +1153,14 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     selectSession,
     sendCurrentMessage,
     requestWorkspaceTreeRefresh,
+    pollSandboxWorkspaceUntilReady,
     setCommands,
     setCronJobs,
     setCurrentAgent,
     setWorkspace,
     setPendingPermission,
     setSessions,
+    warmupSandboxWorkspace,
     saveAgentEnv,
     saveAgentMode,
     refreshWorkspaces: loadWorkspaces,

@@ -95,6 +95,8 @@ type SetupStatus = setupcheck.SetupStatus
 type SetupInstallEvent = setupcheck.InstallEvent
 type SetupInstallResult = setupcheck.InstallResult
 
+type SandboxWarmupState = sandbox.RuntimeState
+
 func ResolveConfigState(configPath string) (*ConfigState, error) {
 	targetPath, exists, err := resolveConfigPath(configPath)
 	if err != nil {
@@ -422,6 +424,18 @@ func (r *ServerRuntime) ShutdownWithContext(ctx context.Context) error {
 
 func (r *ServerRuntime) Port() string {
 	return r.port
+}
+
+func (r *ServerRuntime) WarmupSandbox(ctx context.Context, workspaceID string) (SandboxWarmupState, error) {
+	return r.server.WarmupSandboxByID(ctx, workspaceID)
+}
+
+func (r *ServerRuntime) EnsureSandbox(ctx context.Context, workspaceID string) (SandboxWarmupState, error) {
+	return r.server.EnsureSandboxByID(ctx, workspaceID)
+}
+
+func (r *ServerRuntime) SandboxStatus(workspaceID string) (SandboxWarmupState, error) {
+	return r.server.SandboxStatusByID(workspaceID)
 }
 
 func PruneSandboxes(ctx context.Context, configPath string) (SandboxPruneResult, error) {

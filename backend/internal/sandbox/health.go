@@ -7,7 +7,7 @@ import (
 	"github.com/pengmide/lumi/internal/device"
 )
 
-const defaultRegistrationTimeout = 45 * time.Second
+const defaultRegistrationTimeout = 10 * time.Minute
 
 func (m *Manager) runtimeHealthy(ctx context.Context, record RuntimeRecord) bool {
 	if record.ContainerName == "" || record.DeviceID == "" {

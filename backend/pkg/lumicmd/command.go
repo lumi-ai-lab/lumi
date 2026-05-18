@@ -82,7 +82,18 @@ type serverRuntime interface {
 	ListenAndServe() error
 	ShutdownWithContext(context.Context) error
 	Port() string
+	EnsureSandbox(context.Context, string) (lumicli.SandboxWarmupState, error)
+	SandboxStatus(string) (lumicli.SandboxWarmupState, error)
+	WarmupSandbox(context.Context, string) (lumicli.SandboxWarmupState, error)
 }
+
+type sandboxWarmupMode string
+
+const (
+	sandboxWarmupAsync sandboxWarmupMode = "async"
+	sandboxWarmupWait  sandboxWarmupMode = "wait"
+	sandboxWarmupOff   sandboxWarmupMode = "off"
+)
 
 type cronSchedulePayload struct {
 	Type     string `json:"type"`
@@ -677,6 +688,7 @@ func runWeChatRun(args []string, stdout, stderr *os.File) error {
 	baseURL := fs.String("base-url", envOrDefault("LUMI_WECHAT_BASE_URL", ""), "WeChat login API base URL")
 	port := fs.String("port", envOrDefault("LUMI_PORT", "3000"), "Server port")
 	idleTimeoutSec := fs.Int("idle-timeout-sec", 0, "Sandbox idle timeout in seconds for IM CLI runs; defaults to 10 years")
+	sandboxWarmup := fs.String("sandbox-warmup", envOrDefault("LUMI_SANDBOX_WARMUP", string(sandboxWarmupWait)), "Sandbox warmup mode for sandbox workspaces: wait, async, or off")
 	loginTimeoutSec := fs.Int("login-timeout-sec", 300, "WeChat QR login timeout in seconds")
 	forceLogin := fs.Bool("force-login", false, "Force WeChat QR login even when saved credentials exist")
 	if err := fs.Parse(args); err != nil {
@@ -699,6 +711,10 @@ func runWeChatRun(args []string, stdout, stderr *os.File) error {
 	}
 	if *loginTimeoutSec <= 0 {
 		return errors.New("login timeout sec must be positive")
+	}
+	warmupMode, err := parseSandboxWarmupMode(*sandboxWarmup)
+	if err != nil {
+		return err
 	}
 
 	loginCtx, stopLoginSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -742,7 +758,12 @@ func runWeChatRun(args []string, stdout, stderr *os.File) error {
 	}
 	fmt.Fprintln(stdout, "Agent credentials are inherited from the current shell environment or existing config env.")
 
-	return serveRuntimeUntilSignal(runtime, stdout, stderr)
+	return serveRuntimeUntilSignal(runtime, stdout, stderr, func() error {
+		if strings.TrimSpace(*kind) != "sandbox" {
+			return nil
+		}
+		return startSandboxWarmup(context.Background(), runtime, lumicli.SandboxWorkspaceID, warmupMode, stdout)
+	})
 }
 
 func resolveWeChatRunCredentials(parent context.Context, stdout *os.File, baseURL string, timeout time.Duration, forceLogin bool) (wechatRunCredentials, bool, error) {
@@ -862,6 +883,7 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	botSecret := fs.String("bot-secret", envOrDefault("LUMI_BOT_SECRET", ""), "WeCom bot secret")
 	port := fs.String("port", envOrDefault("LUMI_PORT", "3000"), "Server port")
 	idleTimeoutSec := fs.Int("idle-timeout-sec", 0, "Sandbox idle timeout in seconds for IM CLI runs; defaults to 10 years")
+	sandboxWarmup := fs.String("sandbox-warmup", envOrDefault("LUMI_SANDBOX_WARMUP", string(sandboxWarmupWait)), "Sandbox warmup mode for sandbox workspaces: wait, async, or off")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -879,6 +901,10 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 
 	if strings.TrimSpace(*workspace) == "" || strings.TrimSpace(*agentID) == "" || strings.TrimSpace(*botID) == "" || strings.TrimSpace(*botSecret) == "" {
 		return errors.New("wecom run requires --workspace, --agent, --bot-id, and --bot-secret")
+	}
+	warmupMode, err := parseSandboxWarmupMode(*sandboxWarmup)
+	if err != nil {
+		return err
 	}
 
 	cfg, workspacePath, err := lumicli.PrepareRun(state, lumicli.RunOptions{
@@ -910,10 +936,126 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	fmt.Fprintf(stdout, "WeCom: enabled for bot %s\n", *botID)
 	fmt.Fprintln(stdout, "Agent credentials are inherited from the current shell environment or existing config env.")
 
-	return serveRuntimeUntilSignal(runtime, stdout, stderr)
+	return serveRuntimeUntilSignal(runtime, stdout, stderr, func() error {
+		if strings.TrimSpace(*kind) != "sandbox" {
+			return nil
+		}
+		return startSandboxWarmup(context.Background(), runtime, lumicli.SandboxWorkspaceID, warmupMode, stdout)
+	})
 }
 
-func serveRuntimeUntilSignal(runtime serverRuntime, stdout, stderr *os.File) error {
+func parseSandboxWarmupMode(value string) (sandboxWarmupMode, error) {
+	switch sandboxWarmupMode(strings.TrimSpace(value)) {
+	case "", sandboxWarmupWait:
+		return sandboxWarmupWait, nil
+	case sandboxWarmupAsync:
+		return sandboxWarmupAsync, nil
+	case sandboxWarmupOff:
+		return sandboxWarmupOff, nil
+	default:
+		return "", errors.New("sandbox warmup mode must be async, wait, or off")
+	}
+}
+
+func startSandboxWarmup(ctx context.Context, runtime serverRuntime, workspaceID string, mode sandboxWarmupMode, stdout *os.File) error {
+	if mode == sandboxWarmupOff {
+		fmt.Fprintln(stdout, "Sandbox: warmup disabled")
+		return nil
+	}
+	fmt.Fprintln(stdout, "Sandbox: warming up")
+	if mode == sandboxWarmupAsync {
+		go func() {
+			state, err := runtime.WarmupSandbox(context.Background(), workspaceID)
+			if err != nil {
+				fmt.Fprintf(stdout, "Sandbox: warmup failed: %v\n", err)
+				return
+			}
+			if state.Status == "failed" {
+				fmt.Fprintf(stdout, "Sandbox: warmup failed: %s\n", firstNonEmpty(state.ErrorMessage, state.ErrorCode, "unknown"))
+				return
+			}
+			fmt.Fprintf(stdout, "Sandbox: %s\n", firstNonEmpty(sandboxProgressLabel(state), "starting"))
+		}()
+		return nil
+	}
+
+	state, err := runtime.WarmupSandbox(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	if err := printSandboxWarmupProgress(ctx, runtime, workspaceID, state, stdout); err != nil {
+		return err
+	}
+	return nil
+}
+
+func printSandboxWarmupProgress(ctx context.Context, runtime serverRuntime, workspaceID string, initial lumicli.SandboxWarmupState, stdout *os.File) error {
+	last := ""
+	state := initial
+	for {
+		label := sandboxProgressLabel(state)
+		if label != "" && label != last {
+			fmt.Fprintf(stdout, "Sandbox: %s\n", label)
+			last = label
+		}
+		switch state.Status {
+		case "running":
+			return nil
+		case "failed":
+			return fmt.Errorf("sandbox warmup failed: %s", firstNonEmpty(state.ErrorMessage, state.ErrorCode, "unknown"))
+		}
+
+		timer := time.NewTimer(1500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+
+		next, err := runtime.SandboxStatus(workspaceID)
+		if err != nil {
+			return err
+		}
+		state = next
+	}
+}
+
+func sandboxProgressLabel(state lumicli.SandboxWarmupState) string {
+	switch strings.TrimSpace(state.Stage) {
+	case "checking_docker":
+		return "checking Docker"
+	case "preparing_image":
+		return "preparing image"
+	case "starting_container":
+		return "starting container"
+	case "connecting_executor":
+		return "connecting executor"
+	case "bootstrapping_runtime":
+		return "preparing runtime"
+	}
+	switch strings.TrimSpace(state.Status) {
+	case "pending":
+		return "starting"
+	case "running":
+		return "ready"
+	case "failed":
+		return "failed"
+	default:
+		return strings.TrimSpace(state.Status)
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func serveRuntimeUntilSignal(runtime serverRuntime, stdout, stderr *os.File, afterListen func() error) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
@@ -921,6 +1063,14 @@ func serveRuntimeUntilSignal(runtime serverRuntime, stdout, stderr *os.File) err
 	go func() {
 		errCh <- runtime.ListenAndServe()
 	}()
+	if afterListen != nil {
+		if err := afterListen(); err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = runtime.ShutdownWithContext(ctx)
+			cancel()
+			return err
+		}
+	}
 
 	select {
 	case err := <-errCh:

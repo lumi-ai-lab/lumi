@@ -43,6 +43,8 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/sandboxes/ensure" && r.Method == http.MethodPost:
 		s.handleSandboxEnsure(w, r)
+	case r.URL.Path == "/sandboxes/warmup" && r.Method == http.MethodPost:
+		s.handleSandboxWarmup(w, r)
 	case strings.HasPrefix(r.URL.Path, "/sandboxes/") && r.Method == http.MethodGet:
 		s.handleSandboxStatus(w, r)
 	case strings.HasPrefix(r.URL.Path, "/sandboxes/") && strings.HasSuffix(r.URL.Path, "/keepalive") && r.Method == http.MethodPost:
@@ -77,6 +79,32 @@ func (s *Server) handleSandboxEnsure(w http.ResponseWriter, r *http.Request) {
 		writeSandboxRuntimeError(w, runtimeErr)
 		return
 	}
+	writeJSON(w, runtimeState)
+}
+
+func (s *Server) handleSandboxWarmup(w http.ResponseWriter, r *http.Request) {
+	var data struct {
+		WorkspaceID string `json:"workspaceId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		writeError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	workspace, ok := s.resolveWorkspace(strings.TrimSpace(data.WorkspaceID))
+	if !ok {
+		writeError(w, "Workspace not found", http.StatusNotFound)
+		return
+	}
+	if !isSandboxWorkspaceConfig(*workspace) {
+		writeError(w, "Workspace is not a sandbox", http.StatusBadRequest)
+		return
+	}
+
+	runtimeState := s.sandbox.Warmup(r.Context(), sandbox.EnsureOptions{
+		Workspace:  *workspace,
+		BackendURL: inferServerURL(r),
+	})
 	writeJSON(w, runtimeState)
 }
 

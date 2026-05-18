@@ -32,6 +32,7 @@ const SANDBOX_STAGE_ORDER: SandboxStage[] = [
   "preparing_image",
   "starting_container",
   "connecting_executor",
+  "bootstrapping_runtime",
 ];
 
 const SANDBOX_ERROR_CODES = new Set<SandboxErrorCode>([
@@ -140,6 +141,8 @@ export function getSandboxStageLabel(stage?: SandboxStage | null) {
       return "Starting container";
     case "connecting_executor":
       return "Connecting executor";
+    case "bootstrapping_runtime":
+      return "Preparing runtime";
     default:
       return "Preparing sandbox";
   }

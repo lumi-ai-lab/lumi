@@ -88,6 +88,7 @@ type sandboxManager interface {
 	ShutdownPreserveContainers() error
 	Status(config.WorkspaceConfig) sandbox.RuntimeState
 	Terminate(context.Context, string) error
+	Warmup(context.Context, sandbox.EnsureOptions) sandbox.RuntimeState
 }
 
 // NewServer creates a new HTTP server
@@ -207,6 +208,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/wechat/", s.wechat.HandleHTTP)
 	mux.HandleFunc("/api/wecom/", s.wecom.HandleHTTP)
 	mux.HandleFunc("/sandboxes/ensure", s.handleSandboxes)
+	mux.HandleFunc("/sandboxes/warmup", s.handleSandboxes)
 	mux.HandleFunc("/sandboxes/", s.handleSandboxes)
 
 	// Static files

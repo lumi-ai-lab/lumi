@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -96,6 +99,41 @@ func TestBackendURLForSandboxUsesConfiguredPublicServerURLWithoutRequest(t *test
 	}
 }
 
+func TestHandleSandboxWarmupStartsWarmup(t *testing.T) {
+	fakeSandbox := &fakeSandboxManager{
+		warmupState: sandbox.RuntimeState{
+			WorkspaceID: "sandbox-1",
+			Status:      sandbox.StatusPending,
+			Stage:       sandbox.StageCheckingDocker,
+		},
+	}
+	server := &Server{
+		config: &config.Config{Workspaces: []config.WorkspaceConfig{{
+			ID:   "sandbox-1",
+			Name: "Sandbox",
+			Path: t.TempDir(),
+			Kind: "sandbox",
+		}}},
+		sandbox: fakeSandbox,
+	}
+
+	body := bytes.NewBufferString(`{"workspaceId":"sandbox-1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes/warmup", body)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	server.handleSandboxes(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if fakeSandbox.warmupCalls != 1 {
+		t.Fatalf("warmup calls = %d, want 1", fakeSandbox.warmupCalls)
+	}
+	if !strings.Contains(rec.Body.String(), `"stage":"checking_docker"`) {
+		t.Fatalf("body = %s, want checking_docker stage", rec.Body.String())
+	}
+}
+
 type fakeSandboxManager struct {
 	shutdownPreserveCalls int
 	terminateCalls        int
@@ -103,6 +141,8 @@ type fakeSandboxManager struct {
 	ensureState           sandbox.RuntimeState
 	ensureErr             *sandbox.RuntimeError
 	ensureCalls           int
+	warmupState           sandbox.RuntimeState
+	warmupCalls           int
 	hasActiveRuntime      bool
 }
 
@@ -133,6 +173,11 @@ func (f *fakeSandboxManager) Status(config.WorkspaceConfig) sandbox.RuntimeState
 func (f *fakeSandboxManager) Terminate(context.Context, string) error {
 	f.terminateCalls++
 	return nil
+}
+
+func (f *fakeSandboxManager) Warmup(context.Context, sandbox.EnsureOptions) sandbox.RuntimeState {
+	f.warmupCalls++
+	return f.warmupState
 }
 
 func captureStderr(t *testing.T, fn func()) string {

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/sandbox"
 	"github.com/pengmide/lumi/internal/wechat"
 	"github.com/pengmide/lumi/pkg/lumicli"
 )
@@ -211,6 +212,106 @@ func TestWeChatRunParsesWorkspaceAgentsFlag(t *testing.T) {
 	}
 	if !stdoutContains(t, stdout, "Default agent: codex") || !stdoutContains(t, stdout, "Workspace agents: claude, codex") {
 		t.Fatalf("stdout missing default/workspace agents")
+	}
+}
+
+func TestWeChatRunSandboxWarmupOffDoesNotWarmup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := createCLIConfigWithAgent(t, home)
+	if err := wechat.NewConfigStore().Save(wechat.Config{
+		Enabled:   true,
+		AccountID: "wx-saved",
+		BotToken:  "saved-token",
+		BaseURL:   "https://saved.test",
+	}); err != nil {
+		t.Fatalf("Save(wechat) error = %v", err)
+	}
+
+	originalStartServer := startServer
+	originalLoginClient := newWeChatLoginClient
+	defer func() {
+		startServer = originalStartServer
+		newWeChatLoginClient = originalLoginClient
+	}()
+	fakeRuntime := &fakeServerRuntime{}
+	startServer = func(cfg *config.Config, staticFS fs.FS, port string) (serverRuntime, error) {
+		return fakeRuntime, nil
+	}
+	newWeChatLoginClient = func(baseURL string) wechatLoginClient {
+		t.Fatalf("newWeChatLoginClient called for saved credentials")
+		return nil
+	}
+
+	stdout, stderr := tempStdoutStderr(t)
+	if err := runWeChatRun([]string{
+		"--workspace", workspace,
+		"--kind", "sandbox",
+		"--agent", "claude",
+		"--sandbox-warmup", "off",
+	}, stdout, stderr); err != nil {
+		t.Fatalf("runWeChatRun() error = %v", err)
+	}
+	if fakeRuntime.warmupCalls != 0 {
+		t.Fatalf("warmup calls = %d, want 0", fakeRuntime.warmupCalls)
+	}
+	if !stdoutContains(t, stdout, "Sandbox: warmup disabled") {
+		t.Fatalf("stdout missing warmup disabled message")
+	}
+}
+
+func TestWeChatRunSandboxWarmupWaitByDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := createCLIConfigWithAgent(t, home)
+	if err := wechat.NewConfigStore().Save(wechat.Config{
+		Enabled:   true,
+		AccountID: "wx-saved",
+		BotToken:  "saved-token",
+		BaseURL:   "https://saved.test",
+	}); err != nil {
+		t.Fatalf("Save(wechat) error = %v", err)
+	}
+
+	originalStartServer := startServer
+	originalLoginClient := newWeChatLoginClient
+	defer func() {
+		startServer = originalStartServer
+		newWeChatLoginClient = originalLoginClient
+	}()
+	fakeRuntime := &fakeServerRuntime{
+		warmupState: sandbox.RuntimeState{Status: sandbox.StatusPending, Stage: sandbox.StageCheckingDocker},
+		statuses: []lumicli.SandboxWarmupState{
+			sandbox.RuntimeState{Status: sandbox.StatusPending, Stage: sandbox.StagePreparingImage},
+			sandbox.RuntimeState{Status: sandbox.StatusRunning},
+		},
+	}
+	startServer = func(cfg *config.Config, staticFS fs.FS, port string) (serverRuntime, error) {
+		return fakeRuntime, nil
+	}
+	newWeChatLoginClient = func(baseURL string) wechatLoginClient {
+		t.Fatalf("newWeChatLoginClient called for saved credentials")
+		return nil
+	}
+
+	stdout, stderr := tempStdoutStderr(t)
+	if err := runWeChatRun([]string{
+		"--workspace", workspace,
+		"--kind", "sandbox",
+		"--agent", "claude",
+	}, stdout, stderr); err != nil {
+		t.Fatalf("runWeChatRun() error = %v", err)
+	}
+	if fakeRuntime.warmupCalls != 1 {
+		t.Fatalf("warmup calls = %d, want 1", fakeRuntime.warmupCalls)
+	}
+	if fakeRuntime.statusCalls < 2 {
+		t.Fatalf("status calls = %d, want at least 2", fakeRuntime.statusCalls)
+	}
+	for _, want := range []string{"Sandbox: warming up", "Sandbox: checking Docker", "Sandbox: preparing image", "Sandbox: ready"} {
+		if !stdoutContains(t, stdout, want) {
+			t.Fatalf("stdout missing %q", want)
+		}
 	}
 }
 
@@ -499,7 +600,11 @@ func createCLIConfigWithAgent(t *testing.T, home string) string {
 }
 
 type fakeServerRuntime struct {
-	port string
+	port        string
+	warmupCalls int
+	statusCalls int
+	warmupState lumicli.SandboxWarmupState
+	statuses    []lumicli.SandboxWarmupState
 }
 
 func (r *fakeServerRuntime) ListenAndServe() error {
@@ -515,6 +620,28 @@ func (r *fakeServerRuntime) Port() string {
 		return "3000"
 	}
 	return r.port
+}
+
+func (r *fakeServerRuntime) WarmupSandbox(context.Context, string) (lumicli.SandboxWarmupState, error) {
+	r.warmupCalls++
+	if r.warmupState.Status == "" {
+		r.warmupState = sandbox.RuntimeState{Status: sandbox.StatusRunning}
+	}
+	return r.warmupState, nil
+}
+
+func (r *fakeServerRuntime) EnsureSandbox(context.Context, string) (lumicli.SandboxWarmupState, error) {
+	return r.WarmupSandbox(context.Background(), "")
+}
+
+func (r *fakeServerRuntime) SandboxStatus(string) (lumicli.SandboxWarmupState, error) {
+	r.statusCalls++
+	if len(r.statuses) > 0 {
+		state := r.statuses[0]
+		r.statuses = r.statuses[1:]
+		return state, nil
+	}
+	return sandbox.RuntimeState{Status: sandbox.StatusRunning}, nil
 }
 
 type fakeWeChatLoginClient struct {

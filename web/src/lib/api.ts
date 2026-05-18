@@ -64,6 +64,14 @@ export interface SandboxWorkspacePreflightResult {
   details: string;
 }
 
+export interface SandboxRuntimeState {
+  workspaceId: string;
+  status: Workspace["sandboxStatus"];
+  stage?: Workspace["sandboxStage"];
+  expiresAt?: number;
+  errorCode?: Workspace["sandboxError"];
+}
+
 export async function fetchAgents(): Promise<{
   agents: Agent[];
   default: string;
@@ -472,6 +480,32 @@ export async function preflightSandboxWorkspace(input: {
     recoverable: data.recoverable ?? true,
     details: data.details || "",
   };
+}
+
+export async function warmupSandboxWorkspace(workspaceId: string): Promise<SandboxRuntimeState> {
+  const response = await fetch(`/sandboxes/warmup`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ workspaceId }),
+  });
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+
+  return readJson<SandboxRuntimeState>(response);
+}
+
+export async function fetchSandboxStatus(workspaceId: string): Promise<SandboxRuntimeState> {
+  const response = await fetch(`/sandboxes/${encodeURIComponent(workspaceId)}`, {
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+
+  return readJson<SandboxRuntimeState>(response);
 }
 
 export async function fetchSessions(): Promise<SessionMeta[]> {

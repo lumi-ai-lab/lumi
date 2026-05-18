@@ -14,6 +14,7 @@ type ContainerSpec struct {
 	Image            string
 	WorkspacePath    string
 	ConfigHostPath   string
+	RuntimeHostPath  string
 	BackendURL       string
 	Token            string
 	Labels           map[string]string
@@ -41,6 +42,13 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 			ReadOnly: true,
 		},
 	}
+	if spec.RuntimeHostPath != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: spec.RuntimeHostPath,
+			Target: "/lumi/runtime",
+		})
+	}
 	for _, credentialMount := range spec.CredentialMounts {
 		if credentialMount.Source == "" || credentialMount.Target == "" {
 			continue
@@ -59,12 +67,17 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 			Image:      spec.Image,
 			WorkingDir: "/workspace",
 			Labels:     spec.Labels,
+			Env: []string{
+				"NPM_CONFIG_PREFIX=/lumi/runtime/npm",
+				"NPM_CONFIG_CACHE=/lumi/runtime/npm-cache",
+				"PATH=/lumi/runtime/npm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			},
 			Cmd: []string{
 				"connect",
 				"--server", spec.BackendURL,
 				"--token", spec.Token,
 				"--config", "/lumi/device-executor/config.json",
-				"--skip-setup",
+				"--install",
 			},
 		},
 		&container.HostConfig{

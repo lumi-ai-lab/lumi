@@ -154,6 +154,8 @@ export function ChatShell() {
           onRemoveSession={controller.removeSession}
           onSelectSession={controller.selectSession}
           onSetWorkspace={controller.setWorkspace}
+          onPollSandboxReady={controller.pollSandboxWorkspaceUntilReady}
+          onWarmupSandbox={controller.warmupSandboxWorkspace}
           onShowScheduled={() => navigatePath('/scheduled')}
           sessions={controller.filteredSessions}
           workspaces={controller.workspaces}
@@ -197,6 +199,9 @@ export function ChatShell() {
                     currentWorkspace={controller.currentWorkspace}
                     workspace={controller.currentWorkspaceInfo}
                     onRetryWorkspaceAccess={() => {
+                      if (controller.currentWorkspaceInfo?.kind === 'sandbox') {
+                        void controller.warmupSandboxWorkspace(controller.currentWorkspaceInfo.id)
+                      }
                       controller.requestWorkspaceTreeRefresh({ immediate: true })
                       void controller.refreshWorkspaces()
                     }}
@@ -237,6 +242,9 @@ export function ChatShell() {
                 onCancel={controller.cancelCurrentChat}
                 onConfirmPermission={controller.handlePermissionConfirmed}
                 onRetryWorkspaceAccess={() => {
+                  if (controller.currentWorkspaceInfo?.kind === 'sandbox') {
+                    void controller.warmupSandboxWorkspace(controller.currentWorkspaceInfo.id)
+                  }
                   controller.requestWorkspaceTreeRefresh({ immediate: true })
                   void controller.refreshWorkspaces()
                 }}

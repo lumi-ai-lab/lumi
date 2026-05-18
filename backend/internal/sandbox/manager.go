@@ -199,7 +199,10 @@ func (m *Manager) Preflight(ctx context.Context, req PreflightRequest) Preflight
 func (m *Manager) Status(workspace config.WorkspaceConfig) RuntimeState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.statusLocked(workspace)
+}
 
+func (m *Manager) statusLocked(workspace config.WorkspaceConfig) RuntimeState {
 	record := m.runtimes[workspace.ID]
 	if record == nil {
 		return RuntimeState{
@@ -265,6 +268,42 @@ func (m *Manager) Ensure(ctx context.Context, opts EnsureOptions) (RuntimeState,
 	return runtimeState, runtimeErr
 }
 
+func (m *Manager) Warmup(ctx context.Context, opts EnsureOptions) RuntimeState {
+	workspace := opts.Workspace
+	if err := validateHostPath(workspace.Path); err != nil {
+		m.failWorkspace(workspace, invalidPathError(workspace.Path, err), "")
+		return m.Status(workspace)
+	}
+
+	m.mu.Lock()
+	if record := m.runtimes[workspace.ID]; record != nil && record.Status == StatusRunning && m.runtimeHealthy(ctx, *record) {
+		m.touchRecordLocked(record, workspace)
+		snapshot := *record
+		m.mu.Unlock()
+		return snapshot
+	}
+	if pending := m.ensures[workspace.ID]; pending != nil {
+		snapshot := m.statusLocked(workspace)
+		m.mu.Unlock()
+		return snapshot
+	}
+	record := m.getOrCreateRuntimeLocked(workspace)
+	record.Status = StatusPending
+	record.Stage = StageCheckingDocker
+	record.ErrorCode = ""
+	record.ErrorMessage = ""
+	record.ErrorDetails = ""
+	_ = m.persistLocked()
+	snapshot := *record
+	m.mu.Unlock()
+
+	go func() {
+		_, _ = m.Ensure(context.Background(), opts)
+	}()
+
+	return snapshot
+}
+
 func (m *Manager) doEnsure(ctx context.Context, opts EnsureOptions) (RuntimeState, *RuntimeError) {
 	workspace := opts.Workspace
 	target, targetErr := m.resolveBackendTarget(opts.BackendURL)
@@ -316,6 +355,12 @@ func (m *Manager) doEnsure(ctx context.Context, opts EnsureOptions) (RuntimeStat
 		m.failWorkspace(workspace, runtimeErr, StageStartingContainer)
 		return m.Status(workspace), runtimeErr
 	}
+	runtimeHostPath, err := m.prepareWorkspaceRuntime(workspace.ID)
+	if err != nil {
+		runtimeErr := wrapRuntimeError(CodeUnknown, err)
+		m.failWorkspace(workspace, runtimeErr, StageStartingContainer)
+		return m.Status(workspace), runtimeErr
+	}
 	credentialMounts := m.resolveCredentialMounts(workspace.ID)
 
 	_ = m.docker.StopRemoveContainer(ctx, record.ContainerName)
@@ -324,6 +369,7 @@ func (m *Manager) doEnsure(ctx context.Context, opts EnsureOptions) (RuntimeStat
 		Image:            record.Image,
 		WorkspacePath:    record.HostPath,
 		ConfigHostPath:   configPath,
+		RuntimeHostPath:  runtimeHostPath,
 		BackendURL:       target.URL,
 		Token:            m.devices.Secret(),
 		Labels:           sandboxdocker.BuildLabels(workspace.ID, record.DeviceID),
@@ -341,14 +387,14 @@ func (m *Manager) doEnsure(ctx context.Context, opts EnsureOptions) (RuntimeStat
 		return m.Status(workspace), runtimeErr
 	}
 
-	record.Stage = StageConnectingExec
+	record.Stage = StageBootstrapping
 	record.StartedAt = time.Now().UnixMilli()
 	if err := m.saveRuntime(record); err != nil {
 		return RuntimeState{}, wrapRuntimeError(CodeUnknown, err)
 	}
 
 	if runtimeErr := m.waitForDevice(ctx, record.DeviceID); runtimeErr != nil {
-		m.failWorkspace(workspace, runtimeErr, StageConnectingExec)
+		m.failWorkspace(workspace, runtimeErr, StageBootstrapping)
 		return m.Status(workspace), runtimeErr
 	}
 
@@ -536,6 +582,16 @@ func (m *Manager) getOrCreateRuntimeLocked(workspace config.WorkspaceConfig) *Ru
 	}
 	m.runtimes[workspace.ID] = record
 	return record
+}
+
+func (m *Manager) prepareWorkspaceRuntime(workspaceID string) (string, error) {
+	dir := filepath.Join(m.runtimeDir, "sandboxes", workspaceID, "runtime")
+	for _, child := range []string{"npm/bin", "npm/lib/node_modules", "npm-cache"} {
+		if err := os.MkdirAll(filepath.Join(dir, child), 0o755); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
 }
 
 func (m *Manager) writeExecutorConfig(workspace config.WorkspaceConfig, runtimeState RuntimeState) (string, error) {

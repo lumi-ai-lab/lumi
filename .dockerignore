@@ -1,0 +1,9 @@
+.git
+.next
+node_modules
+web/.next
+web/node_modules
+web/tsconfig.tsbuildinfo
+docker/sandbox/bin
+backend/bin
+**/.DS_Store

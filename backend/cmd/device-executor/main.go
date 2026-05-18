@@ -15,6 +15,7 @@ type connectOptions struct {
 	Token      string
 	ConfigPath string
 	SkipSetup  bool
+	Install    bool
 }
 
 type setupOptions struct {
@@ -75,7 +76,14 @@ func runConnect(args []string) error {
 		return err
 	}
 
-	if !opts.SkipSetup {
+	if opts.Install {
+		status := runSetupCheck(cfg)
+		if !status.Ready {
+			if err := installSetupDependencies(status); err != nil {
+				return err
+			}
+		}
+	} else if !opts.SkipSetup {
 		status := runSetupCheck(cfg)
 		if !status.Ready {
 			printSetupStatus(status)
@@ -151,6 +159,7 @@ func parseConnectArgs(args []string) (connectOptions, error) {
 	fs.StringVar(&opts.Token, "token", "", "device secret")
 	fs.StringVar(&opts.ConfigPath, "config", "", "executor config file path")
 	fs.BoolVar(&opts.SkipSetup, "skip-setup", false, "connect without local setup preflight")
+	fs.BoolVar(&opts.Install, "install", false, "install missing npm-based dependencies before connecting")
 
 	if err := fs.Parse(args); err != nil {
 		return opts, fmt.Errorf("%w: %v", errUsage, err)
@@ -185,5 +194,5 @@ func parseSetupArgs(args []string) (setupOptions, error) {
 }
 
 func usage() string {
-	return "usage:\n  device-executor setup [--install] [--config <path>]\n  device-executor connect --server <url> --token <token> [--config <path>] [--skip-setup]"
+	return "usage:\n  device-executor setup [--install] [--config <path>]\n  device-executor connect --server <url> --token <token> [--config <path>] [--install] [--skip-setup]"
 }

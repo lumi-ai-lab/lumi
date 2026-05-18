@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/docker/docker/api/types"
@@ -72,6 +74,31 @@ func TestShouldRemoveRecoveredContainer(t *testing.T) {
 				t.Fatalf("shouldRemoveRecoveredContainer() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPrepareWorkspaceRuntimeCreatesNpmDirs(t *testing.T) {
+	runtimeDir := t.TempDir()
+	manager := &Manager{runtimeDir: runtimeDir}
+
+	got, err := manager.prepareWorkspaceRuntime("workspace-1")
+	if err != nil {
+		t.Fatalf("prepareWorkspaceRuntime() error = %v", err)
+	}
+
+	want := filepath.Join(runtimeDir, "sandboxes", "workspace-1", "runtime")
+	if got != want {
+		t.Fatalf("runtime path = %q, want %q", got, want)
+	}
+	for _, child := range []string{"npm/bin", "npm/lib/node_modules", "npm-cache"} {
+		path := filepath.Join(got, child)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("os.Stat(%q) error = %v", path, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("%q is not a directory", path)
+		}
 	}
 }
 

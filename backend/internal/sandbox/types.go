@@ -7,6 +7,7 @@ const (
 	DefaultIdleTimeoutSec = 1800
 	WorkspacePath         = "/workspace"
 	ConfigPath            = "/lumi/device-executor/config.json"
+	RuntimePath           = "/lumi/runtime"
 )
 
 const (
@@ -22,6 +23,7 @@ const (
 	StagePreparingImage    = "preparing_image"
 	StageStartingContainer = "starting_container"
 	StageConnectingExec    = "connecting_executor"
+	StageBootstrapping     = "bootstrapping_runtime"
 )
 
 const (
