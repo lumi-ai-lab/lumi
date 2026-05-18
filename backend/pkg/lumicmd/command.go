@@ -51,6 +51,8 @@ func RunAs(programName string, args []string, stdin *os.File, stdout, stderr *os
 	switch args[0] {
 	case "cron":
 		return runCron(args[1:], stdout, programName)
+	case "im":
+		return runIM(args[1:], stdout, stderr, programName)
 	case "sandbox":
 		return runSandbox(args[1:], stdout, programName)
 	case "setup":
@@ -534,6 +536,13 @@ func cronRequest(method, path string, query map[string]string, payload any, out 
 }
 
 func cronRequestWithBase(apiBase, method, path string, query map[string]string, payload any, out any) error {
+	if err := apiRequestWithBase(apiBase, method, path, query, payload, out); err != nil {
+		return fmt.Errorf("cron API %w", err)
+	}
+	return nil
+}
+
+func apiRequestWithBase(apiBase, method, path string, query map[string]string, payload any, out any) error {
 	base := strings.TrimRight(strings.TrimSpace(apiBase), "/")
 	if base == "" {
 		base = strings.TrimRight(envOrDefault("LUMI_API_BASE", "http://127.0.0.1:3000/api"), "/")
@@ -567,12 +576,36 @@ func cronRequestWithBase(apiBase, method, path string, query map[string]string, 
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("cron API %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(data)))
 	}
 	if out == nil {
 		return nil
 	}
 	return json.Unmarshal(data, out)
+}
+
+type ExitError struct {
+	Code int
+	Err  error
+}
+
+func (e ExitError) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("exit status %d", e.Code)
+}
+
+func (e ExitError) Unwrap() error {
+	return e.Err
+}
+
+func ExitCode(err error) (int, bool) {
+	var exitErr ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.Code, true
+	}
+	return 0, false
 }
 
 func trimLabel(value string) string {

@@ -46,6 +46,15 @@ Mute means the task still runs but sends no start or result messages. Silent onl
 
 Do not output internal scheduling protocols. Use the CLI for scheduling control.`
 
+const IMRunToolInstructions = `When running inside an IM channel, if a long-running command generates an intermediate image or file that the user must see before the command exits, wrap it with:
+
+  "$LUMI_CLI" im run --image-out IMAGE_PATH --sh '<command that writes "$IMAGE_PATH">'
+
+Prefer the command's own file output flag when it has one, for example a QR or image output option. Do not use shell redirection from stdout into the image path for QR-login flows unless the command explicitly writes a binary image file there.
+
+Do not directly run QR-login commands that wait for user interaction, because their output may not reach the IM user until the command exits.
+Use this for QR codes, screenshots, reports, and other intermediate files that must be delivered while the command is still running.`
+
 func WithAgentToolInstructions(prompt string) string {
 	return WithAgentToolInstructionsForContext(prompt, ToolContext{})
 }
@@ -63,6 +72,9 @@ type ToolContext struct {
 func WithAgentToolInstructionsForContext(prompt string, ctx ToolContext) string {
 	prompt = strings.TrimSpace(prompt)
 	instructions := AgentToolInstructions
+	if ctx.Channel == ChannelWeCom {
+		instructions += "\n\n" + IMRunToolInstructions
+	}
 	if ctx.APIBase != "" || ctx.Channel != "" || ctx.ConversationID != "" || ctx.AgentID != "" || ctx.WorkspaceID != "" || ctx.WorkspacePath != "" {
 		instructions += fmt.Sprintf(`
 

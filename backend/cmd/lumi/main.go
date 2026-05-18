@@ -19,6 +19,9 @@ import (
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		if code, ok := lumicmd.ExitCode(err); ok {
+			os.Exit(code)
+		}
 		os.Exit(1)
 	}
 }
@@ -28,7 +31,7 @@ func run(args []string) error {
 		switch args[0] {
 		case "server":
 			return runServer(args[1:])
-		case "cron", "sandbox", "setup", "wechat", "wecom":
+		case "cron", "im", "sandbox", "setup", "wechat", "wecom":
 			return lumicmd.Run(args, os.Stdin, os.Stdout, os.Stderr)
 		case "help", "-h", "--help":
 			printUsage()
@@ -140,6 +143,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stdout, "  lumi [--config <path>] [--port <port>] [--web <dir>]")
 	fmt.Fprintln(os.Stdout, "  lumi server [--config <path>] [--port <port>] [--web <dir>]")
 	fmt.Fprintln(os.Stdout, "  lumi cron <command> [flags]")
+	fmt.Fprintln(os.Stdout, "  lumi im <command> [flags]")
 	fmt.Fprintln(os.Stdout, "  lumi sandbox <command> [flags]")
 	fmt.Fprintln(os.Stdout, "  lumi setup [flags]")
 	fmt.Fprintln(os.Stdout, "  lumi wechat <command> [flags]")

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +36,33 @@ func lumiAPIBaseForConfig(cfg *config.Config) string {
 		return strings.TrimRight(strings.TrimSpace(cfg.PublicServerURL), "/") + "/api"
 	}
 	return "http://127.0.0.1:3000/api"
+}
+
+func lumiAPIBaseForWorkspace(cfg *config.Config, workspaceID string) string {
+	base := lumiAPIBaseForConfig(cfg)
+	if cfg == nil {
+		return base
+	}
+	workspace := cfg.FindWorkspace(strings.TrimSpace(workspaceID))
+	if workspace == nil || workspace.Kind != "sandbox" {
+		return base
+	}
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return base
+	}
+	host := parsed.Hostname()
+	port := parsed.Port()
+	switch host {
+	case "127.0.0.1", "localhost", "0.0.0.0":
+		parsed.Host = "host.docker.internal"
+		if port != "" {
+			parsed.Host = "host.docker.internal:" + port
+		}
+		return strings.TrimRight(parsed.String(), "/")
+	default:
+		return base
+	}
 }
 
 func resolveLumiCLIPath() string {

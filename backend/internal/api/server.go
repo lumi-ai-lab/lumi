@@ -51,6 +51,7 @@ type Server struct {
 	wechat         *wechat.Service
 	wechatChat     *wechatChatRuntime
 	wecom          *wecom.Service
+	wecomIMSender  imSender
 	wecomChat      *wecomChatRuntime
 	cron           *lumicron.Service
 	cronSubs       map[chan lumicron.Event]struct{}
@@ -135,6 +136,7 @@ func NewServer(cfg *config.Config, staticFS fs.FS) *Server {
 	s.wechat = wechat.NewService(cfg, s)
 	s.wecomChat = newWeComChatRuntime(cfg, s.cron)
 	s.wecom = wecom.NewService(cfg, s)
+	s.wecomIMSender = s.wecom
 	s.devices.SetDeviceResetHook(s.clearRemoteSessionsForDevice)
 
 	s.loadPersistedWorkspaces()
@@ -202,6 +204,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/cron/jobs", s.handleCronJobs)
 	mux.HandleFunc("/api/cron/jobs/", s.handleCronJobByID)
 	mux.HandleFunc("/api/cron/events", s.handleCronEvents)
+	mux.HandleFunc("/api/im/send", s.handleIMSend)
 	mux.HandleFunc("/api/permission/confirm", s.handlePermissionConfirm)
 	mux.HandleFunc("/api/upload", s.handleFileUpload)
 	mux.HandleFunc("/api/upload/cleanup", s.handleFileCleanup)

@@ -14,6 +14,9 @@ func TestRunRoutesCLICommands(t *testing.T) {
 	if err := run([]string{"cron", "--help"}); err != nil {
 		t.Fatalf("run cron help error = %v", err)
 	}
+	if err := run([]string{"im", "--help"}); err != nil {
+		t.Fatalf("run im help error = %v", err)
+	}
 	if err := run([]string{"sandbox", "--help"}); err != nil {
 		t.Fatalf("run sandbox help error = %v", err)
 	}

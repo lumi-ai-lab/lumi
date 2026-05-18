@@ -108,7 +108,7 @@ func (s *Server) RunWeComChat(ctx context.Context, input wecom.ChatRunInput, sin
 		DeviceID:       runtime.DeviceID,
 		AgentID:        input.AgentID,
 		Prompt: buildIMPrompt(input.PromptPrefix, input.Message, lumicron.ToolContext{
-			APIBase:        lumiAPIBaseForConfig(s.config),
+			APIBase:        lumiAPIBaseForWorkspace(s.config, runtime.WorkspaceID),
 			Channel:        lumicron.ChannelWeCom,
 			ConversationID: input.ConversationID,
 			AgentID:        input.AgentID,
@@ -146,7 +146,7 @@ func (s *Server) RunWeChatChat(ctx context.Context, input wechat.ChatRunInput, s
 		DeviceID:       runtime.DeviceID,
 		AgentID:        input.AgentID,
 		Prompt: buildIMPrompt(input.PromptPrefix, input.Message, lumicron.ToolContext{
-			APIBase:        lumiAPIBaseForConfig(s.config),
+			APIBase:        lumiAPIBaseForWorkspace(s.config, runtime.WorkspaceID),
 			Channel:        lumicron.ChannelWeChat,
 			ConversationID: input.ConversationID,
 			AgentID:        input.AgentID,

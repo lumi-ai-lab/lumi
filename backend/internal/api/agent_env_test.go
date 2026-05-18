@@ -43,3 +43,16 @@ func TestInjectLumiAgentEnv(t *testing.T) {
 		t.Fatalf("PATH = %q, want original PATH preserved", agent.Env["PATH"])
 	}
 }
+
+func TestLumiAPIBaseForWorkspaceMapsSandboxToHostDockerInternal(t *testing.T) {
+	cfg := &config.Config{
+		PublicServerURL: "http://127.0.0.1:3000",
+		Workspaces: []config.WorkspaceConfig{{
+			ID:   "sandbox-1",
+			Kind: "sandbox",
+		}},
+	}
+	if got := lumiAPIBaseForWorkspace(cfg, "sandbox-1"); !strings.Contains(got, "host.docker.internal") {
+		t.Fatalf("lumiAPIBaseForWorkspace() = %q, want host.docker.internal", got)
+	}
+}

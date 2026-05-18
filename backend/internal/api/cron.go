@@ -486,6 +486,13 @@ func (s *Server) apiBaseForAgent() string {
 	return lumiAPIBaseForConfig(s.config)
 }
 
+func (s *Server) apiBaseForWorkspace(workspaceID string) string {
+	if s == nil {
+		return lumiAPIBaseForWorkspace(nil, workspaceID)
+	}
+	return lumiAPIBaseForWorkspace(s.config, workspaceID)
+}
+
 func (s *Server) acquireCronRun(conversationID string) bool {
 	s.cronRunsMu.Lock()
 	defer s.cronRunsMu.Unlock()

@@ -231,7 +231,7 @@ func (s *Server) prepareChat(ctx context.Context, req chatRequest) (*chatPrepare
 	}
 	if !req.Hidden && !skillCommand.SkipCron {
 		promptText = lumicron.WithAgentToolInstructionsForContext(promptText, lumicron.ToolContext{
-			APIBase:        s.apiBaseForAgent(),
+			APIBase:        s.apiBaseForWorkspace(workspaceID),
 			Channel:        lumicron.ChannelWeb,
 			ConversationID: convID,
 			AgentID:        agentID,
@@ -435,7 +435,7 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 	s.applyPreparedAgentSwitch(ctx.Prepared)
 	if !s.initialized[ctx.Prepared.AgentID] {
 		ctx.SendEvent("status", map[string]string{"message": fmt.Sprintf("Initializing %s...", ctx.Prepared.AgentID)})
-		injectLumiAgentEnv(s.config, ctx.Prepared.AgentID, s.apiBaseForAgent())
+		injectLumiAgentEnv(s.config, ctx.Prepared.AgentID, s.apiBaseForWorkspace(ctx.Prepared.WorkspaceID))
 		if err := s.initializeAgent(ctx.Prepared.AgentID); err != nil {
 			ctx.setError(err)
 			ctx.SendEvent("error", map[string]string{"message": err.Error()})

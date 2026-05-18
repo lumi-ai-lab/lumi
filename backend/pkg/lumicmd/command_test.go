@@ -2,6 +2,8 @@ package lumicmd
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -11,12 +13,111 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/sandbox"
 	"github.com/pengmide/lumi/internal/wechat"
 	"github.com/pengmide/lumi/pkg/lumicli"
 )
+
+func TestIMRunSendsGeneratedImageBeforeCommandExits(t *testing.T) {
+	var requests []imSendPayload
+	sentCh := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/im/send" {
+			t.Fatalf("path = %q, want /im/send", r.URL.Path)
+		}
+		var payload imSendPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		requests = append(requests, payload)
+		sentCh <- struct{}{}
+		fmt.Fprint(w, `{"success":true}`)
+	}))
+	defer server.Close()
+
+	workspace := t.TempDir()
+	t.Setenv("LUMI_API_BASE", server.URL)
+	t.Setenv("LUMI_CHANNEL", "wecom")
+	t.Setenv("LUMI_WORKSPACE_ID", "default")
+	t.Setenv("LUMI_WORKSPACE_PATH", workspace)
+	t.Setenv("LUMI_WECOM_CHAT_ID", "chat-1")
+	donePath := filepath.Join(workspace, "release")
+
+	stdout, stderr := tempStdoutStderr(t)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runIMRun([]string{
+			"--image-out", "QR_PATH",
+			"--caption", "scan",
+			"--cleanup",
+			"--sh", fmt.Sprintf(`printf 'png-data' > "$QR_PATH"; while [ ! -f %q ]; do sleep 0.05; done; echo ready`, donePath),
+		}, stdout, stderr)
+	}()
+	select {
+	case <-sentCh:
+	case err := <-errCh:
+		t.Fatalf("runIMRun() finished before sending: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("send request was not observed before child command exit")
+	}
+	if err := os.WriteFile(donePath, []byte("done"), 0o644); err != nil {
+		t.Fatalf("WriteFile(done) error = %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("runIMRun() error = %v", err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(requests))
+	}
+	got := requests[0]
+	if got.Type != "image" || got.Caption != "scan" || got.WeCom.ChatID != "chat-1" || got.Path == "" {
+		t.Fatalf("payload = %+v", got)
+	}
+	if !strings.Contains(got.Path, filepath.Join(workspace, ".lumi", "im-run")) {
+		t.Fatalf("path = %q, want generated workspace im-run path", got.Path)
+	}
+	if _, err := os.Stat(got.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("generated path stat err = %v, want removed by --cleanup", err)
+	}
+	if !stdoutContains(t, stdout, "ready") {
+		t.Fatalf("stdout missing child output")
+	}
+	if !stdoutContains(t, stderr, "[lumi im] sent image") {
+		t.Fatalf("stderr missing send log")
+	}
+}
+
+func TestIMRunReturnsChildExitCode(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("LUMI_API_BASE", "http://127.0.0.1:1")
+	t.Setenv("LUMI_CHANNEL", "wecom")
+	t.Setenv("LUMI_WORKSPACE_PATH", workspace)
+	t.Setenv("LUMI_WECOM_CHAT_ID", "chat-1")
+	stdout, stderr := tempStdoutStderr(t)
+
+	err := runIMRun([]string{"--sh", "exit 7"}, stdout, stderr)
+	if err == nil {
+		t.Fatal("runIMRun() error = nil, want exit error")
+	}
+	code, ok := ExitCode(err)
+	if !ok || code != 7 {
+		t.Fatalf("ExitCode() = %d, %v; err=%v", code, ok, err)
+	}
+}
+
+func TestIMRunRequiresIMContext(t *testing.T) {
+	t.Setenv("LUMI_API_BASE", "")
+	t.Setenv("LUMI_CHANNEL", "")
+	stdout, stderr := tempStdoutStderr(t)
+
+	err := runIMRun([]string{"--sh", "echo hi"}, stdout, stderr)
+	if err == nil || !strings.Contains(err.Error(), "LUMI_API_BASE") {
+		t.Fatalf("runIMRun() error = %v, want context validation", err)
+	}
+}
 
 func TestCronEditParsesScopedFlagsAfterValue(t *testing.T) {
 	var gotPath string
