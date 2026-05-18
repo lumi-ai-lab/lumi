@@ -3,10 +3,11 @@ package wechat
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/pengmide/lumi/internal/imfile"
 )
 
 var wechatSendBlockRE = regexp.MustCompile(`(?s)\[LUMI_WECHAT_SEND\]\s*(.*?)\s*\[/LUMI_WECHAT_SEND\]`)
@@ -78,72 +79,25 @@ func parseAndResolveSendAction(jsonText, workspaceRoot string) (*SendAction, str
 	if raw.Path == "" {
 		return nil, failureText("协议块", "path is required")
 	}
-	if workspaceRoot == "" {
-		return nil, failureText(raw.Path, "workspace root is empty")
+	resolved, reason := imfile.ResolveWorkspaceFile(raw.Path, workspaceRoot)
+	if reason != "" {
+		return nil, failureText(raw.Path, reason)
 	}
-
-	resolvedPath := raw.Path
-	if !filepath.IsAbs(resolvedPath) {
-		resolvedPath = filepath.Join(workspaceRoot, resolvedPath)
-	}
-
-	info, err := os.Lstat(resolvedPath)
-	if err != nil {
-		return nil, failureText(raw.Path, "file does not exist")
-	}
-
-	canonicalRoot, err := filepath.EvalSymlinks(workspaceRoot)
-	if err != nil {
-		return nil, failureText(raw.Path, "workspace root is invalid")
-	}
-	canonicalPath, err := filepath.EvalSymlinks(resolvedPath)
-	if err != nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, failureText(raw.Path, "symlink target is invalid")
-		}
-		return nil, failureText(raw.Path, "path is invalid")
-	}
-
-	inside, err := isInsideWorkspace(canonicalRoot, canonicalPath)
-	if err != nil || !inside {
-		return nil, failureText(raw.Path, "path escapes workspace")
-	}
-
-	statTarget := info
-	if info.Mode()&os.ModeSymlink != 0 {
-		if statTarget, err = os.Stat(canonicalPath); err != nil {
-			return nil, failureText(raw.Path, "symlink target is invalid")
-		}
-	}
-	if !statTarget.Mode().IsRegular() {
-		return nil, failureText(raw.Path, "path is not a regular file")
-	}
-	if statTarget.Size() > maxMediaBytes {
+	if resolved.Info.Size() > maxMediaBytes {
 		return nil, failureText(raw.Path, "file exceeds 200MB")
 	}
 
 	fileName := raw.FileName
 	if fileName == "" {
-		fileName = filepath.Base(canonicalPath)
+		fileName = filepath.Base(resolved.Path)
 	}
 	return &SendAction{
 		Type:         raw.Type,
 		Path:         raw.Path,
-		ResolvedPath: canonicalPath,
+		ResolvedPath: resolved.Path,
 		FileName:     fileName,
 		Caption:      raw.Caption,
 	}, ""
-}
-
-func isInsideWorkspace(root, target string) (bool, error) {
-	rel, err := filepath.Rel(root, target)
-	if err != nil {
-		return false, err
-	}
-	if rel == "." {
-		return false, nil
-	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..", nil
 }
 
 func failureText(path, reason string) string {

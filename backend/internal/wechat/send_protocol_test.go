@@ -69,3 +69,32 @@ func TestParseSendProtocolSupportsBlocksAndRejectsInvalidPaths(t *testing.T) {
 		t.Fatalf("len(Failures) = %d, want 3 (%v)", len(parsed.Failures), parsed.Failures)
 	}
 }
+
+func TestParseSendProtocolMapsSandboxWorkspacePath(t *testing.T) {
+	root := t.TempDir()
+	okFile := filepath.Join(root, "cmr-qr.png")
+	if err := os.WriteFile(okFile, []byte("png"), 0o644); err != nil {
+		t.Fatalf("WriteFile(okFile) error = %v", err)
+	}
+
+	content := strings.Join([]string{
+		"[LUMI_WECHAT_SEND]",
+		`{"type":"image","path":"/workspace/cmr-qr.png"}`,
+		"[/LUMI_WECHAT_SEND]",
+	}, "\n")
+
+	parsed := ParseSendProtocol(content, root)
+	if len(parsed.Failures) != 0 {
+		t.Fatalf("Failures = %v, want none", parsed.Failures)
+	}
+	if len(parsed.Actions) != 1 {
+		t.Fatalf("len(Actions) = %d, want 1", len(parsed.Actions))
+	}
+	canonicalOKFile, err := filepath.EvalSymlinks(okFile)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(okFile) error = %v", err)
+	}
+	if parsed.Actions[0].ResolvedPath != canonicalOKFile {
+		t.Fatalf("ResolvedPath = %q, want %q", parsed.Actions[0].ResolvedPath, canonicalOKFile)
+	}
+}
