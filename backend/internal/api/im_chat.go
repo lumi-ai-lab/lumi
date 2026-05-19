@@ -420,12 +420,17 @@ func restoreIMConversation(input imRunInput) (*conversation.Conversation, error)
 }
 
 func saveIMConversation(store imHiddenConversationStore, conv *conversation.Conversation, agentID string, workspaceID string) error {
+	debug := storage.IMDebugSettings{}
+	if stored, err := store.Load(conv.ID); err == nil && stored != nil {
+		debug = stored.IMDebug
+	}
 	session := &storage.StoredSession{
 		ID:          conv.ID,
 		Title:       storage.GenerateTitle(conv.Messages),
 		Messages:    append([]conversation.Message(nil), conv.Messages...),
 		ActiveAgent: agentID,
 		WorkspaceID: workspaceID,
+		IMDebug:     debug,
 		CreatedAt:   conv.CreatedAt,
 		UpdatedAt:   time.Now().UnixMilli(),
 	}

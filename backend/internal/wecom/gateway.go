@@ -17,6 +17,8 @@ import (
 
 	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/imagent"
+	"github.com/pengmide/lumi/internal/imdebug"
+	"github.com/pengmide/lumi/internal/storage"
 )
 
 const (
@@ -100,11 +102,16 @@ func (l *conversationLocks) TryLock(id string) (func(), bool) {
 }
 
 type gatewayEventSink struct {
-	textBuilder strings.Builder
+	buffer      *imdebug.Buffer
+	sendSegment func(imdebug.Segment) error
 	lastError   string
+	debug       storage.IMDebugSettings
 }
 
 func (s *gatewayEventSink) Emit(event ChatEvent) error {
+	if s.buffer == nil {
+		s.buffer = imdebug.NewBuffer(s.debug)
+	}
 	switch event.Name {
 	case "update":
 		payload, ok := event.Data.(map[string]any)
@@ -115,13 +122,47 @@ func (s *gatewayEventSink) Emit(event ChatEvent) error {
 		if !ok {
 			return nil
 		}
-		if kind, _ := update["sessionUpdate"].(string); kind == "agent_message_chunk" || kind == "agent_thought_chunk" {
+		kind, _ := update["sessionUpdate"].(string)
+		switch kind {
+		case "agent_message_chunk", "agent_thought_chunk":
 			content, _ := update["content"].(map[string]any)
 			if contentType, _ := content["type"].(string); contentType == "text" {
 				if text, _ := content["text"].(string); text != "" {
-					s.textBuilder.WriteString(text)
+					if kind == "agent_thought_chunk" {
+						s.buffer.AddThinkingChunk(text)
+						if err := s.flushReadySegments(); err != nil {
+							return err
+						}
+					} else {
+						s.buffer.AddMessageChunk(text)
+						if err := s.flushReadySegments(); err != nil {
+							return err
+						}
+					}
 				}
 			}
+		case "tool_call", "tool_call_update":
+			s.buffer.AddTool(update)
+			if err := s.flushReadySegments(); err != nil {
+				return err
+			}
+		}
+	case "thinking":
+		s.buffer.AddThinkingEvent(event.Data)
+		if imdebug.IsThinkingDone(event.Data) {
+			s.buffer.FlushThinking()
+		}
+		if err := s.flushReadySegments(); err != nil {
+			return err
+		}
+	case "tool_call", "tool_call_update":
+		s.buffer.AddTool(event.Data)
+		if err := s.flushReadySegments(); err != nil {
+			return err
+		}
+	case "done":
+		if err := s.flushAllSegments(); err != nil {
+			return err
 		}
 	case "error":
 		if payload, ok := event.Data.(map[string]string); ok {
@@ -132,7 +173,41 @@ func (s *gatewayEventSink) Emit(event ChatEvent) error {
 }
 
 func (s *gatewayEventSink) FinalText() string {
-	return strings.TrimSpace(s.textBuilder.String())
+	if s.buffer == nil {
+		return ""
+	}
+	return s.buffer.Text()
+}
+
+func (s *gatewayEventSink) DebugMessages() []string {
+	if s.buffer == nil {
+		return nil
+	}
+	return s.buffer.DebugMessages()
+}
+
+func (s *gatewayEventSink) flushReadySegments() error {
+	if s.buffer == nil || s.sendSegment == nil {
+		return nil
+	}
+	for _, segment := range s.buffer.PopSegments() {
+		if err := s.sendSegment(segment); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *gatewayEventSink) flushAllSegments() error {
+	if s.buffer == nil || s.sendSegment == nil {
+		return nil
+	}
+	for _, segment := range s.buffer.PopAllSegments() {
+		if err := s.sendSegment(segment); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeComInboundMessage, sender wsMessageSender) error {
@@ -181,7 +256,18 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 		return sender.Reply(ctx, msg.ReplyContext, attachmentFailedReplyText)
 	}
 
-	sink := &gatewayEventSink{}
+	sentVisible := false
+	sink := &gatewayEventSink{debug: imdebug.ToolDebugEnabled(s.convStore, conversationID)}
+	sink.sendSegment = func(segment imdebug.Segment) error {
+		if segment.Kind == imdebug.SegmentDebug {
+			return sender.Reply(ctx, msg.ReplyContext, segment.Text)
+		}
+		sent, err := s.sendTextSegment(ctx, sender, msg, workspace.Path, segment.Text)
+		if sent {
+			sentVisible = true
+		}
+		return err
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	runToken := s.runs.Register(conversationID, cancel)
 	defer s.runs.Unregister(conversationID, runToken)
@@ -215,8 +301,28 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 	if sink.lastError != "" && finalText == "" {
 		return sender.Reply(ctx, msg.ReplyContext, sink.lastError)
 	}
+	if err := sink.flushAllSegments(); err != nil {
+		return err
+	}
+	if sentVisible {
+		return nil
+	}
 
-	parsed := ParseSendProtocol(finalText, workspace.Path)
+	if finalText == "" {
+		return sender.Reply(ctx, msg.ReplyContext, fallbackDoneText)
+	}
+	sent, err := s.sendTextSegment(ctx, sender, msg, workspace.Path, finalText)
+	if err != nil {
+		return err
+	}
+	if sent {
+		return nil
+	}
+	return sender.Reply(ctx, msg.ReplyContext, fallbackDoneText)
+}
+
+func (s *Service) sendTextSegment(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text string) (bool, error) {
+	parsed := ParseSendProtocol(text, workspacePath)
 	sentMedia := false
 	failures := append([]string(nil), parsed.Failures...)
 	for _, action := range parsed.Actions {
@@ -243,12 +349,12 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 		}
 	}
 	if visibleText == "" && !sentMedia {
-		visibleText = fallbackDoneText
+		return false, nil
 	}
 	if visibleText == "" {
-		return nil
+		return sentMedia, nil
 	}
-	return sender.Reply(ctx, msg.ReplyContext, visibleText)
+	return true, sender.Reply(ctx, msg.ReplyContext, visibleText)
 }
 
 func deriveConversationID(conversationKey string) string {

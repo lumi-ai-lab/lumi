@@ -19,9 +19,15 @@ type StoredSession struct {
 	Messages          []conversation.Message `json:"messages"`
 	ActiveAgent       string                 `json:"activeAgent"`
 	WorkspaceID       string                 `json:"workspaceId,omitempty"`
+	IMDebug           IMDebugSettings        `json:"imDebug,omitempty"`
 	CreatedAt         int64                  `json:"createdAt"`
 	UpdatedAt         int64                  `json:"updatedAt"`
 	PendingPermission any                    `json:"pendingPermission,omitempty"`
+}
+
+type IMDebugSettings struct {
+	Thinking bool `json:"thinking,omitempty"`
+	Tools    bool `json:"tools,omitempty"`
 }
 
 // SessionMeta is metadata for listing

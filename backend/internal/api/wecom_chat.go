@@ -13,6 +13,7 @@ import (
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/conversation"
 	lumicron "github.com/pengmide/lumi/internal/cron"
+	"github.com/pengmide/lumi/internal/imdebug"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 	"github.com/pengmide/lumi/internal/mcpstore"
 	"github.com/pengmide/lumi/internal/storage"
@@ -248,12 +249,14 @@ func (r *wecomChatRuntime) persistConversation(convID string, store wecom.Hidden
 	if conv == nil {
 		return nil
 	}
+	debug := imdebug.ToolDebugEnabled(store, convID)
 	session := &storage.StoredSession{
 		ID:          conv.ID,
 		Title:       storage.GenerateTitle(conv.Messages),
 		Messages:    append([]conversation.Message(nil), conv.Messages...),
 		ActiveAgent: conv.ActiveAgent,
 		WorkspaceID: conv.WorkspaceID,
+		IMDebug:     debug,
 		CreatedAt:   conv.CreatedAt,
 		UpdatedAt:   time.Now().UnixMilli(),
 	}
@@ -387,6 +390,10 @@ func (r *wecomChatRuntime) handleWeComNotification(
 		return nil
 
 	case "agent_thought_chunk":
+		if text := extractTextContent(update.Content); text != "" {
+			update.Content = map[string]any{"type": "text", "text": text}
+			return sink.Emit(wecom.ChatEvent{Name: "update", Data: map[string]any{"update": toWeComUpdate(update)}})
+		}
 		return nil
 
 	case "tool_call", "tool_call_update":

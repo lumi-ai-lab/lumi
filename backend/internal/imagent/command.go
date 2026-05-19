@@ -12,6 +12,7 @@ import (
 )
 
 const FormatHelp = "格式：/agent 或 /agent <id>"
+const DebugHelp = "用法：/debug thinking|tools|all [on|off]"
 
 type Store interface {
 	Load(id string) (*storage.StoredSession, error)
@@ -49,7 +50,13 @@ func HandleCommand(text, conversationID, workspaceID, defaultAgent string, cfg *
 		return "", false, nil
 	}
 	parts := strings.Fields(trimmed)
-	if len(parts) == 0 || parts[0] != "/agent" {
+	if len(parts) == 0 {
+		return "", false, nil
+	}
+	if parts[0] == "/debug" {
+		return handleDebugCommand(parts, conversationID, workspaceID, defaultAgent, store)
+	}
+	if parts[0] != "/agent" {
 		return "", false, nil
 	}
 	if len(parts) > 2 {
@@ -79,6 +86,138 @@ func HandleCommand(text, conversationID, workspaceID, defaultAgent string, cfg *
 		return "", true, err
 	}
 	return fmt.Sprintf("已切换当前 Agent 为 %s。", target), true, nil
+}
+
+func handleDebugCommand(parts []string, conversationID, workspaceID, defaultAgent string, store Store) (string, bool, error) {
+	if len(parts) == 1 {
+		settings, err := loadDebugSettings(store, conversationID)
+		if err != nil {
+			return "", true, err
+		}
+		return fmt.Sprintf("Debug 状态：thinking=%s, tools=%s\n\n%s", onOff(settings.Thinking), onOff(settings.Tools), DebugHelp), true, nil
+	}
+	if len(parts) < 2 || len(parts) > 3 {
+		return DebugHelp, true, nil
+	}
+
+	target := strings.ToLower(parts[1])
+	if target != "thinking" && target != "tools" && target != "all" {
+		return DebugHelp, true, nil
+	}
+
+	var explicit *bool
+	if len(parts) == 3 {
+		value, ok := parseDebugBool(parts[2])
+		if !ok {
+			return DebugHelp, true, nil
+		}
+		explicit = &value
+	}
+
+	session, err := loadOrCreateSession(store, conversationID, workspaceID, defaultAgent)
+	if err != nil {
+		return "", true, err
+	}
+	next := session.IMDebug
+	action := ""
+	switch target {
+	case "thinking":
+		if explicit != nil {
+			next.Thinking = *explicit
+		} else {
+			next.Thinking = !next.Thinking
+		}
+		action = fmt.Sprintf("已%s Debug Thinking", enabledText(next.Thinking))
+	case "tools":
+		if explicit != nil {
+			next.Tools = *explicit
+		} else {
+			next.Tools = !next.Tools
+		}
+		action = fmt.Sprintf("已%s Debug Tools", enabledText(next.Tools))
+	case "all":
+		enable := !(next.Thinking && next.Tools)
+		if explicit != nil {
+			enable = *explicit
+		}
+		next.Thinking = enable
+		next.Tools = enable
+		action = fmt.Sprintf("已%s全部 Debug", enabledText(enable))
+	}
+
+	now := time.Now().UnixMilli()
+	session.IMDebug = next
+	if session.WorkspaceID == "" {
+		session.WorkspaceID = workspaceID
+	}
+	if session.ActiveAgent == "" {
+		session.ActiveAgent = defaultAgent
+	}
+	if session.CreatedAt == 0 {
+		session.CreatedAt = now
+	}
+	session.UpdatedAt = now
+	if session.Title == "" {
+		session.Title = storage.GenerateTitle(session.Messages)
+	}
+	if err := store.Save(session); err != nil {
+		return "", true, err
+	}
+	return fmt.Sprintf("%s：thinking=%s, tools=%s", action, onOff(next.Thinking), onOff(next.Tools)), true, nil
+}
+
+func loadDebugSettings(store Store, conversationID string) (storage.IMDebugSettings, error) {
+	if store == nil {
+		return storage.IMDebugSettings{}, errors.New("conversation store is required")
+	}
+	session, err := store.Load(conversationID)
+	if err == nil {
+		return session.IMDebug, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return storage.IMDebugSettings{}, nil
+	}
+	return storage.IMDebugSettings{}, err
+}
+
+func loadOrCreateSession(store Store, conversationID, workspaceID, defaultAgent string) (*storage.StoredSession, error) {
+	if store == nil {
+		return nil, errors.New("conversation store is required")
+	}
+	session, err := store.Load(conversationID)
+	switch {
+	case err == nil:
+		return session, nil
+	case errors.Is(err, os.ErrNotExist):
+		return storage.CreateSession(conversationID, defaultAgent, workspaceID), nil
+	default:
+		return nil, err
+	}
+}
+
+func parseDebugBool(value string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "on", "true", "enable", "enabled":
+		return true, true
+	case "off", "false", "disable", "disabled":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func onOff(value bool) string {
+	if value {
+		return "on"
+	}
+	return "off"
+}
+
+func enabledText(value bool) string {
+	if value {
+		return "开启"
+	}
+	return "关闭"
 }
 
 func availableAgentIDs(cfg *config.Config, workspace *config.WorkspaceConfig) []string {
@@ -136,12 +275,8 @@ func formatList(current string, available []string) string {
 }
 
 func persistActiveAgent(store Store, conversationID, workspaceID, agentID string) error {
-	session, err := store.Load(conversationID)
-	switch {
-	case err == nil:
-	case errors.Is(err, os.ErrNotExist):
-		session = storage.CreateSession(conversationID, agentID, workspaceID)
-	default:
+	session, err := loadOrCreateSession(store, conversationID, workspaceID, agentID)
+	if err != nil {
 		return err
 	}
 	now := time.Now().UnixMilli()

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pengmide/lumi/internal/imdebug"
 	"github.com/pengmide/lumi/internal/storage"
 )
 
@@ -111,6 +112,256 @@ func TestGatewayHandlesPureTextReply(t *testing.T) {
 	}
 	if typingStatuses[0] != typingStatusActive || typingStatuses[len(typingStatuses)-1] != typingStatusCancel {
 		t.Fatalf("typingStatuses = %v", typingStatuses)
+	}
+}
+
+func TestGatewayHidesDebugOutputByDefault(t *testing.T) {
+	restoreTypingTestConfig(t, 10*time.Millisecond, 5*time.Millisecond, 24*time.Hour, 20*time.Millisecond)
+
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_thought_chunk",
+					"content":       map[string]any{"type": "text", "text": "hidden thought"},
+				},
+			}})
+			_ = sink.Emit(ChatEvent{Name: "tool_call", Data: map[string]any{
+				"toolName": "Read",
+				"status":   "completed",
+				"input":    "secret.txt",
+			}})
+			_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "reply text"},
+				},
+			}})
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sentTexts := useSendTextRecorder(t)
+
+	cfg := Config{
+		AccountID:   "wx-bot",
+		BotToken:    "bot-token",
+		BaseURL:     "https://wechat.test",
+		WorkspaceID: "default",
+		AgentID:     "claude",
+	}
+	err := service.handleInboundMessage(context.Background(), cfg, WeChatInboundMessage{
+		ConversationKey: "user-debug-default",
+		MessageID:       "msg-debug-default",
+		ContextToken:    "ctx-debug",
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(*sentTexts) == 0 {
+		t.Fatalf("sentTexts = %v, want reply", *sentTexts)
+	}
+	reply := (*sentTexts)[len(*sentTexts)-1]
+	if !strings.Contains(reply, `"text":"reply text"`) {
+		t.Fatalf("reply missing visible text: %v", *sentTexts)
+	}
+	if strings.Contains(reply, "hidden thought") || strings.Contains(reply, "🪄") {
+		t.Fatalf("default reply leaked debug output: %s", reply)
+	}
+}
+
+func TestGatewayDebugCommandReturnsImmediately(t *testing.T) {
+	restoreTypingTestConfig(t, 10*time.Millisecond, 5*time.Millisecond, 24*time.Hour, 20*time.Millisecond)
+
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			t.Fatal("runner should not be called for /debug")
+			return nil
+		},
+	}
+	service := newTestService(t, runner)
+	sentTexts := useSendTextRecorder(t)
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeChatInboundMessage{
+		ConversationKey: "user-debug-command",
+		MessageID:       "msg-debug-command",
+		ContextToken:    "ctx-debug-command",
+		Text:            "/debug all on",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(*sentTexts) != 1 || !strings.Contains((*sentTexts)[0], "thinking=on, tools=on") {
+		t.Fatalf("sentTexts = %v, want debug command reply", *sentTexts)
+	}
+}
+
+func TestGatewayDebugOutputUsesSeparateMessages(t *testing.T) {
+	restoreTypingTestConfig(t, 10*time.Millisecond, 5*time.Millisecond, 24*time.Hour, 20*time.Millisecond)
+
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_thought_chunk",
+					"content":       map[string]any{"type": "text", "text": "hidden "},
+				},
+			}})
+			_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_thought_chunk",
+					"content":       map[string]any{"type": "text", "text": "thought"},
+				},
+			}})
+			_ = sink.Emit(ChatEvent{Name: "tool_call", Data: map[string]any{
+				"toolCallId": "tool-1",
+				"toolName":   "Read",
+				"status":     "pending",
+				"input":      "file.go",
+			}})
+			_ = sink.Emit(ChatEvent{Name: "tool_call_update", Data: map[string]any{
+				"toolCallId": "tool-1",
+				"status":     "completed",
+				"output":     "ok",
+			}})
+			_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "reply text"},
+				},
+			}})
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	conversationID := deriveConversationID("user-debug-enabled")
+	session := storage.CreateSession(conversationID, "claude", "default")
+	session.IMDebug.Thinking = true
+	session.IMDebug.Tools = true
+	if err := service.convStore.Save(session); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	sentTexts := useSendTextRecorder(t)
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeChatInboundMessage{
+		ConversationKey: "user-debug-enabled",
+		MessageID:       "msg-debug-enabled",
+		ContextToken:    "ctx-debug-enabled",
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(*sentTexts) != 3 {
+		t.Fatalf("sentTexts = %v, want thinking, tool, final reply", *sentTexts)
+	}
+	if !strings.Contains((*sentTexts)[0], `"text":"🤔\nhidden thought"`) {
+		t.Fatalf("thinking send = %s", (*sentTexts)[0])
+	}
+	if !strings.Contains((*sentTexts)[1], `"text":"🪄 Read completed: ok"`) {
+		t.Fatalf("tool send = %s", (*sentTexts)[1])
+	}
+	if !strings.Contains((*sentTexts)[2], `"text":"reply text"`) {
+		t.Fatalf("final send = %s", (*sentTexts)[2])
+	}
+	if strings.Contains((*sentTexts)[2], "🤔") || strings.Contains((*sentTexts)[2], "🪄") {
+		t.Fatalf("final reply mixed debug output: %s", (*sentTexts)[2])
+	}
+}
+
+func TestGatewayEventSinkDebugSwitches(t *testing.T) {
+	tests := []struct {
+		name        string
+		debug       storage.IMDebugSettings
+		wantThought bool
+		wantTool    bool
+	}{
+		{name: "thinking only", debug: storage.IMDebugSettings{Thinking: true}, wantThought: true},
+		{name: "tools only", debug: storage.IMDebugSettings{Tools: true}, wantTool: true},
+		{name: "all", debug: storage.IMDebugSettings{Thinking: true, Tools: true}, wantThought: true, wantTool: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := &gatewayEventSink{debug: tt.debug}
+			_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "reply text"},
+				},
+			}})
+			_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_thought_chunk",
+					"content":       map[string]any{"type": "text", "text": "hidden thought"},
+				},
+			}})
+			_ = sink.Emit(ChatEvent{Name: "tool_call", Data: map[string]any{
+				"toolName": "Read",
+				"status":   "completed",
+				"input":    "file.go",
+			}})
+
+			reply := sink.FinalText()
+			if !strings.Contains(reply, "reply text") {
+				t.Fatalf("reply missing visible text: %q", reply)
+			}
+			if strings.Contains(reply, "🤔") || strings.Contains(reply, "🪄") {
+				t.Fatalf("final reply mixed debug output:\n%s", reply)
+			}
+			debug := strings.Join(sink.DebugMessages(), "\n\n")
+			if strings.Contains(debug, "🤔") != tt.wantThought {
+				t.Fatalf("thinking presence = %v, want %v in:\n%s", strings.Contains(debug, "🤔"), tt.wantThought, debug)
+			}
+			if strings.Contains(debug, "🪄") != tt.wantTool {
+				t.Fatalf("tool presence = %v, want %v in:\n%s", strings.Contains(debug, "🪄"), tt.wantTool, debug)
+			}
+		})
+	}
+}
+
+func TestGatewayEventSinkIgnoresUsageUpdatesWithinThinkingSegment(t *testing.T) {
+	var sent []imdebug.Segment
+	sink := &gatewayEventSink{
+		debug: storage.IMDebugSettings{Thinking: true},
+		sendSegment: func(segment imdebug.Segment) error {
+			sent = append(sent, segment)
+			return nil
+		},
+	}
+	_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+		"update": map[string]any{
+			"sessionUpdate": "agent_thought_chunk",
+			"content":       map[string]any{"type": "text", "text": "first "},
+		},
+	}})
+	_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+		"update": map[string]any{
+			"sessionUpdate": "usage_update",
+			"used":          nil,
+			"size":          1000000,
+		},
+	}})
+	_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+		"update": map[string]any{
+			"sessionUpdate": "agent_thought_chunk",
+			"content":       map[string]any{"type": "text", "text": "second"},
+		},
+	}})
+	if len(sent) != 0 {
+		t.Fatalf("sent before segment boundary = %+v", sent)
+	}
+	_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+		"update": map[string]any{
+			"sessionUpdate": "agent_message_chunk",
+			"content":       map[string]any{"type": "text", "text": "reply"},
+		},
+	}})
+	if len(sent) != 1 || sent[0].Kind != imdebug.SegmentDebug || sent[0].Text != "🤔\nfirst second" {
+		t.Fatalf("sent = %+v", sent)
 	}
 }
 

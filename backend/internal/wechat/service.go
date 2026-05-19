@@ -12,6 +12,7 @@ import (
 	"github.com/pengmide/lumi/internal/config"
 	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/imagent"
+	"github.com/pengmide/lumi/internal/imdebug"
 )
 
 type Status struct {
@@ -202,7 +203,7 @@ func (s *Service) RunCronJob(ctx context.Context, job lumicron.Job) (string, err
 	defer unlock()
 
 	client := NewClient(cfg)
-	sink := &gatewayEventSink{}
+	sink := &gatewayEventSink{debug: imdebug.ToolDebugEnabled(s.convStore, job.ConversationID)}
 	runErr := s.runner.RunWeChatChat(ctx, ChatRunInput{
 		Message:             job.Prompt,
 		ConversationID:      job.ConversationID,

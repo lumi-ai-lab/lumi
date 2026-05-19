@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pengmide/lumi/internal/imdebug"
 	"github.com/pengmide/lumi/internal/storage"
 )
 
@@ -110,6 +111,273 @@ func TestGatewayHandlesPureTextReply(t *testing.T) {
 	}
 	if len(sender.replies) != 1 || sender.replies[0] != "reply text" {
 		t.Fatalf("replies = %v", sender.replies)
+	}
+}
+
+func TestGatewayDebugCommandReturnsImmediately(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			t.Fatal("runner should not be called for /debug")
+			return nil
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+
+	cfg := Config{
+		BotID:               "bot-1",
+		BotSecret:           "secret-1",
+		WorkspaceID:         "default",
+		AgentID:             "claude",
+		ConnectTimeoutMs:    defaultConnectTimeoutMs,
+		HeartbeatIntervalMs: defaultHeartbeatMs,
+		MessageAckTimeoutMs: defaultMessageAckTimeoutMs,
+	}
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:debug-command:user",
+		MessageID:       "msg-debug-command",
+		ReplyContext:    replyContext{ReqID: "req-debug-command", ChatID: "chat", UserID: "user"},
+		Text:            "/debug all on",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.replies) != 1 || !strings.Contains(sender.replies[0], "thinking=on, tools=on") {
+		t.Fatalf("replies = %v, want debug command reply", sender.replies)
+	}
+}
+
+func TestGatewayHidesDebugOutputByDefault(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_thought_chunk",
+					"content":       map[string]any{"type": "text", "text": "hidden thought"},
+				},
+			}})
+			_ = sink.Emit(ChatEvent{Name: "tool_call", Data: map[string]any{
+				"toolName": "Read",
+				"status":   "completed",
+				"input":    "secret.txt",
+			}})
+			_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "reply text"},
+				},
+			}})
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeComInboundMessage{
+		ConversationKey: "wecom:debug-default:user",
+		MessageID:       "msg-debug-default",
+		ReplyContext:    replyContext{ReqID: "req-debug-default", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.replies) != 1 || sender.replies[0] != "reply text" {
+		t.Fatalf("replies = %v, want final reply only", sender.replies)
+	}
+	if strings.Contains(sender.replies[0], "hidden thought") || strings.Contains(sender.replies[0], "🪄") {
+		t.Fatalf("default reply leaked debug output: %s", sender.replies[0])
+	}
+}
+
+func TestGatewayDebugOutputUsesSessionSettings(t *testing.T) {
+	longOutput := strings.Repeat("x", 400)
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_thought_chunk",
+					"content":       map[string]any{"type": "text", "text": "hidden thought"},
+				},
+			}})
+			_ = sink.Emit(ChatEvent{Name: "tool_call", Data: map[string]any{
+				"toolName": "Bash",
+				"status":   "completed",
+				"output":   longOutput,
+			}})
+			_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "reply text"},
+				},
+			}})
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	conversationID := deriveConversationID("wecom:debug:user")
+	session := storage.CreateSession(conversationID, "claude", "default")
+	session.IMDebug.Thinking = true
+	session.IMDebug.Tools = true
+	if err := service.convStore.Save(session); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	sender := &fakeSender{}
+	cfg := Config{
+		BotID:               "bot-1",
+		BotSecret:           "secret-1",
+		WorkspaceID:         "default",
+		AgentID:             "claude",
+		ConnectTimeoutMs:    defaultConnectTimeoutMs,
+		HeartbeatIntervalMs: defaultHeartbeatMs,
+		MessageAckTimeoutMs: defaultMessageAckTimeoutMs,
+	}
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:debug:user",
+		MessageID:       "msg-debug",
+		ReplyContext:    replyContext{ReqID: "req-debug", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.replies) != 3 {
+		t.Fatalf("replies = %v, want thinking, tool, final reply", sender.replies)
+	}
+	if sender.replies[0] != "🤔\nhidden thought" {
+		t.Fatalf("thinking reply = %q", sender.replies[0])
+	}
+	if !strings.HasPrefix(sender.replies[1], "🪄 Bash completed:") {
+		t.Fatalf("tool reply = %q", sender.replies[1])
+	}
+	if sender.replies[2] != "reply text" {
+		t.Fatalf("final reply = %q", sender.replies[2])
+	}
+	if len([]rune(sender.replies[1])) != 300 {
+		t.Fatalf("debug tool summary was not truncated: len=%d reply=%q", len([]rune(sender.replies[1])), sender.replies[1])
+	}
+}
+
+func TestGatewayDebugOutputHonorsIndependentSwitches(t *testing.T) {
+	tests := []struct {
+		name        string
+		debug       storage.IMDebugSettings
+		wantThought bool
+		wantTool    bool
+	}{
+		{name: "thinking only", debug: storage.IMDebugSettings{Thinking: true}, wantThought: true},
+		{name: "tools only", debug: storage.IMDebugSettings{Tools: true}, wantTool: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &scriptedRunner{
+				run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+					_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+						"update": map[string]any{
+							"sessionUpdate": "agent_thought_chunk",
+							"content":       map[string]any{"type": "text", "text": "hidden thought"},
+						},
+					}})
+					_ = sink.Emit(ChatEvent{Name: "tool_call", Data: map[string]any{
+						"toolName": "Read",
+						"status":   "completed",
+						"input":    "file.go",
+					}})
+					_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+						"update": map[string]any{
+							"sessionUpdate": "agent_message_chunk",
+							"content":       map[string]any{"type": "text", "text": "reply text"},
+						},
+					}})
+					return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+				},
+			}
+			service := newTestService(t, runner)
+			conversationKey := "wecom:debug:" + strings.ReplaceAll(tt.name, " ", "-")
+			conversationID := deriveConversationID(conversationKey)
+			session := storage.CreateSession(conversationID, "claude", "default")
+			session.IMDebug = tt.debug
+			if err := service.convStore.Save(session); err != nil {
+				t.Fatalf("Save() error = %v", err)
+			}
+			sender := &fakeSender{}
+			cfg := Config{
+				BotID:               "bot-1",
+				BotSecret:           "secret-1",
+				WorkspaceID:         "default",
+				AgentID:             "claude",
+				ConnectTimeoutMs:    defaultConnectTimeoutMs,
+				HeartbeatIntervalMs: defaultHeartbeatMs,
+				MessageAckTimeoutMs: defaultMessageAckTimeoutMs,
+			}
+			err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+				ConversationKey: conversationKey,
+				MessageID:       "msg-debug-" + tt.name,
+				ReplyContext:    replyContext{ReqID: "req-debug", ChatID: "chat", UserID: "user"},
+				Text:            "hello",
+				ReceivedAt:      time.Now().UnixMilli(),
+			}, sender)
+			if err != nil {
+				t.Fatalf("handleInboundMessage() error = %v", err)
+			}
+			replies := strings.Join(sender.replies, "\n\n")
+			if strings.Contains(sender.replies[len(sender.replies)-1], "🤔") || strings.Contains(sender.replies[len(sender.replies)-1], "🪄") {
+				t.Fatalf("final reply mixed debug output: %q", sender.replies[len(sender.replies)-1])
+			}
+			if strings.Contains(replies, "🤔") != tt.wantThought {
+				t.Fatalf("thinking presence = %v, want %v in:\n%s", strings.Contains(replies, "🤔"), tt.wantThought, replies)
+			}
+			if strings.Contains(replies, "🪄") != tt.wantTool {
+				t.Fatalf("tool presence = %v, want %v in:\n%s", strings.Contains(replies, "🪄"), tt.wantTool, replies)
+			}
+		})
+	}
+}
+
+func TestGatewayEventSinkIgnoresUsageUpdatesWithinThinkingSegment(t *testing.T) {
+	var sent []imdebug.Segment
+	sink := &gatewayEventSink{
+		debug: storage.IMDebugSettings{Thinking: true},
+		sendSegment: func(segment imdebug.Segment) error {
+			sent = append(sent, segment)
+			return nil
+		},
+	}
+	_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+		"update": map[string]any{
+			"sessionUpdate": "agent_thought_chunk",
+			"content":       map[string]any{"type": "text", "text": "first "},
+		},
+	}})
+	_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+		"update": map[string]any{
+			"sessionUpdate": "usage_update",
+			"used":          nil,
+			"size":          1000000,
+		},
+	}})
+	_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+		"update": map[string]any{
+			"sessionUpdate": "agent_thought_chunk",
+			"content":       map[string]any{"type": "text", "text": "second"},
+		},
+	}})
+	if len(sent) != 0 {
+		t.Fatalf("sent before segment boundary = %+v", sent)
+	}
+	_ = sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+		"update": map[string]any{
+			"sessionUpdate": "agent_message_chunk",
+			"content":       map[string]any{"type": "text", "text": "reply"},
+		},
+	}})
+	if len(sent) != 1 || sent[0].Kind != imdebug.SegmentDebug || sent[0].Text != "🤔\nfirst second" {
+		t.Fatalf("sent = %+v", sent)
 	}
 }
 

@@ -13,6 +13,97 @@ type memoryStore struct {
 	session *storage.StoredSession
 }
 
+func TestHandleDebugCommandShowsDefaultWithoutPersisting(t *testing.T) {
+	cfg := testConfig()
+	workspace := cfg.FindWorkspace("default")
+	store := &memoryStore{session: &storage.StoredSession{
+		ID:          "conv-1",
+		Messages:    nil,
+		ActiveAgent: "claude",
+		WorkspaceID: workspace.ID,
+	}}
+	reply, handled, err := HandleCommand("/debug", "conv-1", workspace.ID, "claude", cfg, workspace, store)
+	if err != nil {
+		t.Fatalf("HandleCommand(/debug) error = %v", err)
+	}
+	if !handled || !strings.Contains(reply, "Debug 状态：thinking=off, tools=off") || !strings.Contains(reply, DebugHelp) {
+		t.Fatalf("handled=%v reply=%q", handled, reply)
+	}
+	if len(store.session.Messages) != 0 {
+		t.Fatalf("/debug modified messages")
+	}
+}
+
+func TestHandleDebugCommandTogglesAndSetsThinkingTools(t *testing.T) {
+	cfg := testConfig()
+	workspace := cfg.FindWorkspace("default")
+	store := &memoryStore{}
+
+	tests := []struct {
+		text     string
+		thinking bool
+		tools    bool
+	}{
+		{text: "/debug thinking", thinking: true, tools: false},
+		{text: "/debug tools", thinking: true, tools: true},
+		{text: "/debug thinking off", thinking: false, tools: true},
+		{text: "/debug tools off", thinking: false, tools: false},
+		{text: "/debug thinking on", thinking: true, tools: false},
+		{text: "/debug tools on", thinking: true, tools: true},
+	}
+
+	for _, tt := range tests {
+		reply, handled, err := HandleCommand(tt.text, "conv-1", workspace.ID, "claude", cfg, workspace, store)
+		if err != nil {
+			t.Fatalf("HandleCommand(%q) error = %v", tt.text, err)
+		}
+		if !handled || reply == DebugHelp {
+			t.Fatalf("HandleCommand(%q) handled=%v reply=%q", tt.text, handled, reply)
+		}
+		if store.session.IMDebug.Thinking != tt.thinking || store.session.IMDebug.Tools != tt.tools {
+			t.Fatalf("%q stored debug = %+v, want thinking=%v tools=%v", tt.text, store.session.IMDebug, tt.thinking, tt.tools)
+		}
+	}
+}
+
+func TestHandleDebugCommandAllRulesAndInvalidFormat(t *testing.T) {
+	cfg := testConfig()
+	workspace := cfg.FindWorkspace("default")
+	store := &memoryStore{}
+
+	for _, tt := range []struct {
+		text     string
+		thinking bool
+		tools    bool
+	}{
+		{text: "/debug all", thinking: true, tools: true},
+		{text: "/debug all", thinking: false, tools: false},
+		{text: "/debug all on", thinking: true, tools: true},
+		{text: "/debug all off", thinking: false, tools: false},
+	} {
+		if _, handled, err := HandleCommand(tt.text, "conv-1", workspace.ID, "claude", cfg, workspace, store); err != nil || !handled {
+			t.Fatalf("HandleCommand(%q) handled=%v err=%v", tt.text, handled, err)
+		}
+		if store.session.IMDebug.Thinking != tt.thinking || store.session.IMDebug.Tools != tt.tools {
+			t.Fatalf("%q stored debug = %+v, want thinking=%v tools=%v", tt.text, store.session.IMDebug, tt.thinking, tt.tools)
+		}
+	}
+
+	before := store.session.IMDebug
+	for _, text := range []string{"/debug nope", "/debug tools maybe", "/debug all on extra"} {
+		reply, handled, err := HandleCommand(text, "conv-1", workspace.ID, "claude", cfg, workspace, store)
+		if err != nil {
+			t.Fatalf("HandleCommand(%q) error = %v", text, err)
+		}
+		if !handled || reply != DebugHelp {
+			t.Fatalf("HandleCommand(%q) handled=%v reply=%q", text, handled, reply)
+		}
+		if store.session.IMDebug != before {
+			t.Fatalf("invalid command %q changed debug from %+v to %+v", text, before, store.session.IMDebug)
+		}
+	}
+}
+
 func (s *memoryStore) Load(id string) (*storage.StoredSession, error) {
 	if s.session == nil || s.session.ID != id {
 		return nil, os.ErrNotExist
