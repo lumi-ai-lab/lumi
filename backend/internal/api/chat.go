@@ -435,7 +435,7 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 	s.applyPreparedAgentSwitch(ctx.Prepared)
 	if !s.initialized[ctx.Prepared.AgentID] {
 		ctx.SendEvent("status", map[string]string{"message": fmt.Sprintf("Initializing %s...", ctx.Prepared.AgentID)})
-		injectLumiAgentEnv(s.config, ctx.Prepared.AgentID, s.apiBaseForWorkspace(ctx.Prepared.WorkspaceID))
+		injectLumiAgentEnv(s.config, ctx.Prepared.AgentID, s.apiBaseForWorkspace(ctx.Prepared.WorkspaceID), ctx.Prepared.WorkspaceID, ctx.Prepared.WorkspacePath)
 		if err := s.initializeAgent(ctx.Prepared.AgentID); err != nil {
 			ctx.setError(err)
 			ctx.SendEvent("error", map[string]string{"message": err.Error()})

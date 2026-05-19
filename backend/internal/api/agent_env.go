@@ -9,7 +9,7 @@ import (
 	"github.com/pengmide/lumi/internal/config"
 )
 
-func injectLumiAgentEnv(cfg *config.Config, agentID string, apiBase string) {
+func injectLumiAgentEnv(cfg *config.Config, agentID string, apiBase string, workspaceID string, workspacePath string) {
 	if cfg == nil {
 		return
 	}
@@ -20,8 +20,14 @@ func injectLumiAgentEnv(cfg *config.Config, agentID string, apiBase string) {
 	if agent.Env == nil {
 		agent.Env = make(map[string]string)
 	}
-	if strings.TrimSpace(apiBase) != "" && strings.TrimSpace(agent.Env["LUMI_API_BASE"]) == "" {
-		agent.Env["LUMI_API_BASE"] = apiBase
+	if strings.TrimSpace(apiBase) != "" {
+		agent.Env["LUMI_API_BASE"] = strings.TrimSpace(apiBase)
+	}
+	if strings.TrimSpace(workspaceID) != "" {
+		agent.Env["LUMI_WORKSPACE_ID"] = strings.TrimSpace(workspaceID)
+	}
+	if strings.TrimSpace(workspacePath) != "" {
+		agent.Env["LUMI_WORKSPACE_PATH"] = strings.TrimSpace(workspacePath)
 	}
 	if strings.TrimSpace(agent.Env["LUMI_CLI"]) == "" {
 		if cliPath := resolveLumiCLIPath(); cliPath != "" {

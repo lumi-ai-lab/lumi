@@ -18,12 +18,17 @@ func TestInjectLumiAgentEnv(t *testing.T) {
 
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{{
-			ID:  "claude",
-			Env: map[string]string{"PATH": "/usr/bin"},
+			ID: "claude",
+			Env: map[string]string{
+				"PATH":                "/usr/bin",
+				"LUMI_API_BASE":       "http://stale.test/api",
+				"LUMI_WORKSPACE_ID":   "stale",
+				"LUMI_WORKSPACE_PATH": "/stale",
+			},
 		}},
 	}
 
-	injectLumiAgentEnv(cfg, "claude", "http://example.test/api")
+	injectLumiAgentEnv(cfg, "claude", "http://example.test/api", "workspace-1", "/workspace")
 
 	agent := cfg.FindAgent("claude")
 	if agent == nil {
@@ -31,6 +36,12 @@ func TestInjectLumiAgentEnv(t *testing.T) {
 	}
 	if agent.Env["LUMI_API_BASE"] != "http://example.test/api" {
 		t.Fatalf("LUMI_API_BASE = %q", agent.Env["LUMI_API_BASE"])
+	}
+	if agent.Env["LUMI_WORKSPACE_ID"] != "workspace-1" {
+		t.Fatalf("LUMI_WORKSPACE_ID = %q", agent.Env["LUMI_WORKSPACE_ID"])
+	}
+	if agent.Env["LUMI_WORKSPACE_PATH"] != "/workspace" {
+		t.Fatalf("LUMI_WORKSPACE_PATH = %q", agent.Env["LUMI_WORKSPACE_PATH"])
 	}
 	if agent.Env["LUMI_CLI"] != cliPath {
 		t.Fatalf("LUMI_CLI = %q, want %q", agent.Env["LUMI_CLI"], cliPath)

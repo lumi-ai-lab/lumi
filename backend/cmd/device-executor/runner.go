@@ -315,7 +315,8 @@ func (r *Runner) getOrStartAgent(agentID, workspacePath string) (*agent.Process,
 		if agentCfg == nil {
 			return nil, fmt.Errorf("agent not found: %s", agentID)
 		}
-		proc = agent.NewProcess(agentCfg)
+		runtimeEnv := buildLumiRuntimeEnv(r.client.server, r.cfg)
+		proc = agent.NewProcess(mergeAgentEnv(agentCfg, runtimeEnv))
 		r.agents[agentID] = proc
 	}
 

@@ -58,7 +58,7 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 	}
 	agentProc.SetWorkingDir(input.WorkspacePath)
 
-	if err := r.ensureInitialized(input.AgentID, input.WorkspaceID, sink); err != nil {
+	if err := r.ensureInitialized(input.AgentID, input.WorkspaceID, input.WorkspacePath, sink); err != nil {
 		return err
 	}
 
@@ -257,7 +257,7 @@ func (r *wecomChatRuntime) persistConversation(convID string, store wecom.Hidden
 	return store.Save(session)
 }
 
-func (r *wecomChatRuntime) ensureInitialized(agentID string, workspaceID string, sink wecom.ChatEventSink) error {
+func (r *wecomChatRuntime) ensureInitialized(agentID string, workspaceID string, workspacePath string, sink wecom.ChatEventSink) error {
 	r.mu.Lock()
 	initialized := r.initialized[agentID]
 	r.mu.Unlock()
@@ -271,7 +271,7 @@ func (r *wecomChatRuntime) ensureInitialized(agentID string, workspaceID string,
 	}); err != nil {
 		return err
 	}
-	injectLumiAgentEnv(r.config, agentID, lumiAPIBaseForWorkspace(r.config, workspaceID))
+	injectLumiAgentEnv(r.config, agentID, lumiAPIBaseForWorkspace(r.config, workspaceID), workspaceID, workspacePath)
 	if _, err := r.agents.Request(agentID, "initialize", map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{

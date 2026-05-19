@@ -59,7 +59,7 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 	}
 	agentProc.SetWorkingDir(input.WorkspacePath)
 
-	if err := r.ensureInitialized(input.AgentID, input.WorkspaceID, sink); err != nil {
+	if err := r.ensureInitialized(input.AgentID, input.WorkspaceID, input.WorkspacePath, sink); err != nil {
 		return err
 	}
 
@@ -258,7 +258,7 @@ func (r *wechatChatRuntime) persistConversation(convID string, store wechat.Hidd
 	return store.Save(session)
 }
 
-func (r *wechatChatRuntime) ensureInitialized(agentID string, workspaceID string, sink wechat.ChatEventSink) error {
+func (r *wechatChatRuntime) ensureInitialized(agentID string, workspaceID string, workspacePath string, sink wechat.ChatEventSink) error {
 	r.mu.Lock()
 	initialized := r.initialized[agentID]
 	r.mu.Unlock()
@@ -272,7 +272,7 @@ func (r *wechatChatRuntime) ensureInitialized(agentID string, workspaceID string
 	}); err != nil {
 		return err
 	}
-	injectLumiAgentEnv(r.config, agentID, lumiAPIBaseForWorkspace(r.config, workspaceID))
+	injectLumiAgentEnv(r.config, agentID, lumiAPIBaseForWorkspace(r.config, workspaceID), workspaceID, workspacePath)
 	if _, err := r.agents.Request(agentID, "initialize", map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{

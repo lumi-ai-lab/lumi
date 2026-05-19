@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pengmide/lumi/internal/agent"
@@ -70,5 +72,73 @@ func TestFinishTaskKeepsNewerTaskRegistered(t *testing.T) {
 	}
 	if got := runner.sessionForTask("task-old"); got != "" {
 		t.Fatalf("sessionForTask(task-old) = %q, want empty", got)
+	}
+}
+
+func TestBuildLumiRuntimeEnv(t *testing.T) {
+	workspace := t.TempDir()
+	cliPath := filepath.Join(workspace, "lumi")
+	if err := os.WriteFile(cliPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LUMI_CLI", "")
+
+	env := buildLumiRuntimeEnv("http://host.docker.internal:3000", &ExecutorConfig{
+		WorkspaceID: "cli-sandbox-wecom-d9c429b4",
+		Workspace:   workspace,
+	})
+
+	if env["LUMI_API_BASE"] != "http://host.docker.internal:3000/api" {
+		t.Fatalf("LUMI_API_BASE = %q", env["LUMI_API_BASE"])
+	}
+	if env["LUMI_WORKSPACE_ID"] != "cli-sandbox-wecom-d9c429b4" {
+		t.Fatalf("LUMI_WORKSPACE_ID = %q", env["LUMI_WORKSPACE_ID"])
+	}
+	if env["LUMI_WORKSPACE_PATH"] != workspace {
+		t.Fatalf("LUMI_WORKSPACE_PATH = %q, want %q", env["LUMI_WORKSPACE_PATH"], workspace)
+	}
+	if env["LUMI_CLI"] != cliPath {
+		t.Fatalf("LUMI_CLI = %q, want %q", env["LUMI_CLI"], cliPath)
+	}
+}
+
+func TestMergeAgentEnvRuntimeOverridesLumiValues(t *testing.T) {
+	agentCfg := &config.AgentConfig{
+		ID:      "claude",
+		Command: "codex",
+		Env: map[string]string{
+			"KEEP_ME":             "yes",
+			"LUMI_API_BASE":       "http://stale.test/api",
+			"LUMI_WORKSPACE_ID":   "stale",
+			"LUMI_WORKSPACE_PATH": "/host/workspace",
+			"LUMI_CLI":            "/host/lumi",
+		},
+	}
+	merged := mergeAgentEnv(agentCfg, map[string]string{
+		"LUMI_API_BASE":       "http://host.docker.internal:3000/api",
+		"LUMI_WORKSPACE_ID":   "cli-sandbox-wecom-d9c429b4",
+		"LUMI_WORKSPACE_PATH": "/workspace",
+	})
+
+	if merged == agentCfg {
+		t.Fatal("mergeAgentEnv returned original config pointer")
+	}
+	if merged.Env["KEEP_ME"] != "yes" {
+		t.Fatalf("KEEP_ME = %q, want preserved", merged.Env["KEEP_ME"])
+	}
+	if merged.Env["LUMI_API_BASE"] != "http://host.docker.internal:3000/api" {
+		t.Fatalf("LUMI_API_BASE = %q", merged.Env["LUMI_API_BASE"])
+	}
+	if merged.Env["LUMI_WORKSPACE_ID"] != "cli-sandbox-wecom-d9c429b4" {
+		t.Fatalf("LUMI_WORKSPACE_ID = %q", merged.Env["LUMI_WORKSPACE_ID"])
+	}
+	if merged.Env["LUMI_WORKSPACE_PATH"] != "/workspace" {
+		t.Fatalf("LUMI_WORKSPACE_PATH = %q", merged.Env["LUMI_WORKSPACE_PATH"])
+	}
+	if _, ok := merged.Env["LUMI_CLI"]; ok {
+		t.Fatalf("LUMI_CLI = %q, want stale value removed when runtime does not set it", merged.Env["LUMI_CLI"])
+	}
+	if agentCfg.Env["LUMI_WORKSPACE_PATH"] != "/host/workspace" {
+		t.Fatalf("original agent env mutated: %#v", agentCfg.Env)
 	}
 }
