@@ -15,6 +15,7 @@ import (
 	"github.com/pengmide/lumi/internal/conversation"
 	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/jsonrpc"
+	"github.com/pengmide/lumi/internal/mcpstore"
 	"github.com/pengmide/lumi/internal/storage"
 	"github.com/pengmide/lumi/internal/wechat"
 )
@@ -23,6 +24,7 @@ type wechatChatRuntime struct {
 	config        *config.Config
 	agents        *agent.Manager
 	conversations *conversation.Manager
+	mcpStore      *mcpstore.Store
 
 	agentSessions map[string]map[string]string
 	initialized   map[string]bool
@@ -30,11 +32,12 @@ type wechatChatRuntime struct {
 	mu            sync.Mutex
 }
 
-func newWeChatChatRuntime(cfg *config.Config, cronService *lumicron.Service) *wechatChatRuntime {
+func newWeChatChatRuntime(cfg *config.Config, cronService *lumicron.Service, mcp *mcpstore.Store) *wechatChatRuntime {
 	return &wechatChatRuntime{
 		config:        cfg,
 		agents:        agent.NewManager(cfg),
 		conversations: conversation.NewManager(),
+		mcpStore:      mcp,
 		agentSessions: make(map[string]map[string]string),
 		initialized:   make(map[string]bool),
 		cron:          cronService,
@@ -307,7 +310,7 @@ func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, sink w
 
 	result, err := r.agents.Request(input.AgentID, "session/new", map[string]any{
 		"cwd":        input.WorkspacePath,
-		"mcpServers": []any{},
+		"mcpServers": AgentMCPServersFor(r.config.Agents, input.AgentID, r.mcpStore),
 	})
 	if err != nil {
 		return "", false, r.emitError(sink, err.Error())

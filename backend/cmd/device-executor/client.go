@@ -78,6 +78,8 @@ const (
 	MsgWorkspaceUpload   = device.MsgWorkspaceUpload
 	MsgWorkspaceCleanup  = device.MsgWorkspaceCleanup
 	MsgWorkspaceResponse = device.MsgWorkspaceResponse
+	MsgSSOTSync          = device.MsgSSOTSync
+	MsgSSOTSyncAck       = device.MsgSSOTSyncAck
 )
 
 type Client struct {
@@ -344,6 +346,11 @@ func (c *Client) handleEnvelope(ctx context.Context, env Envelope) error {
 		c.runner.ConfirmPermission(ctx, env)
 	case MsgWorkspaceTree, MsgWorkspaceFiles, MsgWorkspaceMeta, MsgWorkspaceText, MsgWorkspaceBuffer, MsgWorkspaceChanges, MsgWorkspaceDiff, MsgWorkspaceUpload, MsgWorkspaceCleanup:
 		go c.handleWorkspaceRequest(ctx, env)
+	case MsgSSOTSync:
+		if err := c.ack(env); err != nil {
+			return err
+		}
+		go c.handleSSOTSync(ctx, env)
 	default:
 		log.Printf("ignoring unsupported message type %s", env.Type)
 	}

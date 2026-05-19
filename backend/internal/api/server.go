@@ -21,10 +21,12 @@ import (
 	"github.com/pengmide/lumi/internal/conversation"
 	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/device"
+	"github.com/pengmide/lumi/internal/mcpstore"
 	"github.com/pengmide/lumi/internal/router"
 	"github.com/pengmide/lumi/internal/sandbox"
 	"github.com/pengmide/lumi/internal/setupcheck"
 	"github.com/pengmide/lumi/internal/skills"
+	"github.com/pengmide/lumi/internal/skillstore"
 	"github.com/pengmide/lumi/internal/storage"
 	"github.com/pengmide/lumi/internal/wechat"
 	"github.com/pengmide/lumi/internal/wecom"
@@ -45,6 +47,8 @@ type Server struct {
 	workspaceSvc   *workspacepreview.Service
 	workspaceDiffs *workspacepreview.ChangesService
 	skills         *skills.Registry
+	skillStore     *skillstore.Store
+	mcpStore       *mcpstore.Store
 	devices        *device.Registry
 	sandbox        sandboxManager
 	staticFS       fs.FS
@@ -90,6 +94,8 @@ type sandboxManager interface {
 	Status(config.WorkspaceConfig) sandbox.RuntimeState
 	Terminate(context.Context, string) error
 	Warmup(context.Context, sandbox.EnsureOptions) sandbox.RuntimeState
+	RunningWorkspaceIDs() []string
+	CredentialsRoot(string) string
 }
 
 // NewServer creates a new HTTP server
@@ -119,6 +125,8 @@ func NewServer(cfg *config.Config, staticFS fs.FS) *Server {
 		workspaceSvc:        workspacepreview.NewService(),
 		workspaceDiffs:      workspacepreview.NewChangesService(),
 		skills:              skills.NewRegistry(),
+		skillStore:          newDefaultSkillStore(),
+		mcpStore:            newDefaultMCPStore(),
 		devices:             devices,
 		sandbox:             sandboxManager,
 		staticFS:            staticFS,
@@ -132,12 +140,16 @@ func NewServer(cfg *config.Config, staticFS fs.FS) *Server {
 		cronRuns:            make(map[string]struct{}),
 	}
 	s.cron = lumicron.NewService(lumicron.NewStore(""), s, s.broadcastCronEvent)
-	s.wechatChat = newWeChatChatRuntime(cfg, s.cron)
+	s.wechatChat = newWeChatChatRuntime(cfg, s.cron, s.mcpStore)
 	s.wechat = wechat.NewService(cfg, s)
-	s.wecomChat = newWeComChatRuntime(cfg, s.cron)
+	s.wecomChat = newWeComChatRuntime(cfg, s.cron, s.mcpStore)
 	s.wecom = wecom.NewService(cfg, s)
 	s.wecomIMSender = s.wecom
 	s.devices.SetDeviceResetHook(s.clearRemoteSessionsForDevice)
+	s.devices.SetDeviceRegisteredHook(func(deviceID string) {
+		s.pushRemoteSSOTTo(context.Background(), deviceID)
+	})
+	sandboxManager.SetSSOTApplier(s.applySandboxSSOT)
 
 	s.loadPersistedWorkspaces()
 	s.initSetupStatus()
@@ -181,7 +193,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/agents", s.handleAgents)
 	mux.HandleFunc("/api/agents/update", s.handleAgentUpdate)
 	mux.HandleFunc("/api/skills/presets", s.handleSkillPresets)
+	mux.HandleFunc("/api/skills/store", s.handleSkillStore)
+	mux.HandleFunc("/api/skills/store/", s.handleSkillStore)
 	mux.HandleFunc("/api/skills", s.handleSkills)
+	mux.HandleFunc("/api/mcp/store", s.handleMCPStore)
+	mux.HandleFunc("/api/mcp/store/", s.handleMCPStore)
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("/api/workspaces/sandbox/preflight", s.handleSandboxPreflight)
 	mux.HandleFunc("/api/workspaces/files", s.handleWorkspaceFiles)

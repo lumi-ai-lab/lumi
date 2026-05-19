@@ -101,7 +101,7 @@ func (r *Runner) Execute(ctx context.Context, env Envelope) {
 
 		resp, err := proc.Request("session/new", map[string]any{
 			"cwd":        cwd,
-			"mcpServers": []any{},
+			"mcpServers": MCPRecordsForBackend(backend),
 		})
 		if err != nil {
 			r.sendTaskError(env.TaskID, err.Error())

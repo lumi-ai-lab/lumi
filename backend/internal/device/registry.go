@@ -90,6 +90,7 @@ type Registry struct {
 
 	mu                sync.RWMutex
 	onDeviceReset     func(string)
+	onDeviceRegistered func(string)
 	devices           map[string]*Device
 	conns             map[string]*Connection
 	tasks             map[string]*TaskRun
@@ -153,6 +154,15 @@ func NewTaskRun(id, deviceID, conversationID, agentID, workspaceID, workspacePat
 func (r *Registry) SetDeviceResetHook(fn func(string)) {
 	r.mu.Lock()
 	r.onDeviceReset = fn
+	r.mu.Unlock()
+}
+
+// SetDeviceRegisteredHook installs a callback fired every time a device
+// completes registration. The API layer uses it to push current SSOT state
+// to freshly-connected devices.
+func (r *Registry) SetDeviceRegisteredHook(fn func(string)) {
+	r.mu.Lock()
+	r.onDeviceRegistered = fn
 	r.mu.Unlock()
 }
 
@@ -239,10 +249,14 @@ func (r *Registry) RegisterDevice(conn *Connection, payload DeviceRegisterPayloa
 	}
 	cloned := cloneDevice(*device)
 	resetHook := r.onDeviceReset
+	registeredHook := r.onDeviceRegistered
 	r.mu.Unlock()
 
 	if notifyReset && resetHook != nil {
 		resetHook(payload.DeviceID)
+	}
+	if registeredHook != nil {
+		go registeredHook(payload.DeviceID)
 	}
 	return cloned, nil
 }

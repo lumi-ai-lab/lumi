@@ -36,6 +36,8 @@ const (
 	MsgWorkspaceUpload   MessageType = "workspace.upload"
 	MsgWorkspaceCleanup  MessageType = "workspace.cleanup"
 	MsgWorkspaceResponse MessageType = "workspace.response"
+	MsgSSOTSync          MessageType = "ssot.sync"
+	MsgSSOTSyncAck       MessageType = "ssot.sync.ack"
 )
 
 type Envelope struct {

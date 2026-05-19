@@ -180,6 +180,10 @@ func (f *fakeSandboxManager) Warmup(context.Context, sandbox.EnsureOptions) sand
 	return f.warmupState
 }
 
+func (f *fakeSandboxManager) RunningWorkspaceIDs() []string { return nil }
+
+func (f *fakeSandboxManager) CredentialsRoot(string) string { return "" }
+
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 

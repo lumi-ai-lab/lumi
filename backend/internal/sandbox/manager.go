@@ -41,6 +41,8 @@ type Manager struct {
 
 	runtimeDir string
 
+	ssotApplier func(workspaceID, credentialsRoot string)
+
 	mu       sync.Mutex
 	runtimes map[string]*RuntimeRecord
 	ensures  map[string]*ensureResult
@@ -753,7 +755,44 @@ func (m *Manager) resolveCredentialMounts(workspaceID string) []sandboxdocker.Cr
 		return nil
 	}
 	dir := filepath.Join(m.runtimeDir, "sandboxes", workspaceID, "credentials")
-	return resolveCredentialMountsFromHome(home, dir)
+	mounts := resolveCredentialMountsFromHome(home, dir)
+	if m.ssotApplier != nil {
+		m.ssotApplier(workspaceID, dir)
+	}
+	return mounts
+}
+
+// SetSSOTApplier registers a callback invoked after credential staging dirs
+// have been prepared, allowing the API layer to drop SSOT skills + MCP
+// configs into them. The callback receives the workspace id and the
+// credentials root (e.g., <runtimeDir>/sandboxes/<id>/credentials/).
+func (m *Manager) SetSSOTApplier(fn func(workspaceID, credentialsRoot string)) {
+	m.ssotApplier = fn
+}
+
+// RunningWorkspaceIDs returns the workspace ids of every runtime currently
+// in Running state. Callers use it to re-apply SSOT (skills + MCP) into
+// already-running containers when records change.
+func (m *Manager) RunningWorkspaceIDs() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.runtimes))
+	for id, record := range m.runtimes {
+		if record != nil && record.Status == StatusRunning {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// CredentialsRoot returns the host-side staging dir for the given workspace
+// (matches the directory passed to the SSOT applier). Empty string when no
+// runtime is tracked.
+func (m *Manager) CredentialsRoot(workspaceID string) string {
+	if strings.TrimSpace(workspaceID) == "" {
+		return ""
+	}
+	return filepath.Join(m.runtimeDir, "sandboxes", workspaceID, "credentials")
 }
 
 func resolveCredentialMountsFromHome(home string, runtimeDir string) []sandboxdocker.CredentialMount {

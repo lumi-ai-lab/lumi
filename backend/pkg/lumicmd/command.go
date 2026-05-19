@@ -53,10 +53,14 @@ func RunAs(programName string, args []string, stdin *os.File, stdout, stderr *os
 		return runCron(args[1:], stdout, programName)
 	case "im":
 		return runIM(args[1:], stdout, stderr, programName)
+	case "mcp":
+		return runMCP(args[1:], stdout, programName)
 	case "sandbox":
 		return runSandbox(args[1:], stdout, programName)
 	case "setup":
 		return runSetup(args[1:], stdin, stdout)
+	case "skill":
+		return runSkill(args[1:], stdout, programName)
 	case "wechat":
 		return runWeChat(args[1:], stdout, stderr, programName)
 	case "wecom":
@@ -1180,8 +1184,10 @@ func envOrDefault(key, fallback string) string {
 func printUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
 	fmt.Fprintf(stdout, "  %s cron <command> [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s mcp <command> [flags]\n", programName)
 	fmt.Fprintf(stdout, "  %s sandbox <command> [flags]\n", programName)
 	fmt.Fprintf(stdout, "  %s setup [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s skill <command> [flags]\n", programName)
 	fmt.Fprintf(stdout, "  %s wechat <command> [flags]\n", programName)
 	fmt.Fprintf(stdout, "  %s wecom <command> [flags]\n", programName)
 	fmt.Fprintln(stdout, "")

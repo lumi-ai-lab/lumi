@@ -9,3 +9,5 @@ backend/lumi
 .playwright-cli/
 docker/sandbox/bin/
 cli/lumi-cli
+.qwen
+.qoder

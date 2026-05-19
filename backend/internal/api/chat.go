@@ -991,7 +991,7 @@ func (s *Server) createAgentSession(agentID, cwd string) (string, error) {
 
 	result, err := s.agents.Request(agentID, "session/new", map[string]any{
 		"cwd":        cwd,
-		"mcpServers": []any{},
+		"mcpServers": s.agentMCPServers(agentID),
 	})
 	if err != nil {
 		return "", err
