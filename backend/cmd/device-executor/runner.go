@@ -169,24 +169,21 @@ func (r *Runner) Cancel(_ context.Context, env Envelope) {
 
 	r.mu.Lock()
 	current := r.currentTask
-	r.mu.Unlock()
 	if current == nil || current.TaskID != env.TaskID || current.Process == nil {
+		r.mu.Unlock()
 		return
 	}
 
 	sessionID := payload.SessionID
 	if sessionID == "" {
-		sessionID = r.sessionForTask(env.TaskID)
+		sessionID = r.sessions[env.TaskID]
 	}
-	if sessionID == "" {
-		return
+	if sessionID != "" {
+		current.SessionID = sessionID
 	}
+	r.mu.Unlock()
 
-	if err := current.Process.Notify("session/cancel", map[string]string{
-		"sessionId": sessionID,
-	}); err != nil {
-		log.Printf("failed to cancel task %s: %v", env.TaskID, err)
-	}
+	r.AbortCurrentTask("task cancelled")
 }
 
 func (r *Runner) ConfirmPermission(_ context.Context, env Envelope) {

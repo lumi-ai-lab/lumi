@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -75,6 +77,44 @@ func TestFinishTaskKeepsNewerTaskRegistered(t *testing.T) {
 	}
 }
 
+func TestCancelAbortsCurrentTaskImmediately(t *testing.T) {
+	t.Parallel()
+
+	runner := newTestRunner()
+	proc := agent.NewProcess(&config.AgentConfig{
+		ID:      "claude",
+		Name:    "Claude Code",
+		Command: "echo",
+	})
+
+	runner.agents["claude"] = proc
+	runner.initialized["claude"] = true
+	runner.sessions["task-1"] = "session-1"
+	runner.currentTask = &runningTask{
+		TaskID:  "task-1",
+		AgentID: "claude",
+		Process: proc,
+	}
+
+	runner.Cancel(context.Background(), Envelope{
+		TaskID: "task-1",
+		Payload: mustMarshalTaskCancelPayload(t, TaskCancelPayload{
+			SessionID: "session-1",
+			Reason:    "client_disconnected",
+		}),
+	})
+
+	if running := runner.RunningTaskIDs(); len(running) != 0 {
+		t.Fatalf("RunningTaskIDs() = %v, want empty", running)
+	}
+	if got := runner.sessionForTask("task-1"); got != "" {
+		t.Fatalf("sessionForTask(task-1) = %q, want empty", got)
+	}
+	if _, ok := runner.agents["claude"]; ok {
+		t.Fatal("agent process still cached after Cancel")
+	}
+}
+
 func TestBuildLumiRuntimeEnv(t *testing.T) {
 	workspace := t.TempDir()
 	cliPath := filepath.Join(workspace, "lumi")
@@ -100,6 +140,16 @@ func TestBuildLumiRuntimeEnv(t *testing.T) {
 	if env["LUMI_CLI"] != cliPath {
 		t.Fatalf("LUMI_CLI = %q, want %q", env["LUMI_CLI"], cliPath)
 	}
+}
+
+func mustMarshalTaskCancelPayload(t *testing.T, payload TaskCancelPayload) []byte {
+	t.Helper()
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestMergeAgentEnvRuntimeOverridesLumiValues(t *testing.T) {
