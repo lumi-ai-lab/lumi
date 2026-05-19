@@ -135,6 +135,13 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCh
 	}
 	conversationID := deriveConversationID(msg.ConversationKey)
 	client := NewClient(cfg)
+	if imagent.IsStopCommand(msg.Text) {
+		if s.runs.Stop(conversationID) {
+			return client.SendText(ctx, msg.ConversationKey, "已请求停止当前任务。", msg.ContextToken)
+		}
+		return client.SendText(ctx, msg.ConversationKey, "当前没有正在处理的任务。", msg.ContextToken)
+	}
+
 	unlock, ok := s.locks.TryLock(conversationID)
 	if !ok {
 		return client.SendText(ctx, msg.ConversationKey, busyReplyText, msg.ContextToken)
@@ -165,7 +172,12 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCh
 	defer stopTyping()
 
 	sink := &gatewayEventSink{}
-	runErr := s.runner.RunWeChatChat(ctx, ChatRunInput{
+	runCtx, cancel := context.WithCancel(ctx)
+	runToken := s.runs.Register(conversationID, cancel)
+	defer s.runs.Unregister(conversationID, runToken)
+	defer cancel()
+
+	runErr := s.runner.RunWeChatChat(runCtx, ChatRunInput{
 		Message:             messageWithAttachments,
 		ConversationID:      conversationID,
 		WorkspaceID:         workspace.ID,
@@ -180,6 +192,9 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCh
 			ContextToken:    msg.ContextToken,
 		}},
 	}, sink)
+	if runCtx.Err() != nil {
+		return runCtx.Err()
+	}
 	if runErr != nil && ctx.Err() != nil {
 		return runErr
 	}

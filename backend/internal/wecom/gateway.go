@@ -148,6 +148,13 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 		return errors.New("workspace must be local or sandbox")
 	}
 	conversationID := deriveConversationID(msg.ConversationKey)
+	if imagent.IsStopCommand(msg.Text) {
+		if s.runs.Stop(conversationID) {
+			return sender.Reply(ctx, msg.ReplyContext, "已请求停止当前任务。")
+		}
+		return sender.Reply(ctx, msg.ReplyContext, "当前没有正在处理的任务。")
+	}
+
 	unlock, ok := s.locks.TryLock(conversationID)
 	if !ok {
 		return sender.Reply(ctx, msg.ReplyContext, busyReplyText)
@@ -175,7 +182,12 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 	}
 
 	sink := &gatewayEventSink{}
-	runErr := s.runner.RunWeComChat(ctx, ChatRunInput{
+	runCtx, cancel := context.WithCancel(ctx)
+	runToken := s.runs.Register(conversationID, cancel)
+	defer s.runs.Unregister(conversationID, runToken)
+	defer cancel()
+
+	runErr := s.runner.RunWeComChat(runCtx, ChatRunInput{
 		Message:             messageWithAttachments,
 		ConversationID:      conversationID,
 		WorkspaceID:         workspace.ID,
@@ -192,6 +204,9 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 			UserID:   msg.ReplyContext.UserID,
 		}},
 	}, sink)
+	if runCtx.Err() != nil {
+		return runCtx.Err()
+	}
 	if runErr != nil && ctx.Err() != nil {
 		return runErr
 	}

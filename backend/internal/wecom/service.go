@@ -9,6 +9,7 @@ import (
 
 	"github.com/pengmide/lumi/internal/config"
 	lumicron "github.com/pengmide/lumi/internal/cron"
+	"github.com/pengmide/lumi/internal/imagent"
 )
 
 type Status struct {
@@ -33,6 +34,7 @@ type Service struct {
 	monitorDone   chan struct{}
 	runtime       *wsRuntime
 	locks         *conversationLocks
+	runs          *imagent.RunRegistry
 }
 
 func NewService(cfg *config.Config, runner ChatRunner) *Service {
@@ -43,6 +45,7 @@ func NewService(cfg *config.Config, runner ChatRunner) *Service {
 		runtimeStore: NewRuntimeStore(),
 		convStore:    NewConversationStore(),
 		locks:        newConversationLocks(),
+		runs:         imagent.NewRunRegistry(),
 	}
 	if state, err := svc.runtimeStore.Load(); err == nil && state.Running {
 		state.Running = false

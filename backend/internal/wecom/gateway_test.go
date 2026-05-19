@@ -2,6 +2,7 @@ package wecom
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,26 +30,35 @@ func (r *scriptedRunner) RunWeComChat(ctx context.Context, input ChatRunInput, s
 }
 
 type fakeSender struct {
+	mu      sync.Mutex
 	replies []string
 	media   []SendAction
 }
 
 func (s *fakeSender) Reply(_ context.Context, _ replyContext, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.replies = append(s.replies, content)
 	return nil
 }
 
 func (s *fakeSender) Send(_ context.Context, _ replyContext, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.replies = append(s.replies, content)
 	return nil
 }
 
 func (s *fakeSender) ReplyMedia(_ context.Context, _ replyContext, action SendAction) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.media = append(s.media, action)
 	return nil
 }
 
 func (s *fakeSender) SendMedia(_ context.Context, _ replyContext, action SendAction) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.media = append(s.media, action)
 	return nil
 }
@@ -99,6 +109,85 @@ func TestGatewayHandlesPureTextReply(t *testing.T) {
 		t.Fatalf("handleInboundMessage() error = %v", err)
 	}
 	if len(sender.replies) != 1 || sender.replies[0] != "reply text" {
+		t.Fatalf("replies = %v", sender.replies)
+	}
+}
+
+func TestGatewayStopCommandCancelsRunningTask(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			close(started)
+			<-ctx.Done()
+			close(release)
+			return nil
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+	cfg := testGatewayConfig()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+			ConversationKey: "wecom:stop",
+			MessageID:       "msg-running",
+			ReplyContext:    replyContext{ReqID: "req-running", ChatID: "chat", UserID: "user"},
+			Text:            "run",
+			ReceivedAt:      time.Now().UnixMilli(),
+		}, sender)
+	}()
+	<-started
+
+	if err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:stop",
+		MessageID:       "msg-stop",
+		ReplyContext:    replyContext{ReqID: "req-stop", ChatID: "chat", UserID: "user"},
+		Text:            "/stop",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender); err != nil {
+		t.Fatalf("handleInboundMessage(stop) error = %v", err)
+	}
+
+	<-release
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("running handleInboundMessage() error = %v, want context.Canceled", err)
+	}
+
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	joined := strings.Join(sender.replies, "\n")
+	if !strings.Contains(joined, "已请求停止当前任务。") {
+		t.Fatalf("stop reply not observed: %v", sender.replies)
+	}
+	if strings.Contains(joined, busyReplyText) {
+		t.Fatalf("stop command returned busy reply: %v", sender.replies)
+	}
+	if strings.Contains(joined, fallbackDoneText) {
+		t.Fatalf("canceled run sent fallback completion: %v", sender.replies)
+	}
+}
+
+func TestGatewayStopCommandWithoutRunningTask(t *testing.T) {
+	runner := &scriptedRunner{}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeComInboundMessage{
+		ConversationKey: "wecom:stop:idle",
+		MessageID:       "msg-stop-idle",
+		ReplyContext:    replyContext{ReqID: "req-stop-idle", ChatID: "chat", UserID: "user"},
+		Text:            " /stop ",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("runner inputs = %d, want 0", len(runner.inputs))
+	}
+	if len(sender.replies) != 1 || sender.replies[0] != "当前没有正在处理的任务。" {
 		t.Fatalf("replies = %v", sender.replies)
 	}
 }

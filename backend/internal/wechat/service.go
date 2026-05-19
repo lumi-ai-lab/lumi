@@ -11,6 +11,7 @@ import (
 
 	"github.com/pengmide/lumi/internal/config"
 	lumicron "github.com/pengmide/lumi/internal/cron"
+	"github.com/pengmide/lumi/internal/imagent"
 )
 
 type Status struct {
@@ -37,6 +38,7 @@ type Service struct {
 	monitorCancel context.CancelFunc
 	monitorDone   chan struct{}
 	locks         *conversationLocks
+	runs          *imagent.RunRegistry
 	typing        *typingManager
 }
 
@@ -48,6 +50,7 @@ func NewService(cfg *config.Config, runner ChatRunner) *Service {
 		runtimeStore: NewRuntimeStore(),
 		convStore:    NewConversationStore(),
 		locks:        newConversationLocks(),
+		runs:         imagent.NewRunRegistry(),
 	}
 	svc.typing = newTypingManager(svc)
 	svc.login = newLoginManager(svc)

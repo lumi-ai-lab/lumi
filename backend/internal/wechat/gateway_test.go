@@ -3,6 +3,7 @@ package wechat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -110,6 +111,104 @@ func TestGatewayHandlesPureTextReply(t *testing.T) {
 	}
 	if typingStatuses[0] != typingStatusActive || typingStatuses[len(typingStatuses)-1] != typingStatusCancel {
 		t.Fatalf("typingStatuses = %v", typingStatuses)
+	}
+}
+
+func TestGatewayStopCommandCancelsRunningTask(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			close(started)
+			<-ctx.Done()
+			close(release)
+			return nil
+		},
+	}
+	service := newTestService(t, runner)
+
+	var sentMu sync.Mutex
+	var sentTexts []string
+	useHTTPClientFactory(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/ilink/bot/getconfig":
+			return jsonResponse(http.StatusOK, `{"ret":0,"errcode":0,"typing_ticket":"ticket-1"}`), nil
+		case "/ilink/bot/sendtyping":
+			return jsonResponse(http.StatusOK, `{"ret":0,"errcode":0}`), nil
+		case "/ilink/bot/sendmessage":
+			body, _ := io.ReadAll(req.Body)
+			sentMu.Lock()
+			sentTexts = append(sentTexts, string(body))
+			sentMu.Unlock()
+			return jsonResponse(http.StatusOK, `{"ret":0,"errcode":0}`), nil
+		default:
+			t.Fatalf("unexpected request path: %s", req.URL.String())
+			return nil, nil
+		}
+	}))
+
+	cfg := testGatewayConfig()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- service.handleInboundMessage(context.Background(), cfg, WeChatInboundMessage{
+			ConversationKey: "wx-stop",
+			MessageID:       "msg-running",
+			ContextToken:    "ctx-running",
+			Text:            "run",
+			ReceivedAt:      time.Now().UnixMilli(),
+		})
+	}()
+	<-started
+
+	if err := service.handleInboundMessage(context.Background(), cfg, WeChatInboundMessage{
+		ConversationKey: "wx-stop",
+		MessageID:       "msg-stop",
+		ContextToken:    "ctx-stop",
+		Text:            "/stop",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("handleInboundMessage(stop) error = %v", err)
+	}
+
+	<-release
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("running handleInboundMessage() error = %v, want context.Canceled", err)
+	}
+
+	sentMu.Lock()
+	defer sentMu.Unlock()
+	joined := strings.Join(sentTexts, "\n")
+	if !strings.Contains(joined, "已请求停止当前任务。") {
+		t.Fatalf("stop reply not observed: %v", sentTexts)
+	}
+	if strings.Contains(joined, busyReplyText) {
+		t.Fatalf("stop command returned busy reply: %v", sentTexts)
+	}
+	if strings.Contains(joined, fallbackDoneText) {
+		t.Fatalf("canceled run sent fallback completion: %v", sentTexts)
+	}
+}
+
+func TestGatewayStopCommandWithoutRunningTask(t *testing.T) {
+	runner := &scriptedRunner{}
+	service := newTestService(t, runner)
+	sentTexts := useSendTextRecorder(t)
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeChatInboundMessage{
+		ConversationKey: "wx-stop-idle",
+		MessageID:       "msg-stop-idle",
+		ContextToken:    "ctx-stop-idle",
+		Text:            " /stop ",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("runner inputs = %d, want 0", len(runner.inputs))
+	}
+	if len(*sentTexts) != 1 || !strings.Contains((*sentTexts)[0], "当前没有正在处理的任务。") {
+		t.Fatalf("sentTexts = %v", *sentTexts)
 	}
 }
 
