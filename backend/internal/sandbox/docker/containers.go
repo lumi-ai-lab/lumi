@@ -68,6 +68,7 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 			WorkingDir: "/workspace",
 			Labels:     spec.Labels,
 			Env: []string{
+				"LUMI_WORKSPACE_PATH=/workspace",
 				"NPM_CONFIG_PREFIX=/lumi/runtime/npm",
 				"NPM_CONFIG_CACHE=/lumi/runtime/npm-cache",
 				"PATH=/lumi/runtime/npm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
