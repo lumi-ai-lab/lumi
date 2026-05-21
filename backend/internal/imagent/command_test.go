@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/conversation"
 	"github.com/pengmide/lumi/internal/storage"
 )
 
@@ -101,6 +102,58 @@ func TestHandleDebugCommandAllRulesAndInvalidFormat(t *testing.T) {
 		if store.session.IMDebug != before {
 			t.Fatalf("invalid command %q changed debug from %+v to %+v", text, before, store.session.IMDebug)
 		}
+	}
+}
+
+func TestHandleNewCommandResetsMessagesAndPreservesSettings(t *testing.T) {
+	cfg := testConfig()
+	workspace := cfg.FindWorkspace("default")
+	store := &memoryStore{session: &storage.StoredSession{
+		ID:          "conv-1",
+		Title:       "Old Chat",
+		Messages:    []conversation.Message{{Role: "user", Content: "old"}},
+		ActiveAgent: "codex",
+		WorkspaceID: workspace.ID,
+		IMDebug:     storage.IMDebugSettings{Thinking: true, Tools: true},
+		CreatedAt:   123,
+		UpdatedAt:   456,
+	}}
+
+	result, err := HandleCommandWithIntent("/new", "conv-1", workspace.ID, "claude", cfg, workspace, store)
+	if err != nil {
+		t.Fatalf("HandleCommandWithIntent(/new) error = %v", err)
+	}
+	if !result.Handled || !result.ResetSession || !strings.Contains(result.Reply, "已重置当前会话") {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(store.session.Messages) != 0 {
+		t.Fatalf("messages = %+v, want empty", store.session.Messages)
+	}
+	if store.session.ActiveAgent != "codex" || store.session.WorkspaceID != workspace.ID {
+		t.Fatalf("stored agent/workspace = %q/%q", store.session.ActiveAgent, store.session.WorkspaceID)
+	}
+	if store.session.IMDebug != (storage.IMDebugSettings{Thinking: true, Tools: true}) {
+		t.Fatalf("debug = %+v", store.session.IMDebug)
+	}
+	if !store.session.IMNewSessionPending {
+		t.Fatal("IMNewSessionPending = false, want true")
+	}
+}
+
+func TestHandleNewCommandRejectsArguments(t *testing.T) {
+	cfg := testConfig()
+	workspace := cfg.FindWorkspace("default")
+	store := &memoryStore{}
+
+	result, err := HandleCommandWithIntent("/new foo", "conv-1", workspace.ID, "claude", cfg, workspace, store)
+	if err != nil {
+		t.Fatalf("HandleCommandWithIntent(/new foo) error = %v", err)
+	}
+	if !result.Handled || result.Reply != NewHelp || result.ResetSession {
+		t.Fatalf("result = %+v", result)
+	}
+	if store.session != nil {
+		t.Fatalf("invalid /new persisted session: %+v", store.session)
 	}
 }
 

@@ -8,11 +8,19 @@ import (
 	"time"
 
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/conversation"
 	"github.com/pengmide/lumi/internal/storage"
 )
 
 const FormatHelp = "格式：/agent 或 /agent <id>"
 const DebugHelp = "用法：/debug thinking|tools|all [on|off]"
+const NewHelp = "格式：/new"
+
+type CommandResult struct {
+	Reply        string
+	Handled      bool
+	ResetSession bool
+}
 
 type Store interface {
 	Load(id string) (*storage.StoredSession, error)
@@ -45,47 +53,85 @@ func ResolveActiveAgent(store Store, conversationID, workspaceID, defaultAgent s
 }
 
 func HandleCommand(text, conversationID, workspaceID, defaultAgent string, cfg *config.Config, workspace *config.WorkspaceConfig, store Store) (string, bool, error) {
+	result, err := HandleCommandWithIntent(text, conversationID, workspaceID, defaultAgent, cfg, workspace, store)
+	return result.Reply, result.Handled, err
+}
+
+func HandleCommandWithIntent(text, conversationID, workspaceID, defaultAgent string, cfg *config.Config, workspace *config.WorkspaceConfig, store Store) (CommandResult, error) {
 	trimmed := normalizeCommandText(text)
 	if trimmed == "" {
-		return "", false, nil
+		return CommandResult{}, nil
 	}
 	parts := strings.Fields(trimmed)
 	if len(parts) == 0 {
-		return "", false, nil
+		return CommandResult{}, nil
 	}
 	if parts[0] == "/debug" {
-		return handleDebugCommand(parts, conversationID, workspaceID, defaultAgent, store)
+		reply, handled, err := handleDebugCommand(parts, conversationID, workspaceID, defaultAgent, store)
+		return CommandResult{Reply: reply, Handled: handled}, err
+	}
+	if parts[0] == "/new" {
+		return handleNewCommand(parts, conversationID, workspaceID, defaultAgent, store)
 	}
 	if parts[0] != "/agent" {
-		return "", false, nil
+		return CommandResult{}, nil
 	}
 	if len(parts) > 2 {
-		return FormatHelp, true, nil
+		return CommandResult{Reply: FormatHelp, Handled: true}, nil
 	}
 
 	available := availableAgentIDs(cfg, workspace)
 	if len(available) == 0 {
-		return "", true, errors.New("no available agents configured")
+		return CommandResult{Handled: true}, errors.New("no available agents configured")
 	}
 	allowed := idSet(available)
 
 	current, err := ResolveActiveAgent(store, conversationID, workspaceID, defaultAgent, cfg, workspace)
 	if err != nil {
-		return "", true, err
+		return CommandResult{Handled: true}, err
 	}
 
 	if len(parts) == 1 {
-		return formatList(current, available), true, nil
+		return CommandResult{Reply: formatList(current, available), Handled: true}, nil
 	}
 
 	target := parts[1]
 	if !allowed[target] {
-		return fmt.Sprintf("未找到可用 Agent：%s\n\n可用 Agent：%s", target, strings.Join(available, ", ")), true, nil
+		return CommandResult{Reply: fmt.Sprintf("未找到可用 Agent：%s\n\n可用 Agent：%s", target, strings.Join(available, ", ")), Handled: true}, nil
 	}
 	if err := persistActiveAgent(store, conversationID, workspaceID, target); err != nil {
-		return "", true, err
+		return CommandResult{Handled: true}, err
 	}
-	return fmt.Sprintf("已切换当前 Agent 为 %s。", target), true, nil
+	return CommandResult{Reply: fmt.Sprintf("已切换当前 Agent 为 %s。", target), Handled: true}, nil
+}
+
+func handleNewCommand(parts []string, conversationID, workspaceID, defaultAgent string, store Store) (CommandResult, error) {
+	if len(parts) != 1 {
+		return CommandResult{Reply: NewHelp, Handled: true}, nil
+	}
+	session, err := loadOrCreateSession(store, conversationID, workspaceID, defaultAgent)
+	if err != nil {
+		return CommandResult{Handled: true}, err
+	}
+	now := time.Now().UnixMilli()
+	session.Messages = []conversation.Message{}
+	session.Title = "New Chat"
+	session.PendingPermission = nil
+	session.IMNewSessionPending = true
+	if session.WorkspaceID == "" {
+		session.WorkspaceID = workspaceID
+	}
+	if session.ActiveAgent == "" {
+		session.ActiveAgent = defaultAgent
+	}
+	if session.CreatedAt == 0 {
+		session.CreatedAt = now
+	}
+	session.UpdatedAt = now
+	if err := store.Save(session); err != nil {
+		return CommandResult{Handled: true}, err
+	}
+	return CommandResult{Reply: "已重置当前会话，保留当前 Agent/Debug。", Handled: true, ResetSession: true}, nil
 }
 
 func handleDebugCommand(parts []string, conversationID, workspaceID, defaultAgent string, store Store) (string, bool, error) {
@@ -178,6 +224,39 @@ func loadDebugSettings(store Store, conversationID string) (storage.IMDebugSetti
 		return storage.IMDebugSettings{}, nil
 	}
 	return storage.IMDebugSettings{}, err
+}
+
+func PendingNewSession(store Store, conversationID string) (bool, error) {
+	if store == nil {
+		return false, errors.New("conversation store is required")
+	}
+	session, err := store.Load(conversationID)
+	if err == nil {
+		return session.IMNewSessionPending, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+func ClearPendingNewSession(store Store, conversationID string) error {
+	if store == nil {
+		return errors.New("conversation store is required")
+	}
+	session, err := store.Load(conversationID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !session.IMNewSessionPending {
+		return nil
+	}
+	session.IMNewSessionPending = false
+	session.UpdatedAt = time.Now().UnixMilli()
+	return store.Save(session)
 }
 
 func loadOrCreateSession(store Store, conversationID, workspaceID, defaultAgent string) (*storage.StoredSession, error) {

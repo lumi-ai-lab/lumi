@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pengmide/lumi/internal/conversation"
 	"github.com/pengmide/lumi/internal/imdebug"
 	"github.com/pengmide/lumi/internal/storage"
 )
@@ -538,6 +539,101 @@ func TestGatewayAgentCommandSwitchPersistsAndNextMessageUsesAgent(t *testing.T) 
 	}
 	if stored.ActiveAgent != "codex" || stored.WorkspaceID != "default" {
 		t.Fatalf("stored = %+v, want active codex default workspace", stored)
+	}
+}
+
+func TestGatewayNewCommandResetsAndNextMessageStartsNewSession(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "fresh reply"},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sentTexts := useSendTextRecorder(t)
+	cfg := testGatewayConfig()
+	conversationKey := "wx-new-reset"
+	conversationID := deriveConversationID(conversationKey)
+	seed := storage.CreateSession(conversationID, "codex", "default")
+	seed.Messages = []conversation.Message{{Role: "user", Content: "old"}}
+	seed.IMDebug = storage.IMDebugSettings{Thinking: true, Tools: true}
+	if err := service.convStore.Save(seed); err != nil {
+		t.Fatalf("Save(seed) error = %v", err)
+	}
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeChatInboundMessage{
+		ConversationKey: conversationKey,
+		MessageID:       "msg-new",
+		ContextToken:    "ctx-new",
+		Text:            "/new",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage(/new) error = %v", err)
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("runner inputs after /new = %d, want 0", len(runner.inputs))
+	}
+	if len(*sentTexts) != 1 || !strings.Contains((*sentTexts)[0], "已重置当前会话") {
+		t.Fatalf("sentTexts = %v", *sentTexts)
+	}
+	stored, err := service.convStore.Load(conversationID)
+	if err != nil {
+		t.Fatalf("Load(after /new) error = %v", err)
+	}
+	if len(stored.Messages) != 0 || stored.ActiveAgent != "codex" || !stored.IMDebug.Thinking || !stored.IMDebug.Tools || !stored.IMNewSessionPending {
+		t.Fatalf("stored after /new = %+v", stored)
+	}
+
+	err = service.handleInboundMessage(context.Background(), cfg, WeChatInboundMessage{
+		ConversationKey: conversationKey,
+		MessageID:       "msg-after-new",
+		ContextToken:    "ctx-after-new",
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage(normal) error = %v", err)
+	}
+	if len(runner.inputs) != 1 || !runner.inputs[0].NewSession || runner.inputs[0].AgentID != "codex" {
+		t.Fatalf("runner inputs = %+v, want one codex NewSession input", runner.inputs)
+	}
+	stored, err = service.convStore.Load(conversationID)
+	if err != nil {
+		t.Fatalf("Load(after normal) error = %v", err)
+	}
+	if stored.IMNewSessionPending {
+		t.Fatalf("IMNewSessionPending still true after successful run")
+	}
+}
+
+func TestGatewayNewCommandFormatErrorSkipsRunner(t *testing.T) {
+	runner := &scriptedRunner{}
+	service := newTestService(t, runner)
+	sentTexts := useSendTextRecorder(t)
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeChatInboundMessage{
+		ConversationKey: "wx-new-format",
+		MessageID:       "msg-new-format",
+		ContextToken:    "ctx-new-format",
+		Text:            "/new please",
+		ReceivedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("runner inputs = %d, want 0", len(runner.inputs))
+	}
+	if len(*sentTexts) != 1 || !strings.Contains((*sentTexts)[0], "格式：/new") {
+		t.Fatalf("sentTexts = %v", *sentTexts)
 	}
 }
 

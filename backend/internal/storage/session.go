@@ -22,6 +22,7 @@ type StoredSession struct {
 	AgentSessions       map[string]string            `json:"agentSessions,omitempty"`
 	RemoteAgentSessions map[string]map[string]string `json:"remoteAgentSessions,omitempty"`
 	IMDebug             IMDebugSettings              `json:"imDebug,omitempty"`
+	IMNewSessionPending bool                         `json:"imNewSessionPending,omitempty"`
 	CreatedAt           int64                        `json:"createdAt"`
 	UpdatedAt           int64                        `json:"updatedAt"`
 	PendingPermission   any                          `json:"pendingPermission,omitempty"`

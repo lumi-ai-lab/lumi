@@ -213,6 +213,22 @@ func (r *wechatChatRuntime) Shutdown() error {
 }
 
 func (r *wechatChatRuntime) ensureConversation(input wechat.ChatRunInput) (*conversation.Conversation, bool, error) {
+	if input.NewSession {
+		conv := r.conversations.Create(input.ConversationID, input.AgentID, input.WorkspaceID)
+		if stored, err := input.ConversationStore.Load(input.ConversationID); err == nil {
+			conv.ActiveAgent = stored.ActiveAgent
+			if conv.ActiveAgent == "" {
+				conv.ActiveAgent = input.AgentID
+			}
+			conv.WorkspaceID = stored.WorkspaceID
+			if conv.WorkspaceID == "" {
+				conv.WorkspaceID = input.WorkspaceID
+			}
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, false, err
+		}
+		return conv, true, nil
+	}
 	if conv := r.conversations.Get(input.ConversationID); conv != nil {
 		return conv, false, nil
 	}

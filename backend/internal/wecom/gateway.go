@@ -236,14 +236,18 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 	}
 	defer unlock()
 
-	if reply, handled, err := imagent.HandleCommand(msg.Text, conversationID, workspace.ID, cfg.AgentID, s.config, workspace, s.convStore); handled {
+	if result, err := imagent.HandleCommandWithIntent(msg.Text, conversationID, workspace.ID, cfg.AgentID, s.config, workspace, s.convStore); result.Handled {
 		if err != nil {
 			return err
 		}
-		return sender.Reply(ctx, msg.ReplyContext, reply)
+		return sender.Reply(ctx, msg.ReplyContext, result.Reply)
 	}
 
 	agentID, err := imagent.ResolveActiveAgent(s.convStore, conversationID, workspace.ID, cfg.AgentID, s.config, workspace)
+	if err != nil {
+		return err
+	}
+	newSession, err := imagent.PendingNewSession(s.convStore, conversationID)
 	if err != nil {
 		return err
 	}
@@ -282,6 +286,7 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 		Files:               files,
 		PromptPrefix:        wecomSourceInstruction,
 		SessionModeOverride: deriveSessionMode(agentID),
+		NewSession:          newSession,
 		ConversationStore:   s.convStore,
 		CronTarget: lumicron.Target{WeCom: &lumicron.WeComTarget{
 			ReqID:    msg.ReplyContext.ReqID,
@@ -295,6 +300,11 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 	}
 	if runErr != nil && ctx.Err() != nil {
 		return runErr
+	}
+	if runErr == nil && newSession {
+		if err := imagent.ClearPendingNewSession(s.convStore, conversationID); err != nil {
+			return err
+		}
 	}
 
 	finalText := sink.FinalText()
