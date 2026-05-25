@@ -202,8 +202,16 @@ cd ../backend && go build -o lumi ./cmd/lumi
 
 ```bash
 ./lumi setup
+
 ./lumi cron list
-./lumi wecom run --workspace <path> --agent <id> --bot-id <id> --bot-secret <secret>
+
+./lumi wecom run \
+--workspace /tmp/for-lumi \
+--kind sandbox \
+--agent claude \
+--agents claude,codex,qwen \
+--bot-id {bot-id} \
+--bot-secret {bot-secret}
 ```
 
 `lumi wecom run` 不需要打开 Web 页面，但会启动本地 Lumi runtime，默认监听 `3000` 端口；如需避开端口冲突，可传 `--port` 或设置 `LUMI_PORT`。
