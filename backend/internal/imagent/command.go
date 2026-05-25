@@ -45,7 +45,7 @@ func ResolveActiveAgent(store Store, conversationID, workspaceID, defaultAgent s
 }
 
 func HandleCommand(text, conversationID, workspaceID, defaultAgent string, cfg *config.Config, workspace *config.WorkspaceConfig, store Store) (string, bool, error) {
-	trimmed := strings.TrimSpace(text)
+	trimmed := normalizeCommandText(text)
 	if trimmed == "" {
 		return "", false, nil
 	}
@@ -292,4 +292,20 @@ func persistActiveAgent(store Store, conversationID, workspaceID, agentID string
 		session.Title = storage.GenerateTitle(session.Messages)
 	}
 	return store.Save(session)
+}
+
+func normalizeCommandText(text string) string {
+	parts := strings.Fields(strings.TrimSpace(text))
+	for len(parts) > 0 && isMentionToken(parts[0]) {
+		parts = parts[1:]
+	}
+	for len(parts) > 0 && isMentionToken(parts[len(parts)-1]) {
+		parts = parts[:len(parts)-1]
+	}
+	return strings.Join(parts, " ")
+}
+
+func isMentionToken(token string) bool {
+	token = strings.TrimSpace(token)
+	return len(token) > 1 && (strings.HasPrefix(token, "@") || strings.HasPrefix(token, "＠"))
 }

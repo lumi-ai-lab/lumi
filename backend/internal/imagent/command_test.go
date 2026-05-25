@@ -104,6 +104,32 @@ func TestHandleDebugCommandAllRulesAndInvalidFormat(t *testing.T) {
 	}
 }
 
+func TestHandleDebugCommandIgnoresBoundaryMentions(t *testing.T) {
+	cfg := testConfig()
+	workspace := cfg.FindWorkspace("default")
+	store := &memoryStore{}
+
+	for _, text := range []string{
+		"@机器人 /debug all on",
+		"/debug all on @机器人",
+		"@机器人\n/debug all on",
+		"＠机器人 /debug all on",
+		"@bot /debug all on @机器人",
+	} {
+		store.session = nil
+		reply, handled, err := HandleCommand(text, "conv-1", workspace.ID, "claude", cfg, workspace, store)
+		if err != nil {
+			t.Fatalf("HandleCommand(%q) error = %v", text, err)
+		}
+		if !handled || reply == DebugHelp {
+			t.Fatalf("HandleCommand(%q) handled=%v reply=%q", text, handled, reply)
+		}
+		if store.session == nil || !store.session.IMDebug.Thinking || !store.session.IMDebug.Tools {
+			t.Fatalf("%q stored debug = %+v, want all on", text, store.session)
+		}
+	}
+}
+
 func (s *memoryStore) Load(id string) (*storage.StoredSession, error) {
 	if s.session == nil || s.session.ID != id {
 		return nil, os.ErrNotExist
@@ -182,7 +208,7 @@ func TestHandleCommandIgnoresUnsupportedCommandsAndMentions(t *testing.T) {
 	workspace := cfg.FindWorkspace("default")
 	store := &memoryStore{}
 
-	for _, text := range []string{"/agents", "/agentcodex", "@codex hello", "hello /agent codex"} {
+	for _, text := range []string{"/agents", "/agentcodex", "@codex hello", "hello /agent codex", "hello\n/debug all on", "hello /debug all on @bot"} {
 		reply, handled, err := HandleCommand(text, "conv-1", workspace.ID, "claude", cfg, workspace, store)
 		if err != nil {
 			t.Fatalf("HandleCommand(%q) error = %v", text, err)

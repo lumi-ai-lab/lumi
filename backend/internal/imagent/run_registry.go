@@ -67,5 +67,5 @@ func (r *RunRegistry) Stop(conversationID string) bool {
 }
 
 func IsStopCommand(text string) bool {
-	return strings.TrimSpace(text) == "/stop"
+	return normalizeCommandText(text) == "/stop"
 }

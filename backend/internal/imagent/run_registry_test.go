@@ -12,6 +12,9 @@ func TestIsStopCommand(t *testing.T) {
 	}{
 		{text: "/stop", want: true},
 		{text: " /stop ", want: true},
+		{text: "@机器人 /stop", want: true},
+		{text: "/stop @机器人", want: true},
+		{text: "@机器人\n/stop", want: true},
 		{text: "/stop now", want: false},
 		{text: "hello /stop", want: false},
 		{text: "/cancel", want: false},
