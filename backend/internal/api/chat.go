@@ -804,6 +804,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 				task.SessionID = payload.SessionID
 				s.setRemoteSession(ctx.Prepared.ConvID, task.DeviceID, task.AgentID, payload.SessionID)
 				s.conversations.SetSessionID(ctx.Prepared.ConvID, payload.SessionID)
+				s.persistConversation(ctx.Prepared.ConvID)
 
 				sessionReady = true
 				if !sessionTimer.Stop() {
@@ -1167,14 +1168,21 @@ func (s *Server) clearRemoteSessionsForDevice(deviceID string) {
 		return
 	}
 
+	affected := make([]string, 0)
 	s.remoteSessionsMu.Lock()
-	defer s.remoteSessionsMu.Unlock()
-
 	for conversationID, byDevice := range s.remoteAgentSessions {
-		delete(byDevice, deviceID)
+		if _, ok := byDevice[deviceID]; ok {
+			delete(byDevice, deviceID)
+			affected = append(affected, conversationID)
+		}
 		if len(byDevice) == 0 {
 			delete(s.remoteAgentSessions, conversationID)
 		}
+	}
+	s.remoteSessionsMu.Unlock()
+
+	for _, conversationID := range affected {
+		s.persistConversation(conversationID)
 	}
 }
 

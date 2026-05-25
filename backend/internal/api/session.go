@@ -93,11 +93,12 @@ func (s *Server) restoreConversation(session *storage.StoredSession) {
 	for _, msg := range session.Messages {
 		s.conversations.AddMessage(session.ID, msg)
 	}
-	s.agentSessions[session.ID] = make(map[string]string)
-	s.remoteSessionsMu.Lock()
-	if s.remoteAgentSessions[session.ID] == nil {
-		s.remoteAgentSessions[session.ID] = make(map[string]map[string]string)
+	if sessionID := session.AgentSessions[session.ActiveAgent]; sessionID != "" {
+		s.conversations.SetSessionID(session.ID, sessionID)
 	}
+	s.agentSessions[session.ID] = cloneAgentSessions(session.AgentSessions)
+	s.remoteSessionsMu.Lock()
+	s.remoteAgentSessions[session.ID] = cloneRemoteAgentSessions(session.RemoteAgentSessions)
 	s.remoteSessionsMu.Unlock()
 }
 
@@ -108,14 +109,65 @@ func (s *Server) persistConversation(convID string) {
 	}
 
 	session := &storage.StoredSession{
-		ID:          convID,
-		Title:       storage.GenerateTitle(conv.Messages),
-		Messages:    conv.Messages,
-		ActiveAgent: conv.ActiveAgent,
-		WorkspaceID: conv.WorkspaceID,
-		CreatedAt:   conv.CreatedAt,
-		UpdatedAt:   time.Now().UnixMilli(),
+		ID:                  convID,
+		Title:               storage.GenerateTitle(conv.Messages),
+		Messages:            conv.Messages,
+		ActiveAgent:         conv.ActiveAgent,
+		WorkspaceID:         conv.WorkspaceID,
+		AgentSessions:       s.snapshotAgentSessions(convID),
+		RemoteAgentSessions: s.snapshotRemoteAgentSessions(convID),
+		CreatedAt:           conv.CreatedAt,
+		UpdatedAt:           time.Now().UnixMilli(),
 	}
 
 	s.sessionStore.Save(session)
+}
+
+func (s *Server) snapshotAgentSessions(convID string) map[string]string {
+	if s == nil || s.agentSessions == nil {
+		return nil
+	}
+	return cloneAgentSessions(s.agentSessions[convID])
+}
+
+func (s *Server) snapshotRemoteAgentSessions(convID string) map[string]map[string]string {
+	if s == nil || s.remoteAgentSessions == nil {
+		return nil
+	}
+	s.remoteSessionsMu.RLock()
+	defer s.remoteSessionsMu.RUnlock()
+	return cloneRemoteAgentSessions(s.remoteAgentSessions[convID])
+}
+
+func cloneAgentSessions(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(source))
+	for agentID, sessionID := range source {
+		if sessionID != "" {
+			out[agentID] = sessionID
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cloneRemoteAgentSessions(source map[string]map[string]string) map[string]map[string]string {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]string, len(source))
+	for deviceID, byAgent := range source {
+		cloned := cloneAgentSessions(byAgent)
+		if len(cloned) > 0 {
+			out[deviceID] = cloned
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

@@ -235,11 +235,12 @@ func (r *wecomChatRuntime) restoreStoredConversation(session *storage.StoredSess
 	conv.ActiveAgent = session.ActiveAgent
 	conv.WorkspaceID = session.WorkspaceID
 	conv.CreatedAt = session.CreatedAt
+	if sessionID := session.AgentSessions[session.ActiveAgent]; sessionID != "" {
+		conv.CurrentSessionID = sessionID
+	}
 
 	r.mu.Lock()
-	if _, ok := r.agentSessions[session.ID]; !ok {
-		r.agentSessions[session.ID] = make(map[string]string)
-	}
+	r.agentSessions[session.ID] = cloneAgentSessions(session.AgentSessions)
 	r.mu.Unlock()
 	return conv
 }
@@ -251,16 +252,23 @@ func (r *wecomChatRuntime) persistConversation(convID string, store wecom.Hidden
 	}
 	debug := imdebug.ToolDebugEnabled(store, convID)
 	session := &storage.StoredSession{
-		ID:          conv.ID,
-		Title:       storage.GenerateTitle(conv.Messages),
-		Messages:    append([]conversation.Message(nil), conv.Messages...),
-		ActiveAgent: conv.ActiveAgent,
-		WorkspaceID: conv.WorkspaceID,
-		IMDebug:     debug,
-		CreatedAt:   conv.CreatedAt,
-		UpdatedAt:   time.Now().UnixMilli(),
+		ID:            conv.ID,
+		Title:         storage.GenerateTitle(conv.Messages),
+		Messages:      append([]conversation.Message(nil), conv.Messages...),
+		ActiveAgent:   conv.ActiveAgent,
+		WorkspaceID:   conv.WorkspaceID,
+		AgentSessions: r.snapshotAgentSessions(conv.ID),
+		IMDebug:       debug,
+		CreatedAt:     conv.CreatedAt,
+		UpdatedAt:     time.Now().UnixMilli(),
 	}
 	return store.Save(session)
+}
+
+func (r *wecomChatRuntime) snapshotAgentSessions(convID string) map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return cloneAgentSessions(r.agentSessions[convID])
 }
 
 func (r *wecomChatRuntime) ensureInitialized(agentID string, workspaceID string, workspacePath string, sink wecom.ChatEventSink) error {
@@ -336,6 +344,9 @@ func (r *wecomChatRuntime) ensureAgentSession(input wecom.ChatRunInput, sink wec
 
 	r.mu.Lock()
 	if !input.NewSession {
+		if r.agentSessions[input.ConversationID] == nil {
+			r.agentSessions[input.ConversationID] = make(map[string]string)
+		}
 		r.agentSessions[input.ConversationID][input.AgentID] = sessionID
 	}
 	r.mu.Unlock()

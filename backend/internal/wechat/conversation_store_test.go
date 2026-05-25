@@ -17,8 +17,11 @@ func TestConversationStoreIsHiddenAndPreservesSessionFields(t *testing.T) {
 		Title:       "Hidden",
 		ActiveAgent: "claude",
 		WorkspaceID: "default",
-		CreatedAt:   100,
-		UpdatedAt:   200,
+		AgentSessions: map[string]string{
+			"claude": "local-session-1",
+		},
+		CreatedAt: 100,
+		UpdatedAt: 200,
 		Messages: []conversation.Message{
 			{
 				Role:    "user",
@@ -53,6 +56,9 @@ func TestConversationStoreIsHiddenAndPreservesSessionFields(t *testing.T) {
 	}
 	if loaded.Messages[1].ToolCall == nil || loaded.Messages[1].ToolCall.ToolCallID != "tool-1" {
 		t.Fatalf("tool call not preserved: %+v", loaded.Messages[1].ToolCall)
+	}
+	if got := loaded.AgentSessions["claude"]; got != "local-session-1" {
+		t.Fatalf("agent session not preserved: %q", got)
 	}
 
 	regularSessions := storage.NewSessionStore("")

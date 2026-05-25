@@ -50,6 +50,39 @@ func TestCollectFileMentionsSkipsAgentsAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestPersistAndRestoreConversationKeepsAgentSessions(t *testing.T) {
+	server := newTestAPIServer(t)
+	conv := server.conversations.Create("conv-1", "claude", "default")
+	server.conversations.AddUserMessage(conv.ID, "hello", nil)
+	server.conversations.SetSessionID(conv.ID, "local-session-1")
+	server.agentSessions[conv.ID] = map[string]string{"claude": "local-session-1"}
+	server.setRemoteSession(conv.ID, "dev-1", "claude", "remote-session-1")
+
+	server.persistConversation(conv.ID)
+	stored, err := server.sessionStore.Load(conv.ID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := stored.AgentSessions["claude"]; got != "local-session-1" {
+		t.Fatalf("stored.AgentSessions[claude] = %q, want local-session-1", got)
+	}
+	if got := stored.RemoteAgentSessions["dev-1"]["claude"]; got != "remote-session-1" {
+		t.Fatalf("stored.RemoteAgentSessions[dev-1][claude] = %q, want remote-session-1", got)
+	}
+
+	restored := newTestAPIServer(t)
+	restored.restoreConversation(stored)
+	if got := restored.agentSessions[conv.ID]["claude"]; got != "local-session-1" {
+		t.Fatalf("restored local session = %q, want local-session-1", got)
+	}
+	if got := restored.getRemoteSession(conv.ID, "dev-1", "claude"); got != "remote-session-1" {
+		t.Fatalf("restored remote session = %q, want remote-session-1", got)
+	}
+	if got := restored.conversations.Get(conv.ID).CurrentSessionID; got != "local-session-1" {
+		t.Fatalf("restored current session = %q, want local-session-1", got)
+	}
+}
+
 func TestPrepareChatRoutesQwenMention(t *testing.T) {
 	server := newTestAPIServer(t)
 
