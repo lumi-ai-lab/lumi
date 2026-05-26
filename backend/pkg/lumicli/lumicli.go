@@ -32,6 +32,7 @@ type RunOptions struct {
 	AgentIDs       []string
 	BotID          string
 	BotSecret      string
+	WeComStream    bool
 	Port           string
 	IdleTimeoutSec int
 	SandboxID      string
@@ -204,6 +205,7 @@ func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, er
 		BotSecret:           strings.TrimSpace(opts.BotSecret),
 		WorkspaceID:         workspaceID,
 		AgentID:             agentID,
+		Stream:              opts.WeComStream,
 		ConnectTimeoutMs:    15000,
 		HeartbeatIntervalMs: 30000,
 		MessageAckTimeoutMs: 5000,

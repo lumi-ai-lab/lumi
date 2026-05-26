@@ -148,11 +148,12 @@ func TestPrepareRunUpsertsWorkspaceAndWecomConfig(t *testing.T) {
 	state.HasAgents = true
 
 	cfg, resolved, err := PrepareRun(state, RunOptions{
-		Workspace: workspace,
-		AgentID:   "claude",
-		BotID:     "bot-123",
-		BotSecret: "secret-456",
-		Port:      "3344",
+		Workspace:   workspace,
+		AgentID:     "claude",
+		BotID:       "bot-123",
+		BotSecret:   "secret-456",
+		WeComStream: true,
+		Port:        "3344",
 	})
 	if err != nil {
 		t.Fatalf("PrepareRun() error = %v", err)
@@ -184,6 +185,9 @@ func TestPrepareRunUpsertsWorkspaceAndWecomConfig(t *testing.T) {
 	text := string(wecomData)
 	if !strings.Contains(text, `"enabled": true`) || !strings.Contains(text, `"agentId": "claude"`) {
 		t.Fatalf("wecom config missing expected fields: %s", text)
+	}
+	if !strings.Contains(text, `"stream": true`) {
+		t.Fatalf("wecom config missing stream=true: %s", text)
 	}
 }
 
@@ -265,11 +269,12 @@ func TestPrepareRunUpsertsSandboxWorkspaceAndWecomConfig(t *testing.T) {
 	state.HasAgents = true
 
 	cfg, _, err := PrepareRun(state, RunOptions{
-		Workspace: workspace,
-		Kind:      "sandbox",
-		AgentID:   "claude",
-		BotID:     "bot-123",
-		BotSecret: "secret-456",
+		Workspace:   workspace,
+		Kind:        "sandbox",
+		AgentID:     "claude",
+		BotID:       "bot-123",
+		BotSecret:   "secret-456",
+		WeComStream: true,
 	})
 	if err != nil {
 		t.Fatalf("PrepareRun(sandbox) error = %v", err)
@@ -301,6 +306,12 @@ func TestPrepareRunUpsertsSandboxWorkspaceAndWecomConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(wecomData), fmt.Sprintf(`"workspaceId": "%s"`, wantWorkspaceID)) {
 		t.Fatalf("wecom config missing sandbox workspace: %s", string(wecomData))
+	}
+	if !strings.Contains(string(wecomData), `"stream": true`) {
+		t.Fatalf("wecom config missing stream=true: %s", string(wecomData))
+	}
+	if _, err := os.Stat(filepath.Join(home, ".lumi", "wecom", "config.json")); !os.IsNotExist(err) {
+		t.Fatalf("global wecom config exists for sandbox run, err=%v", err)
 	}
 }
 

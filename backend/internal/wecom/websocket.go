@@ -486,7 +486,19 @@ func (rt *wsRuntime) Reply(ctx context.Context, rctx replyContext, content strin
 	if rctx.ReqID == "" {
 		return rt.Send(ctx, rctx, content)
 	}
-	streamID := rt.generateReqID("stream")
+	return rt.ReplyStream(ctx, rctx, rt.NewStreamID(), content, true)
+}
+
+func (rt *wsRuntime) ReplyStream(_ context.Context, rctx replyContext, streamID, content string, finish bool) error {
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	if rctx.ReqID == "" {
+		return fmt.Errorf("wecom-ws: reqID is empty")
+	}
+	if strings.TrimSpace(streamID) == "" {
+		streamID = rt.NewStreamID()
+	}
 	frame := map[string]any{
 		"cmd":     "aibot_respond_msg",
 		"headers": map[string]string{"req_id": rctx.ReqID},
@@ -494,12 +506,16 @@ func (rt *wsRuntime) Reply(ctx context.Context, rctx replyContext, content strin
 			"msgtype": "stream",
 			"stream": map[string]any{
 				"id":      streamID,
-				"finish":  true,
+				"finish":  finish,
 				"content": content,
 			},
 		},
 	}
 	return rt.writeJSON(frame)
+}
+
+func (rt *wsRuntime) NewStreamID() string {
+	return rt.generateReqID("stream")
 }
 
 func (rt *wsRuntime) Send(ctx context.Context, rctx replyContext, content string) error {

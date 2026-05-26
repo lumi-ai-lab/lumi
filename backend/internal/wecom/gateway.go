@@ -70,6 +70,8 @@ type WeComInboundMessage struct {
 
 type wsMessageSender interface {
 	Reply(ctx context.Context, rctx replyContext, content string) error
+	ReplyStream(ctx context.Context, rctx replyContext, streamID, content string, finish bool) error
+	NewStreamID() string
 	Send(ctx context.Context, rctx replyContext, content string) error
 	ReplyMedia(ctx context.Context, rctx replyContext, action SendAction) error
 	SendMedia(ctx context.Context, rctx replyContext, action SendAction) error
@@ -102,11 +104,33 @@ func (l *conversationLocks) TryLock(id string) (func(), bool) {
 }
 
 type gatewayEventSink struct {
-	buffer      *imdebug.Buffer
-	sendSegment func(imdebug.Segment) error
-	lastError   string
-	debug       storage.IMDebugSettings
+	buffer               *imdebug.Buffer
+	sendSegment          func(imdebug.Segment) error
+	textUpdate           func(string)
+	lastError            string
+	debug                storage.IMDebugSettings
+	finalTextBuilder     strings.Builder
+	finalTextAccumulated string
 }
+
+type wecomStreamSender struct {
+	mu            sync.Mutex
+	sender        wsMessageSender
+	rctx          replyContext
+	workspacePath string
+	streamID      string
+	lastSent      string
+	pending       string
+	failed        bool
+	startedAt     time.Time
+	lastFlush     time.Time
+	timer         *time.Timer
+}
+
+const (
+	wecomStreamFlushInterval = 200 * time.Millisecond
+	wecomStreamMaxDuration   = 330 * time.Second
+)
 
 func (s *gatewayEventSink) Emit(event ChatEvent) error {
 	if s.buffer == nil {
@@ -134,7 +158,11 @@ func (s *gatewayEventSink) Emit(event ChatEvent) error {
 							return err
 						}
 					} else {
+						s.addFinalMessageChunk(text)
 						s.buffer.AddMessageChunk(text)
+						if s.textUpdate != nil {
+							s.textUpdate(s.FinalText())
+						}
 						if err := s.flushReadySegments(); err != nil {
 							return err
 						}
@@ -173,10 +201,38 @@ func (s *gatewayEventSink) Emit(event ChatEvent) error {
 }
 
 func (s *gatewayEventSink) FinalText() string {
+	if text := strings.TrimSpace(s.finalTextBuilder.String()); text != "" {
+		return text
+	}
 	if s.buffer == nil {
 		return ""
 	}
 	return s.buffer.Text()
+}
+
+func (s *gatewayEventSink) addFinalMessageChunk(text string) {
+	delta := deltaAgainstText(s.finalTextAccumulated, text)
+	if delta == "" {
+		return
+	}
+	s.finalTextBuilder.WriteString(delta)
+	s.finalTextAccumulated += delta
+}
+
+func deltaAgainstText(accumulated, chunk string) string {
+	if chunk == "" {
+		return ""
+	}
+	if accumulated == "" {
+		return chunk
+	}
+	if chunk == accumulated {
+		return ""
+	}
+	if strings.HasPrefix(chunk, accumulated) {
+		return chunk[len(accumulated):]
+	}
+	return chunk
 }
 
 func (s *gatewayEventSink) DebugMessages() []string {
@@ -208,6 +264,113 @@ func (s *gatewayEventSink) flushAllSegments() error {
 		}
 	}
 	return nil
+}
+
+func newWeComStreamSender(sender wsMessageSender, rctx replyContext, workspacePath string) *wecomStreamSender {
+	return &wecomStreamSender{
+		sender:        sender,
+		rctx:          rctx,
+		workspacePath: workspacePath,
+		streamID:      sender.NewStreamID(),
+		startedAt:     time.Now(),
+	}
+}
+
+func (s *wecomStreamSender) Update(ctx context.Context, fullText string) {
+	if s == nil || s.failed || s.rctx.ReqID == "" {
+		return
+	}
+	visible := ParseSendProtocol(fullText, s.workspacePath).VisibleText
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failed || visible == "" || visible == s.lastSent {
+		return
+	}
+	s.pending = visible
+	if time.Since(s.lastFlush) < wecomStreamFlushInterval {
+		s.scheduleFlushLocked(ctx)
+		return
+	}
+	s.stopTimerLocked()
+	s.flushLocked(ctx, false)
+}
+
+func (s *wecomStreamSender) Complete(ctx context.Context, fullText string) {
+	if s == nil || s.failed || s.rctx.ReqID == "" {
+		return
+	}
+	visible := ParseSendProtocol(fullText, s.workspacePath).VisibleText
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopTimerLocked()
+	s.pending = visible
+	s.flushLocked(ctx, true)
+}
+
+func (s *wecomStreamSender) Failed() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failed
+}
+
+func (s *wecomStreamSender) scheduleFlushLocked(ctx context.Context) {
+	delay := wecomStreamFlushInterval - time.Since(s.lastFlush)
+	if delay < 0 {
+		delay = 0
+	}
+	if s.timer != nil {
+		s.timer.Reset(delay)
+		return
+	}
+	s.timer = time.AfterFunc(delay, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.timer = nil
+		if s.failed || s.pending == "" || time.Since(s.lastFlush) < wecomStreamFlushInterval {
+			return
+		}
+		s.flushLocked(ctx, false)
+	})
+}
+
+func (s *wecomStreamSender) stopTimerLocked() {
+	if s.timer == nil {
+		return
+	}
+	s.timer.Stop()
+	s.timer = nil
+}
+
+func (s *wecomStreamSender) flushLocked(ctx context.Context, finish bool) {
+	if s.pending == "" && !finish {
+		return
+	}
+	if time.Since(s.startedAt) >= wecomStreamMaxDuration && s.lastSent != "" && !finish {
+		if err := s.sender.ReplyStream(ctx, s.rctx, s.streamID, s.lastSent, true); err != nil {
+			s.failed = true
+			return
+		}
+		s.streamID = s.sender.NewStreamID()
+		s.startedAt = time.Now()
+		s.lastSent = ""
+	}
+	content := s.pending
+	if finish && content == "" {
+		content = s.lastSent
+	}
+	if content == "" {
+		return
+	}
+	if err := s.sender.ReplyStream(ctx, s.rctx, s.streamID, content, finish); err != nil {
+		s.failed = true
+		return
+	}
+	s.lastSent = content
+	s.pending = ""
+	s.lastFlush = time.Now()
 }
 
 func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeComInboundMessage, sender wsMessageSender) error {
@@ -262,9 +425,19 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 
 	sentVisible := false
 	sink := &gatewayEventSink{debug: imdebug.ToolDebugEnabled(s.convStore, conversationID)}
+	streamSender := (*wecomStreamSender)(nil)
+	if cfg.Stream && msg.ReplyContext.ReqID != "" {
+		streamSender = newWeComStreamSender(sender, msg.ReplyContext, workspace.Path)
+		sink.textUpdate = func(text string) {
+			streamSender.Update(ctx, text)
+		}
+	}
 	sink.sendSegment = func(segment imdebug.Segment) error {
 		if segment.Kind == imdebug.SegmentDebug {
 			return sender.Reply(ctx, msg.ReplyContext, segment.Text)
+		}
+		if streamSender != nil && !streamSender.Failed() {
+			return nil
 		}
 		sent, err := s.sendTextSegment(ctx, sender, msg, workspace.Path, segment.Text)
 		if sent {
@@ -321,6 +494,19 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 	if finalText == "" {
 		return sender.Reply(ctx, msg.ReplyContext, fallbackDoneText)
 	}
+	if streamSender != nil && !streamSender.Failed() {
+		streamSender.Complete(ctx, finalText)
+		if !streamSender.Failed() {
+			sent, err := s.sendTextSegmentAfterStream(ctx, sender, msg, workspace.Path, finalText)
+			if err != nil {
+				return err
+			}
+			if sent {
+				return nil
+			}
+			return nil
+		}
+	}
 	sent, err := s.sendTextSegment(ctx, sender, msg, workspace.Path, finalText)
 	if err != nil {
 		return err
@@ -329,6 +515,39 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 		return nil
 	}
 	return sender.Reply(ctx, msg.ReplyContext, fallbackDoneText)
+}
+
+func (s *Service) sendTextSegmentAfterStream(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text string) (bool, error) {
+	parsed := ParseSendProtocol(text, workspacePath)
+	if len(parsed.Actions) == 0 && len(parsed.Failures) == 0 {
+		return parsed.VisibleText != "", nil
+	}
+	sent := false
+	failures := append([]string(nil), parsed.Failures...)
+	for _, action := range parsed.Actions {
+		if action.Caption != "" {
+			if err := sender.Reply(ctx, msg.ReplyContext, action.Caption); err != nil {
+				failures = append(failures, failureText(action.Path, err.Error()))
+				continue
+			}
+			sent = true
+		}
+		if err := sender.ReplyMedia(ctx, msg.ReplyContext, action); err != nil {
+			failures = append(failures, failureText(action.Path, err.Error()))
+			continue
+		}
+		sent = true
+	}
+	if len(failures) > 0 {
+		if err := sender.Reply(ctx, msg.ReplyContext, strings.Join(failures, "\n")); err != nil {
+			return sent, err
+		}
+		sent = true
+	}
+	if parsed.VisibleText != "" {
+		sent = true
+	}
+	return sent, nil
 }
 
 func (s *Service) sendTextSegment(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text string) (bool, error) {

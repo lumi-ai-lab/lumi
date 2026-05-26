@@ -928,6 +928,7 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	agentIDs := fs.String("agents", envOrDefault("LUMI_AGENTS", ""), "Comma-separated agent IDs available to this IM workspace; defaults to all configured agents")
 	botID := fs.String("bot-id", envOrDefault("LUMI_BOT_ID", ""), "WeCom bot ID")
 	botSecret := fs.String("bot-secret", envOrDefault("LUMI_BOT_SECRET", ""), "WeCom bot secret")
+	stream := fs.Bool("stream", envBoolOrDefault("LUMI_WECOM_STREAM", false), "Enable WeCom streaming replies")
 	port := fs.String("port", envOrDefault("LUMI_PORT", "3000"), "Server port")
 	idleTimeoutSec := fs.Int("idle-timeout-sec", 0, "Sandbox idle timeout in seconds for IM CLI runs; defaults to 10 years")
 	sandboxID := fs.String("sandbox-id", envOrDefault("LUMI_SANDBOX_ID", ""), "Advanced sandbox instance ID override")
@@ -963,6 +964,7 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 		AgentIDs:       parseAgentIDs(*agentIDs),
 		BotID:          *botID,
 		BotSecret:      *botSecret,
+		WeComStream:    *stream,
 		Port:           *port,
 		IdleTimeoutSec: *idleTimeoutSec,
 		SandboxID:      *sandboxID,
@@ -991,6 +993,7 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	fmt.Fprintf(stdout, "Workspace agents: %s\n", strings.Join(workspaceAgentIDs(cfg), ", "))
 	fmt.Fprintf(stdout, "Server: http://localhost:%s\n", runtime.Port())
 	fmt.Fprintf(stdout, "WeCom: enabled for bot %s\n", *botID)
+	fmt.Fprintf(stdout, "WeCom stream: %s\n", enabledDisabled(*stream))
 	fmt.Fprintln(stdout, "Agent credentials are inherited from the current shell environment or existing config env.")
 
 	return serveRuntimeUntilSignal(runtime, stdout, stderr, func() error {
@@ -1181,6 +1184,23 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
+func envBoolOrDefault(key string, fallback bool) bool {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+func enabledDisabled(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
+}
+
 func printUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
 	fmt.Fprintf(stdout, "  %s cron <command> [flags]\n", programName)
@@ -1205,7 +1225,7 @@ func printCronUsage(stdout *os.File, programName string) {
 
 func printWeComUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
-	fmt.Fprintf(stdout, "  %s wecom run --workspace <path> --kind local|sandbox --agent <id> --bot-id <id> --bot-secret <secret> [--sandbox-id <id>] [--idle-timeout-sec <seconds>] [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s wecom run --workspace <path> --kind local|sandbox --agent <id> --bot-id <id> --bot-secret <secret> [--stream] [--sandbox-id <id>] [--idle-timeout-sec <seconds>] [flags]\n", programName)
 }
 
 func printWeChatUsage(stdout *os.File, programName string) {

@@ -28,11 +28,15 @@ func TestConfigStoreDefaultsAndPermissions(t *testing.T) {
 	if cfg.ConnectTimeoutMs != defaultConnectTimeoutMs {
 		t.Fatalf("ConnectTimeoutMs = %d, want %d", cfg.ConnectTimeoutMs, defaultConnectTimeoutMs)
 	}
+	if cfg.Stream {
+		t.Fatal("Stream = true, want false by default")
+	}
 
 	cfg.BotID = "bot-123"
 	cfg.BotSecret = "secret1234wxyz"
 	cfg.WorkspaceID = "default"
 	cfg.AgentID = "claude"
+	cfg.Stream = true
 	if err := store.Save(cfg); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -44,7 +48,13 @@ func TestConfigStoreDefaultsAndPermissions(t *testing.T) {
 	if loaded.BotSecret != cfg.BotSecret {
 		t.Fatalf("BotSecret = %q, want %q", loaded.BotSecret, cfg.BotSecret)
 	}
+	if !loaded.Stream {
+		t.Fatal("Stream = false, want saved true")
+	}
 	sanitized := SanitizeConfig(loaded)
+	if !sanitized.Stream {
+		t.Fatal("Sanitized Stream = false, want true")
+	}
 	if !sanitized.HasSecret {
 		t.Fatal("HasSecret = false, want true")
 	}
@@ -103,6 +113,7 @@ func TestHandleSaveConfigKeepsAndClearsSecret(t *testing.T) {
 	  "workspaceId": "default",
 	  "agentId": "claude",
 	  "allowFrom": "",
+	  "stream": true,
 	  "connectTimeoutMs": 15000,
 	  "heartbeatIntervalMs": 30000,
 	  "messageAckTimeoutMs": 5000
@@ -118,6 +129,9 @@ func TestHandleSaveConfigKeepsAndClearsSecret(t *testing.T) {
 	}
 	if cfg.BotSecret != "persisted-secret" {
 		t.Fatalf("BotSecret after omit = %q", cfg.BotSecret)
+	}
+	if !cfg.Stream {
+		t.Fatal("Stream after save = false, want true")
 	}
 
 	rec = httptest.NewRecorder()
