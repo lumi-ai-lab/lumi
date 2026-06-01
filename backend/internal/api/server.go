@@ -71,8 +71,9 @@ type Server struct {
 	pendingPermissionsMu sync.RWMutex
 
 	// conversationID -> deviceID -> agentID -> remote sessionID
-	remoteAgentSessions map[string]map[string]map[string]string
-	remoteSessionsMu    sync.RWMutex
+	remoteAgentSessions              map[string]map[string]map[string]string
+	remoteAgentSessionPromptVersions map[string]map[string]map[string]int
+	remoteSessionsMu                 sync.RWMutex
 
 	// Cached commands per agent
 	agentCommands   map[string][]SlashCommand
@@ -115,29 +116,30 @@ func NewServer(cfg *config.Config, staticFS fs.FS) *Server {
 	}
 
 	s := &Server{
-		config:              cfg,
-		agents:              agent.NewManager(cfg),
-		router:              router.New(cfg),
-		conversations:       conversation.NewManager(),
-		sessionStore:        storage.NewSessionStore(""),
-		shareStore:          storage.NewShareStore(""),
-		workspaceStore:      storage.NewWorkspaceStore(""),
-		workspaceSvc:        workspacepreview.NewService(),
-		workspaceDiffs:      workspacepreview.NewChangesService(),
-		skills:              skills.NewRegistry(),
-		skillStore:          newDefaultSkillStore(),
-		mcpStore:            newDefaultMCPStore(),
-		devices:             devices,
-		sandbox:             sandboxManager,
-		staticFS:            staticFS,
-		agentSessions:       make(map[string]map[string]string),
-		initialized:         make(map[string]bool),
-		pendingPermissions:  make(map[string]pendingPermissionState),
-		remoteAgentSessions: make(map[string]map[string]map[string]string),
-		agentCommands:       make(map[string][]SlashCommand),
-		setupSubs:           make(map[chan setupcheck.SetupStatus]struct{}),
-		cronSubs:            make(map[chan lumicron.Event]struct{}),
-		cronRuns:            make(map[string]struct{}),
+		config:                           cfg,
+		agents:                           agent.NewManager(cfg),
+		router:                           router.New(cfg),
+		conversations:                    conversation.NewManager(),
+		sessionStore:                     storage.NewSessionStore(""),
+		shareStore:                       storage.NewShareStore(""),
+		workspaceStore:                   storage.NewWorkspaceStore(""),
+		workspaceSvc:                     workspacepreview.NewService(),
+		workspaceDiffs:                   workspacepreview.NewChangesService(),
+		skills:                           skills.NewRegistry(),
+		skillStore:                       newDefaultSkillStore(),
+		mcpStore:                         newDefaultMCPStore(),
+		devices:                          devices,
+		sandbox:                          sandboxManager,
+		staticFS:                         staticFS,
+		agentSessions:                    make(map[string]map[string]string),
+		initialized:                      make(map[string]bool),
+		pendingPermissions:               make(map[string]pendingPermissionState),
+		remoteAgentSessions:              make(map[string]map[string]map[string]string),
+		remoteAgentSessionPromptVersions: make(map[string]map[string]map[string]int),
+		agentCommands:                    make(map[string][]SlashCommand),
+		setupSubs:                        make(map[chan setupcheck.SetupStatus]struct{}),
+		cronSubs:                         make(map[chan lumicron.Event]struct{}),
+		cronRuns:                         make(map[string]struct{}),
 	}
 	s.cron = lumicron.NewService(lumicron.NewStore(""), s, s.broadcastCronEvent)
 	s.wechatChat = newWeChatChatRuntime(cfg, s.cron, s.mcpStore)

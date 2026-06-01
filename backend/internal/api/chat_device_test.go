@@ -296,8 +296,13 @@ func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	if taskPayload.WorkspacePath != sandbox.WorkspacePath {
 		t.Fatalf("WorkspacePath = %q, want %q", taskPayload.WorkspacePath, sandbox.WorkspacePath)
 	}
-	if !strings.Contains(taskPayload.Prompt, "prefix") || !strings.Contains(taskPayload.Prompt, "hello sandbox") {
-		t.Fatalf("Prompt missing IM content: %q", taskPayload.Prompt)
+	if taskPayload.Prompt != "hello sandbox" {
+		t.Fatalf("Prompt = %q, want clean user message", taskPayload.Prompt)
+	}
+	for _, want := range []string{"prefix", "You are running inside Lumi.", "Current Lumi context:"} {
+		if !strings.Contains(taskPayload.SystemPromptAppend, want) {
+			t.Fatalf("SystemPromptAppend missing %q:\n%s", want, taskPayload.SystemPromptAppend)
+		}
 	}
 	if err := wsjson.Write(ctx, conn, device.AckEnvelope(taskExecute.ID)); err != nil {
 		t.Fatalf("wsjson.Write(task.execute ack) error = %v", err)
@@ -436,9 +441,12 @@ func TestRunWeComChatSandboxSwitchPersistsActiveAgentAndInjectsContext(t *testin
 	if taskPayload.AgentID != "codex" {
 		t.Fatalf("taskPayload.AgentID = %q, want codex", taskPayload.AgentID)
 	}
-	for _, want := range []string{"[Previous conversation context]", "User: previous question", "Assistant (claude): previous answer", "prefix", "new question"} {
-		if !strings.Contains(taskPayload.Prompt, want) {
-			t.Fatalf("task prompt missing %q:\n%s", want, taskPayload.Prompt)
+	if taskPayload.Prompt != "new question" {
+		t.Fatalf("Prompt = %q, want clean user message", taskPayload.Prompt)
+	}
+	for _, want := range []string{"[Previous conversation context]", "User: previous question", "Assistant (claude): previous answer", "prefix"} {
+		if !strings.Contains(taskPayload.SystemPromptAppend, want) {
+			t.Fatalf("system prompt append missing %q:\n%s", want, taskPayload.SystemPromptAppend)
 		}
 	}
 	if err := wsjson.Write(ctx, conn, device.AckEnvelope(taskExecute.ID)); err != nil {
@@ -523,8 +531,13 @@ func TestRunWeChatChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	if taskPayload.WorkspacePath != sandbox.WorkspacePath {
 		t.Fatalf("WorkspacePath = %q, want %q", taskPayload.WorkspacePath, sandbox.WorkspacePath)
 	}
-	if !strings.Contains(taskPayload.Prompt, "prefix") || !strings.Contains(taskPayload.Prompt, "hello sandbox") {
-		t.Fatalf("Prompt missing IM content: %q", taskPayload.Prompt)
+	if taskPayload.Prompt != "hello sandbox" {
+		t.Fatalf("Prompt = %q, want clean user message", taskPayload.Prompt)
+	}
+	for _, want := range []string{"prefix", "You are running inside Lumi.", "Current Lumi context:"} {
+		if !strings.Contains(taskPayload.SystemPromptAppend, want) {
+			t.Fatalf("SystemPromptAppend missing %q:\n%s", want, taskPayload.SystemPromptAppend)
+		}
 	}
 	if err := wsjson.Write(ctx, conn, device.AckEnvelope(taskExecute.ID)); err != nil {
 		t.Fatalf("wsjson.Write(task.execute ack) error = %v", err)

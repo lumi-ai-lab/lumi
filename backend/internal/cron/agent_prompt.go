@@ -69,8 +69,7 @@ type ToolContext struct {
 	Target         Target
 }
 
-func WithAgentToolInstructionsForContext(prompt string, ctx ToolContext) string {
-	prompt = strings.TrimSpace(prompt)
+func AgentToolInstructionsForContext(ctx ToolContext) string {
 	instructions := AgentToolInstructions
 	if ctx.Channel == ChannelWeCom {
 		instructions += "\n\n" + IMRunToolInstructions
@@ -121,6 +120,12 @@ For this conversation, prefer this explicit form:
 
   %s`, command)
 	}
+	return instructions
+}
+
+func WithAgentToolInstructionsForContext(prompt string, ctx ToolContext) string {
+	prompt = strings.TrimSpace(prompt)
+	instructions := AgentToolInstructionsForContext(ctx)
 	if prompt == "" {
 		return instructions
 	}

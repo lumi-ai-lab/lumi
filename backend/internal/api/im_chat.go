@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/pengmide/lumi/internal/conversation"
@@ -23,16 +24,17 @@ type imHiddenConversationStore interface {
 }
 
 type imRunInput struct {
-	Message           string
-	ConversationID    string
-	WorkspaceID       string
-	WorkspacePath     string
-	DeviceID          string
-	AgentID           string
-	Prompt            string
-	Files             []device.TaskFileInfo
-	ConversationStore imHiddenConversationStore
-	NewSession        bool
+	Message            string
+	ConversationID     string
+	WorkspaceID        string
+	WorkspacePath      string
+	DeviceID           string
+	AgentID            string
+	Prompt             string
+	SystemPromptAppend string
+	Files              []device.TaskFileInfo
+	ConversationStore  imHiddenConversationStore
+	NewSession         bool
 }
 
 type imEventSink interface {
@@ -107,7 +109,8 @@ func (s *Server) RunWeComChat(ctx context.Context, input wecom.ChatRunInput, sin
 		WorkspacePath:  runtime.WorkspacePath,
 		DeviceID:       runtime.DeviceID,
 		AgentID:        input.AgentID,
-		Prompt: buildIMPrompt(input.PromptPrefix, input.Message, lumicron.ToolContext{
+		Prompt:         input.Message,
+		SystemPromptAppend: buildIMSystemPromptAppend(input.PromptPrefix, lumicron.ToolContext{
 			APIBase:        lumiAPIBaseForWorkspace(s.config, runtime.WorkspaceID),
 			Channel:        lumicron.ChannelWeCom,
 			ConversationID: input.ConversationID,
@@ -145,7 +148,8 @@ func (s *Server) RunWeChatChat(ctx context.Context, input wechat.ChatRunInput, s
 		WorkspacePath:  runtime.WorkspacePath,
 		DeviceID:       runtime.DeviceID,
 		AgentID:        input.AgentID,
-		Prompt: buildIMPrompt(input.PromptPrefix, input.Message, lumicron.ToolContext{
+		Prompt:         input.Message,
+		SystemPromptAppend: buildIMSystemPromptAppend(input.PromptPrefix, lumicron.ToolContext{
 			APIBase:        lumiAPIBaseForWorkspace(s.config, runtime.WorkspaceID),
 			Channel:        lumicron.ChannelWeChat,
 			ConversationID: input.ConversationID,
@@ -188,7 +192,7 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 	prompt := input.Prompt
 	if agentChanged {
 		if contextSummary := imContextSummary(conv.Messages, 10); contextSummary != "" {
-			prompt = contextSummary + prompt
+			input.SystemPromptAppend = joinIMSystemPromptAppend(input.SystemPromptAppend, contextSummary)
 		}
 	}
 	conv.ActiveAgent = input.AgentID
@@ -201,7 +205,7 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 	})
 
 	taskID := newTaskRunID()
-	remoteSessionID := s.getRemoteSession(input.ConversationID, deviceID, input.AgentID)
+	remoteSessionID := s.getRemoteSessionForPromptVersion(input.ConversationID, deviceID, input.AgentID, imSystemPromptVersion)
 	if input.NewSession {
 		remoteSessionID = ""
 	}
@@ -214,13 +218,14 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 	defer s.devices.FinishTask(task.ID)
 
 	payload := device.TaskExecutePayload{
-		ConversationID: input.ConversationID,
-		AgentID:        input.AgentID,
-		SessionID:      remoteSessionID,
-		WorkspaceID:    input.WorkspaceID,
-		WorkspacePath:  input.WorkspacePath,
-		Prompt:         prompt,
-		Files:          input.Files,
+		ConversationID:     input.ConversationID,
+		AgentID:            input.AgentID,
+		SessionID:          remoteSessionID,
+		WorkspaceID:        input.WorkspaceID,
+		WorkspacePath:      input.WorkspacePath,
+		Prompt:             prompt,
+		SystemPromptAppend: input.SystemPromptAppend,
+		Files:              input.Files,
 	}
 	if err := s.devices.SendToDevice(ctx, deviceID, device.MsgTaskExecute, task.ID, payload); err != nil {
 		_ = sink.Emit("error", map[string]string{"message": err.Error()})
@@ -305,7 +310,7 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 					return nil, errors.New("device returned an invalid session")
 				}
 				task.SessionID = payload.SessionID
-				s.setRemoteSession(input.ConversationID, task.DeviceID, input.AgentID, payload.SessionID)
+				s.setRemoteSessionForPromptVersion(input.ConversationID, task.DeviceID, input.AgentID, payload.SessionID, imSystemPromptVersion)
 				sessionReady = true
 				if !sessionTimer.Stop() {
 					select {
@@ -498,12 +503,18 @@ func appendStreamItems(messages *[]conversation.Message, agentID string, streamI
 	}
 }
 
-func buildIMPrompt(prefix string, message string, toolContext lumicron.ToolContext) string {
-	message = lumicron.WithAgentToolInstructionsForContext(message, toolContext)
-	if prefix == "" {
-		return message
+func buildIMSystemPromptAppend(prefix string, toolContext lumicron.ToolContext) string {
+	return joinIMSystemPromptAppend(prefix, lumicron.AgentToolInstructionsForContext(toolContext))
+}
+
+func joinIMSystemPromptAppend(parts ...string) string {
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			clean = append(clean, trimmed)
+		}
 	}
-	return prefix + "\n\n" + message
+	return strings.Join(clean, "\n\n")
 }
 
 func imMessageFiles(files []device.TaskFileInfo) []conversation.MessageFile {

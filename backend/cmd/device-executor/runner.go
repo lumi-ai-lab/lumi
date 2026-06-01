@@ -99,10 +99,18 @@ func (r *Runner) Execute(ctx context.Context, env Envelope) {
 			}
 		}
 
-		resp, err := proc.Request("session/new", map[string]any{
+		sessionNewParams := map[string]any{
 			"cwd":        cwd,
 			"mcpServers": MCPRecordsForBackend(backend),
-		})
+		}
+		if payload.SystemPromptAppend != "" {
+			sessionNewParams["_meta"] = map[string]any{
+				"systemPrompt": map[string]string{
+					"append": payload.SystemPromptAppend,
+				},
+			}
+		}
+		resp, err := proc.Request("session/new", sessionNewParams)
 		if err != nil {
 			r.sendTaskError(env.TaskID, err.Error())
 			return

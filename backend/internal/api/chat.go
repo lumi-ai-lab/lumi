@@ -1131,6 +1131,8 @@ func newTaskRunID() string {
 	return "task_" + strings.ReplaceAll(generateUUID(), "-", "")
 }
 
+const imSystemPromptVersion = 1
+
 func (s *Server) getRemoteSession(conversationID, deviceID, agentID string) string {
 	s.remoteSessionsMu.RLock()
 	defer s.remoteSessionsMu.RUnlock()
@@ -1144,6 +1146,33 @@ func (s *Server) getRemoteSession(conversationID, deviceID, agentID string) stri
 		return ""
 	}
 	return byAgent[agentID]
+}
+
+func (s *Server) getRemoteSessionForPromptVersion(conversationID, deviceID, agentID string, version int) string {
+	s.remoteSessionsMu.RLock()
+	defer s.remoteSessionsMu.RUnlock()
+
+	byDevice := s.remoteAgentSessions[conversationID]
+	if byDevice == nil {
+		return ""
+	}
+	byAgent := byDevice[deviceID]
+	if byAgent == nil {
+		return ""
+	}
+	sessionID := byAgent[agentID]
+	if sessionID == "" {
+		return ""
+	}
+	versionByDevice := s.remoteAgentSessionPromptVersions[conversationID]
+	if versionByDevice == nil {
+		return ""
+	}
+	versionByAgent := versionByDevice[deviceID]
+	if versionByAgent == nil || versionByAgent[agentID] != version {
+		return ""
+	}
+	return sessionID
 }
 
 func (s *Server) setRemoteSession(conversationID, deviceID, agentID, sessionID string) {
@@ -1163,6 +1192,42 @@ func (s *Server) setRemoteSession(conversationID, deviceID, agentID, sessionID s
 	byAgent[agentID] = sessionID
 }
 
+func (s *Server) setRemoteSessionForPromptVersion(conversationID, deviceID, agentID, sessionID string, version int) {
+	s.remoteSessionsMu.Lock()
+	defer s.remoteSessionsMu.Unlock()
+
+	if s.remoteAgentSessions == nil {
+		s.remoteAgentSessions = make(map[string]map[string]map[string]string)
+	}
+	if s.remoteAgentSessionPromptVersions == nil {
+		s.remoteAgentSessionPromptVersions = make(map[string]map[string]map[string]int)
+	}
+
+	byDevice := s.remoteAgentSessions[conversationID]
+	if byDevice == nil {
+		byDevice = make(map[string]map[string]string)
+		s.remoteAgentSessions[conversationID] = byDevice
+	}
+	byAgent := byDevice[deviceID]
+	if byAgent == nil {
+		byAgent = make(map[string]string)
+		byDevice[deviceID] = byAgent
+	}
+	byAgent[agentID] = sessionID
+
+	versionByDevice := s.remoteAgentSessionPromptVersions[conversationID]
+	if versionByDevice == nil {
+		versionByDevice = make(map[string]map[string]int)
+		s.remoteAgentSessionPromptVersions[conversationID] = versionByDevice
+	}
+	versionByAgent := versionByDevice[deviceID]
+	if versionByAgent == nil {
+		versionByAgent = make(map[string]int)
+		versionByDevice[deviceID] = versionByAgent
+	}
+	versionByAgent[agentID] = version
+}
+
 func (s *Server) clearRemoteSessionsForDevice(deviceID string) {
 	if deviceID == "" {
 		return
@@ -1177,6 +1242,12 @@ func (s *Server) clearRemoteSessionsForDevice(deviceID string) {
 		}
 		if len(byDevice) == 0 {
 			delete(s.remoteAgentSessions, conversationID)
+		}
+	}
+	for conversationID, byDevice := range s.remoteAgentSessionPromptVersions {
+		delete(byDevice, deviceID)
+		if len(byDevice) == 0 {
+			delete(s.remoteAgentSessionPromptVersions, conversationID)
 		}
 	}
 	s.remoteSessionsMu.Unlock()

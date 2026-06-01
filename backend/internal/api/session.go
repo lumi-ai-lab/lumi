@@ -80,6 +80,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		delete(s.agentSessions, id)
 		s.remoteSessionsMu.Lock()
 		delete(s.remoteAgentSessions, id)
+		delete(s.remoteAgentSessionPromptVersions, id)
 		s.remoteSessionsMu.Unlock()
 		writeJSON(w, map[string]any{"success": true})
 
@@ -99,6 +100,7 @@ func (s *Server) restoreConversation(session *storage.StoredSession) {
 	s.agentSessions[session.ID] = cloneAgentSessions(session.AgentSessions)
 	s.remoteSessionsMu.Lock()
 	s.remoteAgentSessions[session.ID] = cloneRemoteAgentSessions(session.RemoteAgentSessions)
+	delete(s.remoteAgentSessionPromptVersions, session.ID)
 	s.remoteSessionsMu.Unlock()
 }
 

@@ -27,21 +27,23 @@ type wechatChatRuntime struct {
 	conversations *conversation.Manager
 	mcpStore      *mcpstore.Store
 
-	agentSessions map[string]map[string]string
-	initialized   map[string]bool
-	cron          *lumicron.Service
-	mu            sync.Mutex
+	agentSessions              map[string]map[string]string
+	agentSessionPromptVersions map[string]map[string]int
+	initialized                map[string]bool
+	cron                       *lumicron.Service
+	mu                         sync.Mutex
 }
 
 func newWeChatChatRuntime(cfg *config.Config, cronService *lumicron.Service, mcp *mcpstore.Store) *wechatChatRuntime {
 	return &wechatChatRuntime{
-		config:        cfg,
-		agents:        agent.NewManager(cfg),
-		conversations: conversation.NewManager(),
-		mcpStore:      mcp,
-		agentSessions: make(map[string]map[string]string),
-		initialized:   make(map[string]bool),
-		cron:          cronService,
+		config:                     cfg,
+		agents:                     agent.NewManager(cfg),
+		conversations:              conversation.NewManager(),
+		mcpStore:                   mcp,
+		agentSessions:              make(map[string]map[string]string),
+		agentSessionPromptVersions: make(map[string]map[string]int),
+		initialized:                make(map[string]bool),
+		cron:                       cronService,
 	}
 }
 
@@ -55,6 +57,11 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 		return err
 	}
 	agentChanged := shouldInjectIMAgentContext(conv.Messages, input.AgentID)
+	if agentChanged {
+		if contextSummary := r.conversations.GetContextSummary(input.ConversationID, 10); contextSummary != "" {
+			input.PromptPrefix = joinIMSystemPromptAppend(input.PromptPrefix, contextSummary)
+		}
+	}
 	r.conversations.SetActiveAgent(input.ConversationID, input.AgentID)
 
 	agentProc, err := r.agents.Get(input.AgentID)
@@ -141,23 +148,6 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 	defer close(stopCancelWatcher)
 
 	promptText := input.Message
-	if agentChanged {
-		if contextSummary := r.conversations.GetContextSummary(input.ConversationID, 10); contextSummary != "" {
-			promptText = contextSummary + "User: " + promptText
-		}
-	}
-	promptText = lumicron.WithAgentToolInstructionsForContext(promptText, lumicron.ToolContext{
-		APIBase:        lumiAPIBaseForWorkspace(r.config, input.WorkspaceID),
-		Channel:        lumicron.ChannelWeChat,
-		ConversationID: input.ConversationID,
-		AgentID:        input.AgentID,
-		WorkspaceID:    input.WorkspaceID,
-		WorkspacePath:  input.WorkspacePath,
-		Target:         input.CronTarget,
-	})
-	if input.PromptPrefix != "" {
-		promptText = input.PromptPrefix + "\n\n" + promptText
-	}
 
 	response, err := agentProc.Request("session/prompt", map[string]any{
 		"sessionId": sessionID,
@@ -203,6 +193,12 @@ func (r *wechatChatRuntime) StopAgent(agentID string) error {
 		delete(sessions, agentID)
 		if len(sessions) == 0 {
 			delete(r.agentSessions, convID)
+		}
+	}
+	for convID, versions := range r.agentSessionPromptVersions {
+		delete(versions, agentID)
+		if len(versions) == 0 {
+			delete(r.agentSessionPromptVersions, convID)
 		}
 	}
 	return nil
@@ -258,6 +254,7 @@ func (r *wechatChatRuntime) restoreStoredConversation(session *storage.StoredSes
 
 	r.mu.Lock()
 	r.agentSessions[session.ID] = cloneAgentSessions(session.AgentSessions)
+	delete(r.agentSessionPromptVersions, session.ID)
 	r.mu.Unlock()
 	return conv
 }
@@ -328,7 +325,9 @@ func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, sink w
 	}
 	sessionID := ""
 	if !input.NewSession {
-		sessionID = sessions[input.AgentID]
+		if r.agentSessionPromptVersions[input.ConversationID][input.AgentID] == imSystemPromptVersion {
+			sessionID = sessions[input.AgentID]
+		}
 	}
 	r.mu.Unlock()
 	if sessionID != "" {
@@ -338,6 +337,19 @@ func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, sink w
 	result, err := r.agents.Request(input.AgentID, "session/new", map[string]any{
 		"cwd":        input.WorkspacePath,
 		"mcpServers": AgentMCPServersFor(r.config.Agents, input.AgentID, r.mcpStore),
+		"_meta": map[string]any{
+			"systemPrompt": map[string]string{
+				"append": buildIMSystemPromptAppend(input.PromptPrefix, lumicron.ToolContext{
+					APIBase:        lumiAPIBaseForWorkspace(r.config, input.WorkspaceID),
+					Channel:        lumicron.ChannelWeChat,
+					ConversationID: input.ConversationID,
+					AgentID:        input.AgentID,
+					WorkspaceID:    input.WorkspaceID,
+					WorkspacePath:  input.WorkspacePath,
+					Target:         input.CronTarget,
+				}),
+			},
+		},
 	})
 	if err != nil {
 		return "", false, r.emitError(sink, err.Error())
@@ -365,6 +377,10 @@ func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, sink w
 			r.agentSessions[input.ConversationID] = make(map[string]string)
 		}
 		r.agentSessions[input.ConversationID][input.AgentID] = sessionID
+		if r.agentSessionPromptVersions[input.ConversationID] == nil {
+			r.agentSessionPromptVersions[input.ConversationID] = make(map[string]int)
+		}
+		r.agentSessionPromptVersions[input.ConversationID][input.AgentID] = imSystemPromptVersion
 	}
 	r.mu.Unlock()
 	return sessionID, true, nil
