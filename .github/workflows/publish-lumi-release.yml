@@ -1,0 +1,138 @@
+name: Publish Lumi CLI Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-amd64
+            goos: windows
+            goarch: amd64
+            binary: lumi.exe
+            archive_ext: zip
+          - target: linux-amd64
+            goos: linux
+            goarch: amd64
+            binary: lumi
+            archive_ext: tar.gz
+          - target: darwin-amd64
+            goos: darwin
+            goarch: amd64
+            binary: lumi
+            archive_ext: tar.gz
+          - target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            binary: lumi
+            archive_ext: tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Resolve release tag
+        id: release
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="dev-${GITHUB_RUN_ID}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: |
+            backend/go.sum
+            gotray/go.sum
+
+      - name: Build binary
+        working-directory: backend
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist/release/${{ matrix.target }}
+          go build -buildvcs=false -trimpath -ldflags="-s -w" -o "dist/release/${{ matrix.target }}/${{ matrix.binary }}" ./cmd/lumi
+
+      - name: Package binary
+        working-directory: backend/dist/release
+        run: |
+          archive="lumi-${{ steps.release.outputs.tag }}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
+            (cd "${{ matrix.target }}" && zip -9 "../${archive}" "${{ matrix.binary }}")
+          else
+            tar -czf "${archive}" -C "${{ matrix.target }}" "${{ matrix.binary }}"
+          fi
+          shasum -a 256 "${archive}" > "${archive}.sha256"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumi-${{ steps.release.outputs.tag }}-${{ matrix.target }}
+          path: |
+            backend/dist/release/lumi-${{ steps.release.outputs.tag }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+            backend/dist/release/lumi-${{ steps.release.outputs.tag }}-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List release assets
+        run: find artifacts -type f | sort
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
