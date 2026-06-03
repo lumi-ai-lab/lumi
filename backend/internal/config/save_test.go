@@ -48,7 +48,7 @@ func TestLoadAndSavePublicServerURL(t *testing.T) {
 	}
 }
 
-func TestLoadAddsBuiltInQwenDefaultsToExistingConfig(t *testing.T) {
+func TestLoadAddsBuiltInAgentDefaultsToExistingConfig(t *testing.T) {
 	t.Parallel()
 
 	configPath := filepath.Join(t.TempDir(), "lumi.config.json")
@@ -87,6 +87,16 @@ func TestLoadAddsBuiltInQwenDefaultsToExistingConfig(t *testing.T) {
 	}
 	if cfg.Routing == nil || cfg.Routing.Keywords["@qwen"] != "qwen" {
 		t.Fatalf("routing keywords = %+v, want @qwen route", cfg.Routing)
+	}
+	pi := cfg.FindAgent("pi")
+	if pi == nil {
+		t.Fatal("FindAgent(pi) = nil, want built-in PI")
+	}
+	if pi.Command != "npx" || strings.Join(pi.Args, " ") != "-y pi-acp@0.0.27" {
+		t.Fatalf("pi config = %+v, want npx pi-acp@0.0.27", pi)
+	}
+	if cfg.Routing == nil || cfg.Routing.Keywords["@pi"] != "pi" {
+		t.Fatalf("routing keywords = %+v, want @pi route", cfg.Routing)
 	}
 	if !cfg.BuiltInDefaultsChanged() {
 		t.Fatal("BuiltInDefaultsChanged() = false, want true")
@@ -160,7 +170,9 @@ func TestSavePersistsBuiltInQwenDefaultsAndPreservesExistingFields(t *testing.T)
 		`"publicServerURL": "https://chat.example.com/lumi"`,
 		`"custom": "keep"`,
 		`"id": "qwen"`,
+		`"id": "pi"`,
 		`"@qwen": "qwen"`,
+		`"@pi": "pi"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("saved config missing %s:\n%s", want, text)

@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/pengmide/lumi/internal/config"
@@ -56,11 +58,21 @@ func (s *Server) resolveWorkspaceRuntime(ctx context.Context, workspaceID string
 		}, nil
 	}
 
+	workspacePath := workspaceConfig.Path
+	if info, err := os.Stat(workspacePath); err != nil {
+		if os.IsNotExist(err) {
+			return ResolvedRuntime{}, fmt.Errorf("workspace path does not exist: %s", workspacePath)
+		}
+		return ResolvedRuntime{}, fmt.Errorf("workspace path is not accessible: %s", workspacePath)
+	} else if !info.IsDir() {
+		return ResolvedRuntime{}, fmt.Errorf("workspace path is not a directory: %s", workspacePath)
+	}
+
 	return ResolvedRuntime{
 		Mode:          "local",
 		Workspace:     *workspaceConfig,
 		WorkspaceID:   workspaceConfig.ID,
-		WorkspacePath: workspaceConfig.Path,
+		WorkspacePath: workspacePath,
 		Ready:         true,
 		Status:        "running",
 	}, nil

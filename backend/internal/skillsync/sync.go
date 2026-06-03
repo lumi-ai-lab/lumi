@@ -25,8 +25,8 @@ func New(store *skillstore.Store, resolver Resolver) *Service {
 	return &Service{store: store, resolver: resolver}
 }
 
-// SyncLocal applies the current SSOT to ~/.claude/skills, ~/.codex/skills,
-// and ~/.qwen/skills using ModeAuto. Errors per-app are collected into the
+// SyncLocal applies the current SSOT to each supported agent's user-level
+// skills directory using ModeAuto. Errors per-app are collected into the
 // returned map; callers decide how to surface them.
 func (s *Service) SyncLocal(ctx context.Context) (map[string]Result, error) {
 	if s == nil || s.store == nil {
@@ -58,7 +58,7 @@ func (s *Service) SyncLocal(ctx context.Context) (map[string]Result, error) {
 
 // SyncToRoot applies the current SSOT to <root>/<dotApp>/skills paths. Used
 // by sandbox staging where root is the per-workspace credential mount dir.
-// dotAppDirs lets callers override default ".claude"/".codex"/".qwen" names
+// dotAppDirs lets callers override default dot-app directory names
 // (e.g., the sandbox claude-root layout uses literal ".claude").
 func (s *Service) SyncToRoot(ctx context.Context, root string, mode Mode, dotApp map[Backend]string) (map[string]Result, error) {
 	if s == nil || s.store == nil {
@@ -97,6 +97,8 @@ func defaultDotApp(b Backend) string {
 		return ".codex"
 	case agentmode.BackendQwen:
 		return ".qwen"
+	case agentmode.BackendPi:
+		return ".pi/agent"
 	default:
 		return ""
 	}

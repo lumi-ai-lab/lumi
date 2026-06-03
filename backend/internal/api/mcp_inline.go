@@ -82,7 +82,7 @@ type SyncSummary struct {
 	Remote map[string]string           `json:"remote,omitempty"`
 }
 
-// localSyncAll applies the current SSOT to ~/.claude.*, ~/.codex/*, ~/.qwen/*
+// localSyncAll applies the current SSOT to supported local agent config roots
 // using the in-process stores. Errors are aggregated into the summary so the
 // caller can return them in HTTP responses.
 func (s *Server) localSyncAll(ctx context.Context) SyncSummary {

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -114,5 +115,30 @@ func TestQwenDirsWalkParentsStopAtGitRootAndUseHomeFallback(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("QwenDirs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestPiDirsWalkParentsStopAtGitRootAndUseAgentHomeFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	repo := filepath.Join(home, "repo")
+	work := filepath.Join(repo, "apps", "demo")
+	if err := os.MkdirAll(filepath.Join(work, ".pi", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := PiDirs(work)
+	want := []string{
+		filepath.Join(work, ".pi", "skills"),
+		filepath.Join(repo, "apps", ".pi", "skills"),
+		filepath.Join(repo, ".pi", "skills"),
+		filepath.Join(home, ".pi", "agent", "skills"),
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("PiDirs() = %#v, want %#v", got, want)
 	}
 }

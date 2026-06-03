@@ -463,6 +463,7 @@ export interface DependencyItem {
     | "checking"
     | "ready"
     | "missing"
+    | "outdated"
     | "not_installed"
     | "installing"
     | "error"

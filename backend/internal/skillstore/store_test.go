@@ -124,3 +124,14 @@ func TestStoreLoadEmptyFile(t *testing.T) {
 		t.Fatalf("Load empty = %v", err)
 	}
 }
+
+func TestAppsHelpersIncludePi(t *testing.T) {
+	a := Apps{Claude: true, Qwen: true}
+	if !a.IsEnabledFor("claude") || a.IsEnabledFor("codex") || !a.IsEnabledFor("qwen") || a.IsEnabledFor("pi") {
+		t.Fatalf("IsEnabledFor mismatch: %+v", a)
+	}
+	a.SetEnabledFor("Pi", true)
+	if !a.Pi {
+		t.Fatalf("SetEnabledFor(pi) failed")
+	}
+}

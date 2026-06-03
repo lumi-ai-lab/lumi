@@ -75,7 +75,7 @@
 │   │                                                              │   │
 │   │   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐       │   │
 │   │   │   Agent 1   │   │   Agent 2   │   │   Agent N   │       │   │
-│   │   │ (claude)    │   │  (codex)    │   │   (qwen)    │       │   │
+│   │   │ (claude)    │   │  (codex)    │   │ (qwen/pi)   │       │   │
 │   │   └──────┬──────┘   └──────┬──────┘   └──────┬──────┘       │   │
 │   │          │                 │                 │               │   │
 │   └──────────┼─────────────────┼─────────────────┼───────────────┘   │
@@ -84,7 +84,7 @@
                │ JSON-RPC        │ JSON-RPC        │ JSON-RPC
                ▼                 ▼                 ▼
         ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-        │ claude-code │   │   codex     │   │ qwen-code   │
+        │ claude-code │   │   codex     │   │ qwen/pi     │
         │  process    │   │  process    │   │  process    │
         └─────────────┘   └─────────────┘   └─────────────┘
 ```
@@ -209,7 +209,7 @@ cd ../backend && go build -o lumi ./cmd/lumi
 --workspace /tmp/for-lumi \
 --kind sandbox \
 --agent claude \
---agents claude,codex,qwen \
+--agents claude,codex,qwen,pi \
 --bot-id {bot-id} \
 --bot-secret {bot-secret}
 ```
@@ -286,6 +286,16 @@ export CLAUDE_CODE_EXECUTABLE=/opt/nodejs/bin/claude
       "id": "qwen",
       "name": "Qwen Code",
       "sessionMode": "default"
+    },
+    {
+      "args": [
+        "-y",
+        "pi-acp@0.0.27"
+      ],
+      "command": "npx",
+      "id": "pi",
+      "name": "PI",
+      "sessionMode": "default"
     }
   ],
   "defaultAgent": "claude",
@@ -293,7 +303,8 @@ export CLAUDE_CODE_EXECUTABLE=/opt/nodejs/bin/claude
     "keywords": {
       "@claude": "claude",
       "@codex": "codex",
-      "@qwen": "qwen"
+      "@qwen": "qwen",
+      "@pi": "pi"
     },
     "meta": true
   }
@@ -302,8 +313,10 @@ export CLAUDE_CODE_EXECUTABLE=/opt/nodejs/bin/claude
 
 说明：
 
-- `claude` / `codex` / `qwen` 这类 agent 默认会继承当前 shell 环境变量；sample 配置里不再内置 Claude/Codex/Qwen 的占位鉴权信息。
+- `claude` / `codex` / `qwen` / `pi` 这类 agent 默认会继承当前 shell 环境变量；sample 配置里不再内置这些 agent 的占位鉴权信息。
 - 高级用户也可以把 Qwen 改为全局 CLI 启动：`"command": "qwen", "args": ["--acp"]`。若本机缺少 `qwen`，setup 会提示执行 `npm install -g @qwen-code/qwen-code`。
+- PI 通过 `pi-acp@0.0.27` 接入，并需要本机或远程设备可运行 `pi` CLI。若缺少 `pi`，setup 会提示执行 `npm install -g @earendil-works/pi-coding-agent`。sandbox 镜像使用 Node 22.22.2，满足当前 PI 的 Node `>=22.19.0` 要求；sandbox 会把宿主 `~/.pi` 复制为可写 runtime 目录并挂载到容器 `/root/.pi`。
+- 当前 `pi-acp` 会接收 ACP `mcpServers` 但不会把它们接入 PI，因此 Lumi MCP SSOT 暂不对 PI 生效；PI skills 会通过 `~/.pi/agent/skills`、`<workspace>/.pi/skills` 生效。
 - 如果在 Linux 服务器上使用 `@agentclientprotocol/claude-agent-acp@0.30.0`，并且系统的 `glibc` 版本不足以运行 SDK 自带的 native `claude` binary，需要在启动前设置 `CLAUDE_CODE_EXECUTABLE` 指向系统中可用的 `claude` 可执行文件。
 
 `publicServerURL` 是可选项。配置后，远程设备配对命令会优先使用这个地址；未配置时，系统会自动尝试使用当前服务机器的局域网 IP，而不是默认写成 `localhost`。

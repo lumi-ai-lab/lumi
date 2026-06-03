@@ -16,6 +16,7 @@ func TestHandleSkillsReturnsProjectsDirsAndSkills(t *testing.T) {
 	writeAPITestSkill(t, filepath.Join(workspace, ".claude", "skills", "pdf-helper"), "PDF Helper", "Use PDFs", "# PDF")
 	writeAPITestSkill(t, filepath.Join(workspace, ".agents", "skills", "codex-helper"), "Codex Helper", "Use Codex", "# Codex")
 	writeAPITestSkill(t, filepath.Join(workspace, ".qwen", "skills", "qwen-helper"), "Qwen Helper", "Use Qwen", "# Qwen")
+	writeAPITestSkill(t, filepath.Join(workspace, ".pi", "agent", "skills", "pi-helper"), "PI Helper", "Use PI", "# PI")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/skills", nil)
@@ -30,18 +31,18 @@ func TestHandleSkillsReturnsProjectsDirsAndSkills(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(payload.Projects) != 3 {
-		t.Fatalf("len(projects) = %d, want 3 (%+v)", len(payload.Projects), payload.Projects)
+	if len(payload.Projects) != 4 {
+		t.Fatalf("len(projects) = %d, want 4 (%+v)", len(payload.Projects), payload.Projects)
 	}
 	byAgent := make(map[string]projectSkills)
 	for _, project := range payload.Projects {
 		byAgent[project.AgentType] = project
 	}
-	if len(byAgent["claude"].Dirs) == 0 || len(byAgent["codex"].Dirs) == 0 || len(byAgent["qwen"].Dirs) == 0 {
+	if len(byAgent["claude"].Dirs) == 0 || len(byAgent["codex"].Dirs) == 0 || len(byAgent["qwen"].Dirs) == 0 || len(byAgent["pi"].Dirs) == 0 {
 		t.Fatalf("missing dirs in response: %+v", payload.Projects)
 	}
-	if byAgent["claude"].SkillCount != 1 || byAgent["codex"].SkillCount != 1 || byAgent["qwen"].SkillCount != 1 {
-		t.Fatalf("skill counts = claude:%d codex:%d qwen:%d", byAgent["claude"].SkillCount, byAgent["codex"].SkillCount, byAgent["qwen"].SkillCount)
+	if byAgent["claude"].SkillCount != 1 || byAgent["codex"].SkillCount != 1 || byAgent["qwen"].SkillCount != 1 || byAgent["pi"].SkillCount != 1 {
+		t.Fatalf("skill counts = claude:%d codex:%d qwen:%d pi:%d", byAgent["claude"].SkillCount, byAgent["codex"].SkillCount, byAgent["qwen"].SkillCount, byAgent["pi"].SkillCount)
 	}
 	if len(byAgent["claude"].Skills) != 1 || byAgent["claude"].Skills[0].Name != "pdf-helper" {
 		t.Fatalf("claude skills = %+v", byAgent["claude"].Skills)
@@ -51,6 +52,9 @@ func TestHandleSkillsReturnsProjectsDirsAndSkills(t *testing.T) {
 	}
 	if len(byAgent["qwen"].Skills) != 1 || byAgent["qwen"].Skills[0].Name != "qwen-helper" {
 		t.Fatalf("qwen skills = %+v", byAgent["qwen"].Skills)
+	}
+	if len(byAgent["pi"].Skills) != 1 || byAgent["pi"].Skills[0].Name != "pi-helper" {
+		t.Fatalf("pi skills = %+v", byAgent["pi"].Skills)
 	}
 }
 

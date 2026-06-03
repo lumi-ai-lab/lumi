@@ -31,7 +31,7 @@ func TestEnsureConfigFileCreatesExampleConfig(t *testing.T) {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 	text := string(data)
-	if !strings.Contains(text, `"id": "claude"`) || !strings.Contains(text, `"id": "codex"`) || !strings.Contains(text, `"id": "qwen"`) {
+	if !strings.Contains(text, `"id": "claude"`) || !strings.Contains(text, `"id": "codex"`) || !strings.Contains(text, `"id": "qwen"`) || !strings.Contains(text, `"id": "pi"`) {
 		t.Fatalf("saved config missing example agents: %s", text)
 	}
 	if !state.Exists {
@@ -95,7 +95,8 @@ func TestAgentIDsReturnsExistingAgents(t *testing.T) {
   "agents": [
     {"id": "claude", "name": "Claude Code", "command": "npx"},
     {"id": "codex", "name": "Codex CLI", "command": "npx"},
-    {"id": "qwen", "name": "Qwen Code", "command": "npx"}
+    {"id": "qwen", "name": "Qwen Code", "command": "npx"},
+    {"id": "pi", "name": "PI", "command": "npx"}
   ],
   "defaultAgent": "claude"
 }
@@ -110,8 +111,8 @@ func TestAgentIDsReturnsExistingAgents(t *testing.T) {
 	}
 
 	got := strings.Join(AgentIDs(state), ",")
-	if got != "claude,codex,qwen" {
-		t.Fatalf("AgentIDs() = %q, want %q", got, "claude,codex,qwen")
+	if got != "claude,codex,qwen,pi" {
+		t.Fatalf("AgentIDs() = %q, want %q", got, "claude,codex,qwen,pi")
 	}
 	if !HasAgent(state, "claude") {
 		t.Fatal("HasAgent(claude) = false, want true")
@@ -140,6 +141,7 @@ func TestPrepareRunUpsertsWorkspaceAndWecomConfig(t *testing.T) {
 		{ID: "claude", Name: "Claude Code", Command: "npx"},
 		{ID: "codex", Name: "Codex CLI", Command: "npx"},
 		{ID: "qwen", Name: "Qwen Code", Command: "npx"},
+		{ID: "pi", Name: "PI", Command: "npx"},
 	}
 	state.Config.DefaultAgent = "claude"
 	if err := saveConfig(state.Config, state.Path); err != nil {
@@ -171,8 +173,8 @@ func TestPrepareRunUpsertsWorkspaceAndWecomConfig(t *testing.T) {
 	if cfg.DefaultWorkspace != WorkspaceID {
 		t.Fatalf("default workspace = %q, want %q", cfg.DefaultWorkspace, WorkspaceID)
 	}
-	if got := strings.Join(ws.Agents, ","); got != "claude,codex,qwen" {
-		t.Fatalf("workspace agents = %q, want claude,codex,qwen", got)
+	if got := strings.Join(ws.Agents, ","); got != "claude,codex,qwen,pi" {
+		t.Fatalf("workspace agents = %q, want claude,codex,qwen,pi", got)
 	}
 	if cfg.PublicServerURL != "http://127.0.0.1:3344" {
 		t.Fatalf("public server URL = %q, want http://127.0.0.1:3344", cfg.PublicServerURL)

@@ -101,7 +101,7 @@ func TestPrepareChatRoutesQwenMention(t *testing.T) {
 	}
 }
 
-func TestServerWithMigratedConfigExposesQwenAgentAndSetup(t *testing.T) {
+func TestServerWithMigratedConfigExposesBuiltInAgentsAndSetup(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	cfg := &config.Config{
@@ -127,6 +127,9 @@ func TestServerWithMigratedConfigExposesQwenAgentAndSetup(t *testing.T) {
 	if !strings.Contains(agentsRec.Body.String(), `"id":"qwen"`) {
 		t.Fatalf("/api/agents missing qwen: %s", agentsRec.Body.String())
 	}
+	if !strings.Contains(agentsRec.Body.String(), `"id":"pi"`) || !strings.Contains(agentsRec.Body.String(), `"backend":"pi"`) {
+		t.Fatalf("/api/agents missing pi backend: %s", agentsRec.Body.String())
+	}
 
 	setupRec := httptest.NewRecorder()
 	setupReq := httptest.NewRequest(http.MethodGet, "/api/setup/status", nil)
@@ -136,6 +139,9 @@ func TestServerWithMigratedConfigExposesQwenAgentAndSetup(t *testing.T) {
 	}
 	if !strings.Contains(setupRec.Body.String(), `@qwen-code/qwen-code`) {
 		t.Fatalf("/api/setup/status missing qwen package: %s", setupRec.Body.String())
+	}
+	if !strings.Contains(setupRec.Body.String(), `pi-acp@0.0.27`) || !strings.Contains(setupRec.Body.String(), `"command":"pi"`) {
+		t.Fatalf("/api/setup/status missing pi setup items: %s", setupRec.Body.String())
 	}
 }
 
@@ -278,6 +284,35 @@ func TestHandleNotificationSeparatesThinkingFromAssistantText(t *testing.T) {
 	}
 	if len(events) != 4 || events[0] != "update" || events[1] != "thinking" || events[2] != "thinking" || events[3] != "update" {
 		t.Fatalf("events = %v, want update/thinking/thinking/update", events)
+	}
+}
+
+func TestHandleNotificationStripsPiStartupVersionBanner(t *testing.T) {
+	server := newTestAPIServer(t)
+	items := make([]streamItem, 0)
+	accumulator := &streamAccumulator{}
+	toolMap := make(map[string]int)
+	events := make([]any, 0)
+
+	send := func(event string, data any) {
+		if event == "update" {
+			events = append(events, data)
+		}
+	}
+
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pi v0.78.0\n---\n\n## Context\n- AGENTS.md\n"}}}`), send, &items, accumulator, toolMap, "pi")
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pi v0.78.0\n"}}}`), send, &items, accumulator, toolMap, "pi")
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pi v0.78.0\n"}}}`), send, &items, accumulator, toolMap, "claude")
+
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
+	}
+	if len(items) != 0 {
+		t.Fatalf("items before finalize = %+v, want no flushed stream items", items)
+	}
+	accumulator.Finish(&items)
+	if len(items) != 1 || items[0].Text != "## Context\n- AGENTS.md\npi v0.78.0\n" {
+		t.Fatalf("items = %+v, want pi banner stripped only for pi agent", items)
 	}
 }
 

@@ -55,6 +55,53 @@ func TestInjectLumiAgentEnv(t *testing.T) {
 	}
 }
 
+func TestInjectLumiAgentEnvSetsPiCommand(t *testing.T) {
+	binDir := t.TempDir()
+	piPath := filepath.Join(binDir, "pi")
+	if err := os.WriteFile(piPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin")
+	t.Setenv("PI_ACP_PI_COMMAND", "")
+
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{{
+			ID:  "pi",
+			Env: map[string]string{"PATH": "/usr/bin"},
+		}},
+	}
+
+	injectLumiAgentEnv(cfg, "pi", "", "", "")
+
+	agent := cfg.FindAgent("pi")
+	if agent == nil {
+		t.Fatal("agent not found")
+	}
+	if agent.Env["PI_ACP_PI_COMMAND"] != piPath {
+		t.Fatalf("PI_ACP_PI_COMMAND = %q, want %q", agent.Env["PI_ACP_PI_COMMAND"], piPath)
+	}
+	parts := filepath.SplitList(agent.Env["PATH"])
+	if len(parts) == 0 || parts[0] != binDir {
+		t.Fatalf("PATH = %q, want first entry %q", agent.Env["PATH"], binDir)
+	}
+}
+
+func TestInjectLumiAgentEnvKeepsExplicitPiCommand(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{{
+			ID:  "pi",
+			Env: map[string]string{"PI_ACP_PI_COMMAND": "/custom/pi"},
+		}},
+	}
+
+	injectLumiAgentEnv(cfg, "pi", "", "", "")
+
+	agent := cfg.FindAgent("pi")
+	if agent.Env["PI_ACP_PI_COMMAND"] != "/custom/pi" {
+		t.Fatalf("PI_ACP_PI_COMMAND = %q, want explicit value", agent.Env["PI_ACP_PI_COMMAND"])
+	}
+}
+
 func TestLumiAPIBaseForWorkspaceMapsSandboxToHostDockerInternal(t *testing.T) {
 	cfg := &config.Config{
 		PublicServerURL: "http://127.0.0.1:3000",

@@ -78,6 +78,7 @@ func appsToMap(a skillstore.Apps) map[string]bool {
 		"claude": a.Claude,
 		"codex":  a.Codex,
 		"qwen":   a.Qwen,
+		"pi":     a.Pi,
 	}
 }
 

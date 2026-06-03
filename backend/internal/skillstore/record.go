@@ -32,6 +32,7 @@ type Apps struct {
 	Claude bool `json:"claude"`
 	Codex  bool `json:"codex"`
 	Qwen   bool `json:"qwen"`
+	Pi     bool `json:"pi"`
 }
 
 // IsEnabledFor reports whether the skill is enabled for backend.
@@ -43,6 +44,8 @@ func (a Apps) IsEnabledFor(backend string) bool {
 		return a.Codex
 	case "qwen":
 		return a.Qwen
+	case "pi":
+		return a.Pi
 	default:
 		return false
 	}
@@ -57,6 +60,8 @@ func (a *Apps) SetEnabledFor(backend string, enabled bool) {
 		a.Codex = enabled
 	case "qwen":
 		a.Qwen = enabled
+	case "pi":
+		a.Pi = enabled
 	}
 }
 

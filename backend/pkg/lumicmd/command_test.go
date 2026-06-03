@@ -259,7 +259,7 @@ func TestWeChatRunUsesSavedCredentials(t *testing.T) {
 	if !stdoutContains(t, stdout, "WeChat: using saved account wx-saved") {
 		t.Fatalf("stdout missing saved account message")
 	}
-	if !stdoutContains(t, stdout, "Workspace agents: claude, codex, qwen") {
+	if !stdoutContains(t, stdout, "Workspace agents: claude, codex, qwen, pi") {
 		t.Fatalf("stdout missing workspace agents")
 	}
 }
@@ -698,6 +698,7 @@ func createCLIConfigWithAgent(t *testing.T, home string) string {
 		{ID: "claude", Name: "Claude Code", Command: "npx"},
 		{ID: "codex", Name: "Codex CLI", Command: "npx"},
 		{ID: "qwen", Name: "Qwen Code", Command: "npx"},
+		{ID: "pi", Name: "PI", Command: "npx"},
 	}
 	state.Config.DefaultAgent = "claude"
 	if err := state.Config.Save(state.Path); err != nil {

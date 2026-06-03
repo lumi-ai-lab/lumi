@@ -21,6 +21,7 @@ const statusIcon: Record<DependencyItem['status'], string> = {
   installing: '◐',
   missing: '✗',
   not_installed: '○',
+  outdated: '✗',
   ready: '✓',
 }
 
@@ -31,6 +32,7 @@ const statusClass: Record<DependencyItem['status'], string> = {
   installing: 'border-amber-500/30',
   missing: 'border-destructive/30',
   not_installed: 'border-border',
+  outdated: 'border-destructive/30',
   ready: 'border-emerald-500/30',
 }
 
@@ -41,6 +43,7 @@ const statusIconClass: Record<DependencyItem['status'], string> = {
   installing: 'animate-pulse text-amber-400',
   missing: 'text-destructive',
   not_installed: 'text-muted-foreground',
+  outdated: 'text-destructive',
   ready: 'text-emerald-400',
 }
 
@@ -62,7 +65,7 @@ export default function SetupPage() {
 
   const hasBlocked = acpPackages.some((item) => item.status === 'blocked')
   const hasMissing =
-    environment.some((item) => item.status === 'missing') ||
+    environment.some((item) => item.status === 'missing' || item.status === 'outdated') ||
     agents.some((item) => item.status === 'missing')
 
   useEffect(() => {
@@ -193,7 +196,7 @@ export default function SetupPage() {
               </div>
               <div className="max-w-[180px] text-right text-[11px] text-[rgb(var(--color-text-secondary))]">
                 <div>{item.message}</div>
-                {item.install && item.status === 'missing' ? (
+                {item.install && (item.status === 'missing' || item.status === 'outdated') ? (
                   isUrl(item.install) ? (
                     <a className="font-medium text-emerald-400" href={item.install} rel="noreferrer" target="_blank">
                       Download →

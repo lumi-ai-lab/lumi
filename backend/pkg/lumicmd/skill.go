@@ -51,7 +51,7 @@ func runSkillAdd(args []string, stdout *os.File) error {
 	srcRef := fs.String("ref", "", "Git source ref/branch")
 	srcSubdir := fs.String("subdir", "", "Subdirectory inside the source")
 	srcArchive := fs.String("archive-key", "", "Archive key in ~/.lumi/skills/_archives/")
-	apps := fs.String("apps", "all", "Comma-separated apps: claude,codex,qwen or 'all'")
+	apps := fs.String("apps", "all", "Comma-separated apps: claude,codex,qwen,pi or 'all'")
 	apiBase := fs.String("api-base", envOrDefault("LUMI_API_BASE", ""), "Lumi API base URL")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -178,6 +178,9 @@ func runSkillToggle(args []string, stdout *os.File, enable bool) error {
 	if skillApps.Qwen {
 		current.Apps.Qwen = enable
 	}
+	if skillApps.Pi {
+		current.Apps.Pi = enable
+	}
 	patch, _ := json.Marshal(map[string]any{"apps": current.Apps})
 	if err := apiRequestWithBase(*apiBase, http.MethodPatch, "/skills/store/"+id, nil, json.RawMessage(patch), nil); err != nil {
 		return fmt.Errorf("skill toggle: %w", err)
@@ -220,7 +223,7 @@ func getSkillRecord(apiBase, id string) (skillstore.Record, error) {
 
 func printSkillUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
-	fmt.Fprintf(stdout, "  %s skill add --name <name> --source-type local --path <dir> [--apps claude,codex,qwen]\n", programName)
+	fmt.Fprintf(stdout, "  %s skill add --name <name> --source-type local --path <dir> [--apps claude,codex,qwen,pi]\n", programName)
 	fmt.Fprintf(stdout, "  %s skill add --name <name> --source-type git --url <url> [--ref main] [--subdir <path>]\n", programName)
 	fmt.Fprintf(stdout, "  %s skill add --name <name> --source-type archive --archive-key <key>\n", programName)
 	fmt.Fprintf(stdout, "  %s skill list\n", programName)

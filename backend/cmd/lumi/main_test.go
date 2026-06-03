@@ -34,7 +34,7 @@ func TestRunRejectsUnknownBareCommand(t *testing.T) {
 	}
 }
 
-func TestPrintStartupInfoIncludesAutoAddedQwen(t *testing.T) {
+func TestPrintStartupInfoIncludesAutoAddedAgents(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{
 			{ID: "claude", Name: "Claude Code", Command: "npx"},
@@ -47,7 +47,14 @@ func TestPrintStartupInfoIncludesAutoAddedQwen(t *testing.T) {
 	output := captureStdout(t, func() {
 		printStartupInfo(cfg, "/tmp/lumi.config.json")
 	})
-	for _, want := range []string{"Qwen Code", "ID: qwen", "Command: npx -y @qwen-code/qwen-code --acp"} {
+	for _, want := range []string{
+		"Qwen Code",
+		"ID: qwen",
+		"Command: npx -y @qwen-code/qwen-code --acp",
+		"PI",
+		"ID: pi",
+		"Command: npx -y pi-acp@0.0.27",
+	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("startup output missing %q:\n%s", want, output)
 		}

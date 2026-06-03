@@ -26,9 +26,11 @@ func storeAppsFromCSV(csv string) (mcpstore.Apps, skillstore.Apps) {
 		case "qwen":
 			mcp.Qwen = true
 			skill.Qwen = true
+		case "pi":
+			skill.Pi = true
 		case "all", "*":
 			mcp = mcpstore.Apps{Claude: true, Codex: true, Qwen: true}
-			skill = skillstore.Apps{Claude: true, Codex: true, Qwen: true}
+			skill = skillstore.Apps{Claude: true, Codex: true, Qwen: true, Pi: true}
 		}
 	}
 	return mcp, skill
@@ -61,6 +63,9 @@ func skillAppsToCSV(a skillstore.Apps) string {
 	}
 	if a.Qwen {
 		parts = append(parts, "qwen")
+	}
+	if a.Pi {
+		parts = append(parts, "pi")
 	}
 	if len(parts) == 0 {
 		return "-"

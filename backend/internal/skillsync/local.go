@@ -34,13 +34,13 @@ type ConflictDescriptor struct {
 
 // ApplyOptions controls a single ApplyToDir invocation.
 type ApplyOptions struct {
-	AppDir   string                // absolute target like ~/.claude/skills
-	AppKey   string                // "claude" | "codex" | "qwen"
-	Records  []skillstore.Record   // full record set; ApplyToDir filters by AppKey + Scopes
-	Resolver Resolver              // source materializer
-	Mode     Mode                  // ModeAuto by default (symlink-first)
-	Scope    string                // "local" | "sandbox" | "remote"; controls record.Scopes filtering
-	Ctx      context.Context       // optional cancellation context (defaults to Background)
+	AppDir   string              // absolute target like ~/.claude/skills
+	AppKey   string              // "claude" | "codex" | "qwen" | "pi"
+	Records  []skillstore.Record // full record set; ApplyToDir filters by AppKey + Scopes
+	Resolver Resolver            // source materializer
+	Mode     Mode                // ModeAuto by default (symlink-first)
+	Scope    string              // "local" | "sandbox" | "remote"; controls record.Scopes filtering
+	Ctx      context.Context     // optional cancellation context (defaults to Background)
 }
 
 // Result captures what actually changed.

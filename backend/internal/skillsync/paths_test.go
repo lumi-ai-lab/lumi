@@ -17,6 +17,7 @@ func TestUserSkillDir(t *testing.T) {
 		agentmode.BackendClaude: filepath.Join(home, ".claude", "skills"),
 		agentmode.BackendCodex:  filepath.Join(home, ".codex", "skills"),
 		agentmode.BackendQwen:   filepath.Join(home, ".qwen", "skills"),
+		agentmode.BackendPi:     filepath.Join(home, ".pi", "agent", "skills"),
 	}
 	for backend, want := range cases {
 		got, err := UserSkillDir(home, backend)
@@ -56,7 +57,7 @@ func TestUserSkillDirFallsBackToHome(t *testing.T) {
 }
 
 func TestAppKey(t *testing.T) {
-	if AppKey(agentmode.BackendClaude) != "claude" || AppKey(agentmode.BackendCodex) != "codex" || AppKey(agentmode.BackendQwen) != "qwen" {
+	if AppKey(agentmode.BackendClaude) != "claude" || AppKey(agentmode.BackendCodex) != "codex" || AppKey(agentmode.BackendQwen) != "qwen" || AppKey(agentmode.BackendPi) != "pi" {
 		t.Fatal("AppKey mismatch")
 	}
 	if AppKey(agentmode.BackendUnknown) != "" {
@@ -66,7 +67,7 @@ func TestAppKey(t *testing.T) {
 
 func TestSupportedBackendsCover(t *testing.T) {
 	got := SupportedBackends()
-	want := []Backend{agentmode.BackendClaude, agentmode.BackendCodex, agentmode.BackendQwen}
+	want := []Backend{agentmode.BackendClaude, agentmode.BackendCodex, agentmode.BackendQwen, agentmode.BackendPi}
 	if len(got) != len(want) {
 		t.Fatalf("len mismatch: %d vs %d", len(got), len(want))
 	}

@@ -195,9 +195,15 @@ func DefaultConfig() *Config {
 				Command: "npx",
 				Args:    []string{"-y", "@qwen-code/qwen-code", "--acp"},
 			},
+			{
+				ID:      "pi",
+				Name:    "PI",
+				Command: "npx",
+				Args:    []string{"-y", "pi-acp@0.0.27"},
+			},
 		},
 		DefaultAgent: "claude",
-		Routing:      &RoutingConfig{Keywords: map[string]string{"@qwen": "qwen"}, Meta: true},
+		Routing:      &RoutingConfig{Keywords: map[string]string{"@qwen": "qwen", "@pi": "pi"}, Meta: true},
 		Workspaces: []WorkspaceConfig{
 			{ID: "default", Name: "Default", Path: cwd},
 		},
@@ -219,6 +225,10 @@ func (c *Config) EnsureBuiltInDefaults() bool {
 		c.Agents = append(c.Agents, defaultQwenAgent())
 		changed = true
 	}
+	if c.FindAgent("pi") == nil {
+		c.Agents = append(c.Agents, defaultPiAgent())
+		changed = true
+	}
 	if c.Routing == nil {
 		c.Routing = &RoutingConfig{}
 		changed = true
@@ -231,6 +241,10 @@ func (c *Config) EnsureBuiltInDefaults() bool {
 		c.Routing.Keywords["@qwen"] = "qwen"
 		changed = true
 	}
+	if c.Routing.Keywords["@pi"] != "pi" {
+		c.Routing.Keywords["@pi"] = "pi"
+		changed = true
+	}
 	return changed
 }
 
@@ -240,6 +254,16 @@ func defaultQwenAgent() AgentConfig {
 		Name:        "Qwen Code",
 		Command:     "npx",
 		Args:        []string{"-y", "@qwen-code/qwen-code", "--acp"},
+		SessionMode: "default",
+	}
+}
+
+func defaultPiAgent() AgentConfig {
+	return AgentConfig{
+		ID:          "pi",
+		Name:        "PI",
+		Command:     "npx",
+		Args:        []string{"-y", "pi-acp@0.0.27"},
 		SessionMode: "default",
 	}
 }

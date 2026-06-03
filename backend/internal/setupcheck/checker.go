@@ -35,6 +35,7 @@ var installInstructions = map[string]string{
 	"claude": "npm install -g @anthropic-ai/claude-code",
 	"codex":  "npm install -g @openai/codex",
 	"qwen":   "npm install -g @qwen-code/qwen-code",
+	"pi":     "npm install -g @earendil-works/pi-coding-agent",
 }
 
 var acpToAgentCommand = map[string]struct {
@@ -46,6 +47,7 @@ var acpToAgentCommand = map[string]struct {
 	"@zed-industries/claude-code-acp":       {Name: "Claude", Command: "claude"},
 	"@zed-industries/codex-acp":             {Name: "Codex", Command: "codex"},
 	"@qwen-code/qwen-code":                  {Name: "Qwen Code", Command: "qwen"},
+	"pi-acp":                                {Name: "PI", Command: "pi"},
 }
 
 // InitialStatus builds the initial "checking" state for the provided agents.
@@ -53,6 +55,7 @@ func InitialStatus(agents []config.AgentConfig) SetupStatus {
 	status := SetupStatus{
 		Ready: false,
 		Environment: []DependencyItem{
+			{Name: "node", Command: "node", Status: "checking", Message: "Checking..."},
 			{Name: "npm", Command: "npm", Status: "checking", Message: "Checking..."},
 			{Name: "npx", Command: "npx", Status: "checking", Message: "Checking..."},
 		},
@@ -117,17 +120,23 @@ func Check(agents []config.AgentConfig) SetupStatus {
 	npmReady := commandExists("npm")
 	npxReady := commandExists("npx")
 
+	piConfigured := requiresPi(agents)
 	for i := range status.Environment {
 		item := &status.Environment[i]
-		if commandExists(item.Command) {
-			item.Status = "ready"
-			item.Message = "Installed"
+		if !commandExists(item.Command) {
+			item.Status = "missing"
+			item.Message = "Not found"
+			item.Install = installInstructions[item.Command]
 			continue
 		}
-
-		item.Status = "missing"
-		item.Message = "Not found"
-		item.Install = installInstructions[item.Command]
+		if item.Command == "node" && piConfigured && !nodeSatisfies("22.19.0") {
+			item.Status = "outdated"
+			item.Message = "Requires Node.js >=22.19.0 for PI"
+			item.Install = installInstructions[item.Command]
+			continue
+		}
+		item.Status = "ready"
+		item.Message = "Installed"
 	}
 
 	allAgentsReady := true
@@ -164,7 +173,7 @@ func Check(agents []config.AgentConfig) SetupStatus {
 		}
 	}
 
-	status.Ready = npmReady && npxReady && allAgentsReady && allACPReady
+	status.Ready = environmentReady(status.Environment) && allAgentsReady && allACPReady
 	return status
 }
 
@@ -209,6 +218,59 @@ func normalizePackageName(packageSpec string) string {
 func commandExists(command string) bool {
 	_, err := exec.LookPath(command)
 	return err == nil
+}
+
+func requiresPi(agents []config.AgentConfig) bool {
+	for _, agentCfg := range agents {
+		if normalizePackageName(extractPackageName(agentCfg.Command, agentCfg.Args)) == "pi-acp" {
+			return true
+		}
+		if strings.ToLower(strings.TrimSpace(agentCfg.ID)) == "pi" {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeSatisfies(minVersion string) bool {
+	cmd := exec.Command("node", "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return compareSemver(strings.TrimSpace(string(output)), minVersion) >= 0
+}
+
+func compareSemver(actual, minimum string) int {
+	actual = strings.TrimPrefix(strings.TrimSpace(actual), "v")
+	minimum = strings.TrimPrefix(strings.TrimSpace(minimum), "v")
+	actualParts := strings.Split(actual, ".")
+	minParts := strings.Split(minimum, ".")
+	for i := 0; i < 3; i++ {
+		a := semverPart(actualParts, i)
+		m := semverPart(minParts, i)
+		if a > m {
+			return 1
+		}
+		if a < m {
+			return -1
+		}
+	}
+	return 0
+}
+
+func semverPart(parts []string, index int) int {
+	if index >= len(parts) {
+		return 0
+	}
+	value := 0
+	for _, r := range parts[index] {
+		if r < '0' || r > '9' {
+			break
+		}
+		value = value*10 + int(r-'0')
+	}
+	return value
 }
 
 func isPackageCached(packageName string) bool {

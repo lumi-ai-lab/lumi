@@ -24,6 +24,8 @@ func AppKey(b Backend) string {
 		return "codex"
 	case agentmode.BackendQwen:
 		return "qwen"
+	case agentmode.BackendPi:
+		return "pi"
 	default:
 		return ""
 	}
@@ -31,7 +33,7 @@ func AppKey(b Backend) string {
 
 // SupportedBackends is the ordered list of backends skillsync writes to.
 func SupportedBackends() []Backend {
-	return []Backend{agentmode.BackendClaude, agentmode.BackendCodex, agentmode.BackendQwen}
+	return []Backend{agentmode.BackendClaude, agentmode.BackendCodex, agentmode.BackendQwen, agentmode.BackendPi}
 }
 
 // UserSkillDir returns the user-level skills directory for backend, anchored
@@ -59,6 +61,8 @@ func UserSkillDir(home string, b Backend) (string, error) {
 		return filepath.Join(dir, "skills"), nil
 	case agentmode.BackendQwen:
 		return filepath.Join(home, ".qwen", "skills"), nil
+	case agentmode.BackendPi:
+		return filepath.Join(home, ".pi", "agent", "skills"), nil
 	default:
 		return "", nil
 	}

@@ -2,10 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"regexp"
+	"strings"
 
 	"github.com/pengmide/lumi/internal/conversation"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 )
+
+var piStartupVersionLine = regexp.MustCompile(`^pi v\d+\.\d+\.\d+(?:[-+][^\s]+)?$`)
 
 type sessionUpdate struct {
 	SessionUpdate     string             `json:"sessionUpdate"`
@@ -69,6 +73,12 @@ func (s *Server) handleNotification(
 	switch update.SessionUpdate {
 	case "agent_message_chunk":
 		if text := extractTextContent(update.Content); text != "" {
+			if strings.EqualFold(agentID, "pi") {
+				text = stripPiStartupBanner(text)
+				if text == "" {
+					return
+				}
+			}
 			visibleText, thinkingItems := accumulator.AddMessageChunk(text, streamItems)
 			for _, item := range thinkingItems {
 				sendEvent("thinking", item.Thinking)
@@ -238,6 +248,36 @@ func extractTextContent(content any) string {
 	}
 
 	return ""
+}
+
+func stripPiStartupBanner(text string) string {
+	for {
+		remaining := strings.TrimLeft(text, "\r\n")
+		line, rest := splitFirstLine(remaining)
+		if !piStartupVersionLine.MatchString(strings.TrimSpace(line)) {
+			return text
+		}
+
+		text = trimPiStartupSeparator(rest)
+		if strings.TrimSpace(text) == "" {
+			return ""
+		}
+	}
+}
+
+func splitFirstLine(text string) (string, string) {
+	if idx := strings.IndexByte(text, '\n'); idx >= 0 {
+		return strings.TrimSuffix(text[:idx], "\r"), text[idx+1:]
+	}
+	return strings.TrimSuffix(text, "\r"), ""
+}
+
+func trimPiStartupSeparator(text string) string {
+	line, rest := splitFirstLine(text)
+	if strings.TrimSpace(line) != "---" {
+		return text
+	}
+	return strings.TrimLeft(rest, "\r\n")
 }
 
 func extractInput(rawInput map[string]any) string {

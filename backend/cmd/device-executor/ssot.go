@@ -14,7 +14,7 @@ import (
 
 // handleSSOTSync writes the pushed SSOT state into the executor host's user
 // configuration directories: ~/.claude/skills, ~/.codex/skills, ~/.qwen/skills,
-// plus ~/.claude.json, ~/.codex/config.toml, and ~/.qwen/settings.json. The
+// ~/.pi/agent/skills, plus ~/.claude.json, ~/.codex/config.toml, and ~/.qwen/settings.json. The
 // payload's Reset flag, when true, removes lockfile-tracked entries that
 // are not present in the new payload before applying.
 func (c *Client) handleSSOTSync(_ context.Context, env Envelope) {

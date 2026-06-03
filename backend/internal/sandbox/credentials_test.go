@@ -212,6 +212,78 @@ func TestResolveCredentialMountsSkipsQwenHomeWithoutQwenFiles(t *testing.T) {
 	}
 }
 
+func TestResolveCredentialMountsUsesWritablePiHome(t *testing.T) {
+	home := t.TempDir()
+	runtimeDir := t.TempDir()
+
+	piDir := filepath.Join(home, ".pi")
+	if err := os.MkdirAll(filepath.Join(piDir, "agent", "sessions"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(.pi) error = %v", err)
+	}
+	settingsPath := filepath.Join(piDir, "agent", "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"quietStartup":true}`), 0o600); err != nil {
+		t.Fatalf("WriteFile(settings.json) error = %v", err)
+	}
+	sessionPath := filepath.Join(piDir, "agent", "sessions", "session.json")
+	if err := os.WriteFile(sessionPath, []byte(`{"id":"s1"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile(session.json) error = %v", err)
+	}
+	externalPromptPath := filepath.Join(home, "prompt.md")
+	if err := os.WriteFile(externalPromptPath, []byte("# Prompt"), 0o600); err != nil {
+		t.Fatalf("WriteFile(prompt.md) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(piDir, "agent", "prompts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(prompts) error = %v", err)
+	}
+	if err := os.Symlink(externalPromptPath, filepath.Join(piDir, "agent", "prompts", "prompt.md")); err != nil {
+		t.Fatalf("Symlink(prompt.md) error = %v", err)
+	}
+
+	mounts := resolveCredentialMountsFromHome(home, runtimeDir)
+
+	piMount := findCredentialMount(mounts, "/root/.pi")
+	if piMount == nil {
+		t.Fatalf("pi home mount not found in %#v", mounts)
+	}
+	if piMount.ReadOnly {
+		t.Fatalf("pi home mount ReadOnly = true, want false")
+	}
+	if piMount.Source == piDir {
+		t.Fatalf("pi home mount source points at host dir, want runtime copy")
+	}
+
+	data, err := os.ReadFile(filepath.Join(piMount.Source, "agent", "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(runtime pi settings) error = %v", err)
+	}
+	if string(data) != `{"quietStartup":true}` {
+		t.Fatalf("runtime pi settings = %q", data)
+	}
+	data, err = os.ReadFile(filepath.Join(piMount.Source, "agent", "sessions", "session.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(runtime pi session) error = %v", err)
+	}
+	if string(data) != `{"id":"s1"}` {
+		t.Fatalf("runtime pi session = %q", data)
+	}
+	if _, err := os.Lstat(filepath.Join(piMount.Source, "agent", "prompts", "prompt.md")); err != nil {
+		t.Fatalf("Lstat(runtime pi prompt) error = %v", err)
+	} else if info, _ := os.Lstat(filepath.Join(piMount.Source, "agent", "prompts", "prompt.md")); info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("runtime pi prompt is symlink, want regular file")
+	}
+}
+
+func TestResolveCredentialMountsSkipsPiHomeWithoutPiDir(t *testing.T) {
+	home := t.TempDir()
+	runtimeDir := t.TempDir()
+
+	mounts := resolveCredentialMountsFromHome(home, runtimeDir)
+
+	if mount := findCredentialMount(mounts, "/root/.pi"); mount != nil {
+		t.Fatalf("pi home mount = %#v, want nil", mount)
+	}
+}
+
 func TestSanitizeAgentsForCredentialMountsRemovesMountedClaudeCredentialEnv(t *testing.T) {
 	codexHome := t.TempDir()
 	if err := os.WriteFile(filepath.Join(codexHome, "auth.json"), []byte(`{"token":"test"}`), 0o600); err != nil {

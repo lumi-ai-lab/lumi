@@ -51,7 +51,7 @@ function SetupSection({
               </div>
               <div className={styles.itemStatus}>
                 <span>{item.message}</span>
-                {item.install && item.status === 'missing' ? (
+                {item.install && (item.status === 'missing' || item.status === 'outdated') ? (
                   isUrl(item.install) ? (
                     <a
                       className={styles.installLink}
@@ -244,7 +244,7 @@ export function SetupPage() {
 
   const hasBlocked = acpPackages.some((item) => item.status === 'blocked')
   const hasMissing =
-    environment.some((item) => item.status === 'missing') ||
+    environment.some((item) => item.status === 'missing' || item.status === 'outdated') ||
     agents.some((item) => item.status === 'missing')
 
   return (

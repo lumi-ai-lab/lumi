@@ -6,6 +6,7 @@ export interface SetupDependencyItem {
     | 'checking'
     | 'ready'
     | 'missing'
+    | 'outdated'
     | 'not_installed'
     | 'installing'
     | 'error'

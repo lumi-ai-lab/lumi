@@ -34,6 +34,7 @@ var agentNpmPackages = map[string]string{
 	"claude": "@anthropic-ai/claude-code",
 	"codex":  "@openai/codex",
 	"qwen":   "@qwen-code/qwen-code",
+	"pi":     "@earendil-works/pi-coding-agent",
 }
 
 var npmRegistries = []struct {

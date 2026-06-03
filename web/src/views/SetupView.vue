@@ -8,7 +8,7 @@ interface DependencyItem {
   name: string
   command?: string
   package?: string
-  status: 'checking' | 'ready' | 'missing' | 'not_installed' | 'installing' | 'error' | 'blocked'
+  status: 'checking' | 'ready' | 'missing' | 'outdated' | 'not_installed' | 'installing' | 'error' | 'blocked'
   message?: string
   install?: string
 }
@@ -33,7 +33,7 @@ const hasBlocked = computed(() => {
 })
 
 const hasMissing = computed(() => {
-  return environment.value.some(e => e.status === 'missing') ||
+  return environment.value.some(e => e.status === 'missing' || e.status === 'outdated') ||
          agents.value.some(a => a.status === 'missing')
 })
 
@@ -150,6 +150,7 @@ function getStatusIcon(status: string) {
     case 'installing':
     case 'checking': return '◐'
     case 'error':
+    case 'outdated':
     case 'missing': return '✗'
     case 'blocked': return '⊘'
     default: return '○'
@@ -160,6 +161,7 @@ function getStatusClass(status: string) {
   switch (status) {
     case 'ready': return 'success'
     case 'error':
+    case 'outdated':
     case 'missing': return 'error'
     case 'installing':
     case 'checking': return 'pending'
@@ -198,7 +200,7 @@ function isUrl(str: string) {
             </div>
             <div class="item-status">
               <span>{{ item.message }}</span>
-              <template v-if="item.install && item.status === 'missing'">
+              <template v-if="item.install && (item.status === 'missing' || item.status === 'outdated')">
                 <a v-if="isUrl(item.install)" :href="item.install" target="_blank" class="install-link">
                   Download Node.js →
                 </a>
@@ -226,7 +228,7 @@ function isUrl(str: string) {
             </div>
             <div class="item-status">
               <span>{{ item.message }}</span>
-              <template v-if="item.install && item.status === 'missing'">
+              <template v-if="item.install && (item.status === 'missing' || item.status === 'outdated')">
                 <a v-if="isUrl(item.install)" :href="item.install" target="_blank" class="install-link">
                   Download →
                 </a>

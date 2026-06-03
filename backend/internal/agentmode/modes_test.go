@@ -82,6 +82,46 @@ func TestDetectBackendRecognizesQwen(t *testing.T) {
 	}
 }
 
+func TestDetectBackendRecognizesPi(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		id      string
+		command string
+		args    []string
+	}{
+		{name: "id", id: "pi", command: "npx"},
+		{name: "package arg", command: "npx", args: []string{"-y", "pi-acp@0.0.27"}},
+		{name: "global command", command: "pi-acp"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := DetectBackend(tt.id, tt.command, tt.args); got != BackendPi {
+				t.Fatalf("DetectBackend() = %q, want %q", got, BackendPi)
+			}
+		})
+	}
+}
+
+func TestPiUsesDefaultModeWithoutACPSetMode(t *testing.T) {
+	t.Parallel()
+
+	if got := ResolveSessionMode(BackendPi, "", "bypass"); got != ModeDefault {
+		t.Fatalf("ResolveSessionMode(BackendPi) = %q, want default", got)
+	}
+	if got := AvailableModes(BackendPi); len(got) != 0 {
+		t.Fatalf("AvailableModes(BackendPi) = %+v, want empty", got)
+	}
+	if ShouldSetACPMode(BackendPi, "high") {
+		t.Fatal("ShouldSetACPMode(BackendPi, high) = true, want false")
+	}
+}
+
 func TestAvailableModesForQwen(t *testing.T) {
 	t.Parallel()
 

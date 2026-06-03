@@ -3,6 +3,7 @@ package api
 import (
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -33,6 +34,12 @@ func injectLumiAgentEnv(cfg *config.Config, agentID string, apiBase string, work
 		if cliPath := resolveLumiCLIPath(); cliPath != "" {
 			agent.Env["LUMI_CLI"] = cliPath
 			prependAgentPath(agent.Env, filepath.Dir(cliPath))
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(agent.ID), "pi") && strings.TrimSpace(agent.Env["PI_ACP_PI_COMMAND"]) == "" {
+		if piPath := resolvePiCLIPath(); piPath != "" {
+			agent.Env["PI_ACP_PI_COMMAND"] = piPath
+			prependAgentPath(agent.Env, filepath.Dir(piPath))
 		}
 	}
 }
@@ -97,6 +104,21 @@ func resolveLumiCLIPath() string {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate
 		}
+	}
+	return ""
+}
+
+func resolvePiCLIPath() string {
+	if configured := strings.TrimSpace(os.Getenv("PI_ACP_PI_COMMAND")); configured != "" {
+		if info, err := os.Stat(configured); err == nil && !info.IsDir() {
+			return configured
+		}
+	}
+	if found, err := exec.LookPath("pi"); err == nil {
+		if abs, absErr := filepath.Abs(found); absErr == nil {
+			return abs
+		}
+		return found
 	}
 	return ""
 }

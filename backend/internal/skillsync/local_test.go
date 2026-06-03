@@ -68,6 +68,29 @@ func TestApplyToDirSymlink(t *testing.T) {
 	}
 }
 
+func TestBuildRemoteSkillsIncludesPiAppFlag(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "skill-1")
+	writeSkill(t, src)
+	store := skillstore.New(filepath.Join(t.TempDir(), "skills.json"), "", "")
+	rec, err := store.Upsert(skillstore.Record{
+		Name:   "pi-helper",
+		Source: skillstore.Source{Type: skillstore.SourceLocal, Path: src},
+		Apps:   skillstore.Apps{Pi: true},
+		Scopes: skillstore.DefaultScopes(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blobs, errs := BuildRemoteSkills(context.Background(), store, &fakeResolver{paths: map[string]string{rec.ID: src}})
+	if len(errs) != 0 {
+		t.Fatalf("BuildRemoteSkills errors = %v", errs)
+	}
+	if len(blobs) != 1 || !blobs[0].Apps["pi"] {
+		t.Fatalf("remote blobs = %+v, want pi app flag", blobs)
+	}
+}
+
 func TestApplyToDirRemovesDisabled(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "skill-1")
 	writeSkill(t, src)
@@ -81,7 +104,7 @@ func TestApplyToDirRemovesDisabled(t *testing.T) {
 	}
 	if _, err := ApplyToDir(ApplyOptions{
 		AppDir: target, AppKey: "claude", Scope: "local",
-		Records: []skillstore.Record{rec},
+		Records:  []skillstore.Record{rec},
 		Resolver: &fakeResolver{paths: map[string]string{"skill-1": src}},
 	}); err != nil {
 		t.Fatal(err)
@@ -91,7 +114,7 @@ func TestApplyToDirRemovesDisabled(t *testing.T) {
 	rec.Apps.Claude = false
 	res, err := ApplyToDir(ApplyOptions{
 		AppDir: target, AppKey: "claude", Scope: "local",
-		Records: []skillstore.Record{rec},
+		Records:  []skillstore.Record{rec},
 		Resolver: &fakeResolver{paths: map[string]string{"skill-1": src}},
 	})
 	if err != nil {

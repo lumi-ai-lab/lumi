@@ -21,6 +21,8 @@ func BuildDirs(workspacePath string, agent config.AgentConfig) []string {
 		return CodexDirs(absDir, "")
 	case agentmode.BackendQwen:
 		return QwenDirs(absDir)
+	case agentmode.BackendPi:
+		return PiDirs(absDir)
 	default:
 		return nil
 	}
@@ -69,6 +71,15 @@ func QwenDirs(workDir string) []string {
 		return projectDirs
 	}
 	return uniqueDirs(append(projectDirs, filepath.Join(home, ".qwen", "skills")))
+}
+
+func PiDirs(workDir string) []string {
+	home, _ := os.UserHomeDir()
+	projectDirs := walkUpSkillDirs(workDir, home, ".pi")
+	if home == "" {
+		return projectDirs
+	}
+	return uniqueDirs(append(projectDirs, filepath.Join(home, ".pi", "agent", "skills")))
 }
 
 func walkUpClaudeSkillDirs(workDir, home string) []string {

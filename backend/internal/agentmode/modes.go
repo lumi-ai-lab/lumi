@@ -13,6 +13,7 @@ const (
 	BackendClaude  Backend = "claude"
 	BackendCodex   Backend = "codex"
 	BackendQwen    Backend = "qwen"
+	BackendPi      Backend = "pi"
 )
 
 const (
@@ -76,12 +77,16 @@ func DetectBackend(id, command string, args []string) Backend {
 		return BackendCodex
 	case strings.Contains(commandLower, "claude-agent-acp"), strings.Contains(haystack, "claude-agent-acp"):
 		return BackendClaude
+	case strings.Contains(commandLower, "pi-acp"), strings.Contains(haystack, "pi-acp"):
+		return BackendPi
 	case idLower == "codex":
 		return BackendCodex
 	case idLower == "claude":
 		return BackendClaude
 	case idLower == "qwen":
 		return BackendQwen
+	case idLower == "pi":
+		return BackendPi
 	default:
 		return BackendUnknown
 	}

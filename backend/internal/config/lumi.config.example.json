@@ -31,6 +31,16 @@
       "id": "qwen",
       "name": "Qwen Code",
       "sessionMode": "default"
+    },
+    {
+      "args": [
+        "-y",
+        "pi-acp@0.0.27"
+      ],
+      "command": "npx",
+      "id": "pi",
+      "name": "PI",
+      "sessionMode": "default"
     }
   ],
   "defaultAgent": "claude",
@@ -38,7 +48,8 @@
     "keywords": {
       "@claude": "claude",
       "@codex": "codex",
-      "@qwen": "qwen"
+      "@qwen": "qwen",
+      "@pi": "pi"
     },
     "meta": true
   }  

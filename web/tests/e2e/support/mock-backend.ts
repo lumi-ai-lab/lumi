@@ -411,6 +411,18 @@ export const DEFAULT_AGENTS: MockAgent[] = [
     ],
     commands: [],
   },
+  {
+    id: 'pi',
+    name: 'PI',
+    backend: 'pi',
+    permissionMode: 'default',
+    sessionMode: 'default',
+    command: 'npx',
+    args: ['-y', 'pi-acp@0.0.27'],
+    env: {},
+    availableModes: [],
+    commands: [],
+  },
 ]
 
 export const DEFAULT_WORKSPACES: MockWorkspace[] = [
@@ -1408,11 +1420,23 @@ function createMockBackendState(options: MockBackendOptions): MockBackendState {
               status: 'ready',
               message: 'Installed',
             },
+            {
+              name: 'PI',
+              command: 'pi',
+              status: 'ready',
+              message: 'Installed',
+            },
           ],
           acpPackages: [
             {
               name: 'Qwen Code',
               package: '@qwen-code/qwen-code',
+              status: 'ready',
+              message: 'Cached',
+            },
+            {
+              name: 'PI',
+              package: 'pi-acp@0.0.27',
               status: 'ready',
               message: 'Cached',
             },

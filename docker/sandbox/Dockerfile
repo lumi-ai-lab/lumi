@@ -16,7 +16,7 @@ RUN cd backend \
       go build -buildvcs=false -trimpath -ldflags="-s -w" \
       -o /out/device-executor ./cmd/device-executor
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:22.22.2-bookworm-slim AS runtime
 
 ENV NODE_ENV=production
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -38,7 +38,7 @@ RUN apt-get update \
 
 COPY --from=builder /out/device-executor /usr/local/bin/device-executor
 
-RUN mkdir -p /workspace /lumi/device-executor /lumi/runtime/npm/bin /lumi/runtime/npm/lib/node_modules /lumi/runtime/npm-cache /root/.claude /root/.codex /root/.config \
+RUN mkdir -p /workspace /lumi/device-executor /lumi/runtime/npm/bin /lumi/runtime/npm/lib/node_modules /lumi/runtime/npm-cache /root/.claude /root/.codex /root/.config /root/.pi \
     && chmod 0755 /usr/local/bin/device-executor
 
 WORKDIR /workspace

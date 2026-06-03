@@ -417,7 +417,7 @@ func resolveStaticPath(path string, staticFS fs.FS) string {
 		}
 	}
 
-	return path
+	return resolveAppFallback(path)
 }
 
 func resolveAppFallback(path string) string {

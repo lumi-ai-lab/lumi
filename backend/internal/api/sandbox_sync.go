@@ -11,7 +11,7 @@ import (
 )
 
 // applySandboxSSOT is invoked by the sandbox.Manager once it has prepared
-// the per-workspace credential staging dirs (claude-root/, codex/, qwen/).
+// the per-workspace credential staging dirs (claude-root/, codex/, qwen/, pi/).
 // We mirror the on-disk layout the agents expect inside /root by writing
 // SSOT-derived files into the host-side staging dirs; the Docker bind
 // mounts then expose them at /root/.claude/skills/, /root/.codex/skills/
@@ -38,13 +38,14 @@ func (s *Server) applySandboxSSOT(workspaceID, credentialsRoot string) {
 	}
 	if s.skillStore != nil {
 		// Sandbox copies skills into claude-root/.claude/skills, codex/skills,
-		// qwen/skills (the bind mount destinations match each agent's
+		// qwen/skills, and pi/agent/skills (the bind mount destinations match each agent's
 		// expected layout under /root). We override the dot-app path for
 		// claude because the staging dir is "claude-root", not ".claude".
 		dotApps := map[skillsync.Backend]string{
 			agentmode.BackendClaude: filepath.Join("claude-root", ".claude"),
 			agentmode.BackendCodex:  "codex",
 			agentmode.BackendQwen:   "qwen",
+			agentmode.BackendPi:     filepath.Join("pi", "agent"),
 		}
 		svc := skillsync.New(s.skillStore, nil)
 		results, err := svc.SyncToRoot(context.Background(), credentialsRoot, skillsync.ModeCopy, dotApps)

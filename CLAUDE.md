@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lumi is an ACP (Anthropic Client Protocol) Gateway Chat interface with a Go backend and Vue 3 + TypeScript frontend. It provides a web-based chat interface for communicating with AI agents (like Claude Code, Codex) through JSON-RPC, with support for multiple workspaces, sessions, and agent routing.
+Lumi is an ACP (Anthropic Client Protocol) Gateway Chat interface with a Go backend and Vue 3 + TypeScript frontend. It provides a web-based chat interface for communicating with AI agents (like Claude Code, Codex, Qwen Code, and PI) through JSON-RPC, with support for multiple workspaces, sessions, and agent routing.
 
 The project also includes a desktop tray application for macOS/Linux/Windows.
 
@@ -79,7 +79,7 @@ cd web && npm run build && cd ../backend && go build -o lumi ./cmd/lumi
 │         │ JSON-RPC                                               │
 │         ▼                                                        │
 │ ┌────────────────┐                                               │
-│ │ Agent Process  │ (subprocess: claude-code, codex, etc.)       │
+│ │ Agent Process  │ (subprocess: claude-code, codex, pi, etc.)   │
 │ └────────────────┘                                               │
 └─────────────────────────────────────────────────────────────────┘
 ```

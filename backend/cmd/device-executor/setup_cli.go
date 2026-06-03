@@ -24,6 +24,7 @@ var agentNpmPackages = map[string]string{
 	"claude": "@anthropic-ai/claude-code",
 	"codex":  "@openai/codex",
 	"qwen":   "@qwen-code/qwen-code",
+	"pi":     "@earendil-works/pi-coding-agent",
 }
 
 type bootstrapManifest struct {
@@ -69,7 +70,7 @@ func printSetupSection(title string, items []setupcheck.DependencyItem) {
 
 func installSetupDependencies(status setupcheck.SetupStatus) error {
 	if !environmentReady(status.Environment) {
-		return errorsWithInstallHelp("npm and npx are required before device-executor can install agent dependencies", status.Environment)
+		return errorsWithInstallHelp("node, npm, and npx are required before device-executor can install agent dependencies", status.Environment)
 	}
 
 	signature := setupSignature(status)

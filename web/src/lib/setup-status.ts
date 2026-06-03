@@ -10,6 +10,7 @@ export function getStatusIcon(status: SetupDependencyItem['status']): string {
     case 'checking':
       return '◐'
     case 'error':
+    case 'outdated':
     case 'missing':
       return '✗'
     case 'blocked':
@@ -24,6 +25,7 @@ export function getStatusTone(status: SetupDependencyItem['status']): string {
     case 'ready':
       return 'success'
     case 'error':
+    case 'outdated':
     case 'missing':
       return 'error'
     case 'installing':

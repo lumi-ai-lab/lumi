@@ -822,6 +822,13 @@ func resolveCredentialMountsFromHome(home string, runtimeDir string) []sandboxdo
 			ReadOnly: false,
 		})
 	}
+	if source, ok := prepareWritablePiHome(home, filepath.Join(runtimeDir, "pi")); ok {
+		mounts = append(mounts, sandboxdocker.CredentialMount{
+			Source:   source,
+			Target:   "/root/.pi",
+			ReadOnly: false,
+		})
+	}
 	return mounts
 }
 
@@ -887,6 +894,17 @@ func prepareWritableQwenHome(home string, targetDir string) (string, bool) {
 	return targetDir, true
 }
 
+func prepareWritablePiHome(home string, targetDir string) (string, bool) {
+	sourceDir := filepath.Join(home, ".pi")
+	if info, err := os.Stat(sourceDir); err != nil || !info.IsDir() {
+		return "", false
+	}
+	if err := copyDir(sourceDir, targetDir); err != nil {
+		return "", false
+	}
+	return targetDir, true
+}
+
 func copyCredentialFile(sourcePath string, targetPath string) bool {
 	source, ok := resolveCredentialFile(sourcePath)
 	if !ok {
@@ -903,6 +921,59 @@ func copyCredentialFile(sourcePath string, targetPath string) bool {
 		return false
 	}
 	return true
+}
+
+func copyDir(sourceDir, targetDir string) error {
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		return err
+	}
+	return filepath.WalkDir(sourceDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(sourceDir, path)
+		if err != nil || rel == "." {
+			return err
+		}
+		targetPath := filepath.Join(targetDir, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode()
+		switch {
+		case d.Type()&os.ModeSymlink != 0:
+			resolved, ok := resolveCredentialFile(path)
+			if !ok {
+				return nil
+			}
+			data, err := os.ReadFile(resolved)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(targetPath, data, 0o600)
+		case d.IsDir():
+			return os.MkdirAll(targetPath, mode.Perm())
+		case mode.IsRegular():
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+				return err
+			}
+			perm := mode.Perm()
+			if perm == 0 {
+				perm = 0o600
+			}
+			return os.WriteFile(targetPath, data, perm)
+		default:
+			return nil
+		}
+	})
 }
 
 func sanitizeAgentsForCredentialMounts(agents []config.AgentConfig, mounts []sandboxdocker.CredentialMount) []config.AgentConfig {
