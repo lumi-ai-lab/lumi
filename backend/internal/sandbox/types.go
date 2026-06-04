@@ -3,7 +3,7 @@ package sandbox
 import "github.com/pengmide/lumi/internal/config"
 
 const (
-	DefaultImage          = "lumi/sandbox:latest"
+	DefaultImage          = "ghcr.io/lumi-ai-lab/lumi-sandbox:latest"
 	DefaultIdleTimeoutSec = 1800
 	WorkspacePath         = "/workspace"
 	ConfigPath            = "/lumi/device-executor/config.json"
