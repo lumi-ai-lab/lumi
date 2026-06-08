@@ -1,9 +1,11 @@
 package device
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pengmide/lumi/internal/setupcheck"
 )
@@ -21,6 +23,42 @@ func newTestRegistry(t *testing.T) *Registry {
 
 func newTestConnection() *Connection {
 	return NewConnection(nil)
+}
+
+func registerReadyTestDevice(t *testing.T, registry *Registry, deviceID string) {
+	t.Helper()
+
+	_, err := registry.RegisterDevice(newTestConnection(), DeviceRegisterPayload{
+		DeviceID: deviceID,
+		Name:     "Office Mac",
+		Agents:   []DeviceAgentInfo{{ID: "claude", Name: "Claude Code"}},
+	})
+	if err != nil {
+		t.Fatalf("RegisterDevice() error = %v", err)
+	}
+	if err := registry.UpdateSetupStatus(deviceID, setupcheck.SetupStatus{Ready: true}); err != nil {
+		t.Fatalf("UpdateSetupStatus() error = %v", err)
+	}
+}
+
+func waitForQueuedTask(t *testing.T, registry *Registry, deviceID string, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		registry.mu.RLock()
+		got := len(registry.deviceTaskWaiters[deviceID])
+		registry.mu.RUnlock()
+		if got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	registry.mu.RLock()
+	got := len(registry.deviceTaskWaiters[deviceID])
+	registry.mu.RUnlock()
+	t.Fatalf("queued tasks for %s = %d, want %d", deviceID, got, want)
 }
 
 func TestNewRegistryMarksPersistedDevicesOffline(t *testing.T) {
@@ -147,6 +185,166 @@ func TestTaskLifecycleAndMappings(t *testing.T) {
 	if device.Status != StatusOnline {
 		t.Fatalf("device.Status after FinishTask = %q, want %q", device.Status, StatusOnline)
 	}
+}
+
+func TestWaitStartTaskStartsAfterCurrentTaskFinishes(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	registerReadyTestDevice(t, registry, "dev-1")
+
+	task1 := NewTaskRun("task-1", "dev-1", "conv-1", "claude", "ws-1", "/tmp/project")
+	if err := registry.StartTask(task1); err != nil {
+		t.Fatalf("StartTask(task1) error = %v", err)
+	}
+
+	task2 := NewTaskRun("task-2", "dev-1", "conv-2", "claude", "ws-1", "/tmp/project")
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- registry.WaitStartTask(context.Background(), task2, time.Second)
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("WaitStartTask(task2) returned before task1 finished: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	registry.FinishTask(task1.ID)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("WaitStartTask(task2) error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for task2 to start")
+	}
+
+	device, _ := registry.GetDevice("dev-1")
+	if len(device.RunningTaskIDs) != 1 || device.RunningTaskIDs[0] != task2.ID {
+		t.Fatalf("RunningTaskIDs = %v, want [%s]", device.RunningTaskIDs, task2.ID)
+	}
+	registry.FinishTask(task2.ID)
+}
+
+func TestWaitStartTaskTimesOutWhileQueued(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	registerReadyTestDevice(t, registry, "dev-1")
+
+	task1 := NewTaskRun("task-1", "dev-1", "conv-1", "claude", "ws-1", "/tmp/project")
+	if err := registry.StartTask(task1); err != nil {
+		t.Fatalf("StartTask(task1) error = %v", err)
+	}
+
+	task2 := NewTaskRun("task-2", "dev-1", "conv-2", "claude", "ws-1", "/tmp/project")
+	err := registry.WaitStartTask(context.Background(), task2, 25*time.Millisecond)
+	if !errors.Is(err, ErrDeviceQueueTimeout) {
+		t.Fatalf("WaitStartTask(task2) error = %v, want %v", err, ErrDeviceQueueTimeout)
+	}
+
+	registry.FinishTask(task1.ID)
+}
+
+func TestWaitStartTaskReturnsContextCancellationWhileQueued(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	registerReadyTestDevice(t, registry, "dev-1")
+
+	task1 := NewTaskRun("task-1", "dev-1", "conv-1", "claude", "ws-1", "/tmp/project")
+	if err := registry.StartTask(task1); err != nil {
+		t.Fatalf("StartTask(task1) error = %v", err)
+	}
+
+	waitCtx, cancel := context.WithCancel(context.Background())
+	task2 := NewTaskRun("task-2", "dev-1", "conv-2", "claude", "ws-1", "/tmp/project")
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- registry.WaitStartTask(waitCtx, task2, time.Second)
+	}()
+
+	waitForQueuedTask(t, registry, "dev-1", 1)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("WaitStartTask(task2) error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for context cancellation")
+	}
+
+	registry.FinishTask(task1.ID)
+}
+
+func TestWaitStartTaskReturnsSetupNotReadyWhileQueued(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	registerReadyTestDevice(t, registry, "dev-1")
+
+	task1 := NewTaskRun("task-1", "dev-1", "conv-1", "claude", "ws-1", "/tmp/project")
+	if err := registry.StartTask(task1); err != nil {
+		t.Fatalf("StartTask(task1) error = %v", err)
+	}
+
+	task2 := NewTaskRun("task-2", "dev-1", "conv-2", "claude", "ws-1", "/tmp/project")
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- registry.WaitStartTask(context.Background(), task2, time.Second)
+	}()
+
+	waitForQueuedTask(t, registry, "dev-1", 1)
+	if err := registry.UpdateSetupStatus("dev-1", setupcheck.SetupStatus{Ready: false}); err != nil {
+		t.Fatalf("UpdateSetupStatus(false) error = %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrSetupNotReady) {
+			t.Fatalf("WaitStartTask(task2) error = %v, want %v", err, ErrSetupNotReady)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for setup-not-ready error")
+	}
+
+	registry.FinishTask(task1.ID)
+}
+
+func TestWaitStartTaskReturnsOfflineWhileQueued(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	registerReadyTestDevice(t, registry, "dev-1")
+
+	task1 := NewTaskRun("task-1", "dev-1", "conv-1", "claude", "ws-1", "/tmp/project")
+	if err := registry.StartTask(task1); err != nil {
+		t.Fatalf("StartTask(task1) error = %v", err)
+	}
+
+	task2 := NewTaskRun("task-2", "dev-1", "conv-2", "claude", "ws-1", "/tmp/project")
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- registry.WaitStartTask(context.Background(), task2, time.Second)
+	}()
+
+	waitForQueuedTask(t, registry, "dev-1", 1)
+	registry.MarkDisconnected("dev-1", "offline")
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrDeviceOffline) {
+			t.Fatalf("WaitStartTask(task2) error = %v, want %v", err, ErrDeviceOffline)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for offline error")
+	}
+
+	registry.FinishTask(task1.ID)
 }
 
 func TestReconnectFailsRunningTask(t *testing.T) {

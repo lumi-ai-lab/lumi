@@ -26,6 +26,7 @@ var (
 	ErrDeviceOffline       = errors.New("device is offline")
 	ErrSetupNotReady       = errors.New("device setup is not ready")
 	ErrDeviceBusy          = errors.New("device is busy")
+	ErrDeviceQueueTimeout  = errors.New("device task queue wait timed out")
 	ErrTaskNotFound        = errors.New("task not found")
 	ErrTaskEventBufferFull = errors.New("task event buffer full")
 )
@@ -84,19 +85,23 @@ type DeviceEvent struct {
 	Err     error
 }
 
+type taskWaiter struct{}
+
 type Registry struct {
 	store  *Store
 	secret string
 
-	mu                sync.RWMutex
-	onDeviceReset     func(string)
+	mu                 sync.RWMutex
+	taskCond           *sync.Cond
+	onDeviceReset      func(string)
 	onDeviceRegistered func(string)
-	devices           map[string]*Device
-	conns             map[string]*Connection
-	tasks             map[string]*TaskRun
-	sessionToTask     map[string]string
-	toolCallToTask    map[string]string
-	deviceCurrentTask map[string]string
+	devices            map[string]*Device
+	conns              map[string]*Connection
+	tasks              map[string]*TaskRun
+	sessionToTask      map[string]string
+	toolCallToTask     map[string]string
+	deviceCurrentTask  map[string]string
+	deviceTaskWaiters  map[string][]*taskWaiter
 }
 
 func NewRegistry(store *Store, secret string) (*Registry, error) {
@@ -121,7 +126,9 @@ func NewRegistry(store *Store, secret string) (*Registry, error) {
 		sessionToTask:     make(map[string]string),
 		toolCallToTask:    make(map[string]string),
 		deviceCurrentTask: make(map[string]string),
+		deviceTaskWaiters: make(map[string][]*taskWaiter),
 	}
+	registry.taskCond = sync.NewCond(&registry.mu)
 
 	for i := range devices {
 		device := devices[i]
@@ -250,6 +257,7 @@ func (r *Registry) RegisterDevice(conn *Connection, payload DeviceRegisterPayloa
 	cloned := cloneDevice(*device)
 	resetHook := r.onDeviceReset
 	registeredHook := r.onDeviceRegistered
+	r.taskCond.Broadcast()
 	r.mu.Unlock()
 
 	if notifyReset && resetHook != nil {
@@ -288,7 +296,9 @@ func (r *Registry) UpdateSetupStatus(deviceID string, status setupcheck.SetupSta
 		device.Status = StatusOnline
 	}
 
-	return r.persistLocked()
+	err := r.persistLocked()
+	r.taskCond.Broadcast()
+	return err
 }
 
 func (r *Registry) UpdateDeviceStatus(deviceID string, status string) error {
@@ -320,7 +330,9 @@ func (r *Registry) UpdateDeviceStatus(deviceID string, status string) error {
 	}
 
 	device.UpdatedAt = time.Now().UnixMilli()
-	return r.persistLocked()
+	err := r.persistLocked()
+	r.taskCond.Broadcast()
+	return err
 }
 
 func (r *Registry) Heartbeat(deviceID string, runningTaskIDs []string) error {
@@ -388,6 +400,7 @@ func (r *Registry) markDisconnected(deviceID string, expectedConn *Connection, r
 
 	resetHook := r.onDeviceReset
 	_ = r.persistLocked()
+	r.taskCond.Broadcast()
 	r.mu.Unlock()
 
 	if resetHook != nil {
@@ -398,6 +411,101 @@ func (r *Registry) markDisconnected(deviceID string, expectedConn *Connection, r
 func (r *Registry) StartTask(task *TaskRun) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	return r.startTaskLocked(task)
+}
+
+func (r *Registry) WaitStartTask(ctx context.Context, task *TaskRun, maxWait time.Duration) error {
+	if task == nil {
+		return errors.New("task is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var timeout <-chan time.Time
+	var timer *time.Timer
+	if maxWait > 0 {
+		timer = time.NewTimer(maxWait)
+		timeout = timer.C
+		defer timer.Stop()
+	}
+
+	wakeDone := make(chan struct{})
+	timedOut := false
+	go func() {
+		select {
+		case <-ctx.Done():
+			r.mu.Lock()
+			r.taskCond.Broadcast()
+			r.mu.Unlock()
+		case <-timeout:
+			r.mu.Lock()
+			timedOut = true
+			r.taskCond.Broadcast()
+			r.mu.Unlock()
+		case <-wakeDone:
+		}
+	}()
+	defer close(wakeDone)
+
+	waiter := &taskWaiter{}
+	queued := false
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for {
+		if timedOut {
+			if queued {
+				r.removeTaskWaiterLocked(task.DeviceID, waiter)
+				r.taskCond.Broadcast()
+			}
+			return ErrDeviceQueueTimeout
+		}
+		if err := ctx.Err(); err != nil {
+			if queued {
+				r.removeTaskWaiterLocked(task.DeviceID, waiter)
+				r.taskCond.Broadcast()
+			}
+			return err
+		}
+
+		if !queued && len(r.deviceTaskWaiters[task.DeviceID]) == 0 {
+			err := r.startTaskLocked(task)
+			if err == nil {
+				return nil
+			}
+			if !errors.Is(err, ErrDeviceBusy) {
+				return err
+			}
+		}
+
+		if !queued {
+			r.deviceTaskWaiters[task.DeviceID] = append(r.deviceTaskWaiters[task.DeviceID], waiter)
+			queued = true
+		}
+
+		if r.isFirstTaskWaiterLocked(task.DeviceID, waiter) {
+			err := r.startTaskLocked(task)
+			if err == nil {
+				r.removeTaskWaiterLocked(task.DeviceID, waiter)
+				return nil
+			}
+			if !errors.Is(err, ErrDeviceBusy) {
+				r.removeTaskWaiterLocked(task.DeviceID, waiter)
+				r.taskCond.Broadcast()
+				return err
+			}
+		}
+
+		r.taskCond.Wait()
+	}
+}
+
+func (r *Registry) startTaskLocked(task *TaskRun) error {
+	if task == nil {
+		return errors.New("task is required")
+	}
 
 	device := r.devices[task.DeviceID]
 	if device == nil {
@@ -419,6 +527,30 @@ func (r *Registry) StartTask(task *TaskRun) error {
 	device.RunningTaskIDs = []string{task.ID}
 	device.UpdatedAt = time.Now().UnixMilli()
 	return nil
+}
+
+func (r *Registry) isFirstTaskWaiterLocked(deviceID string, waiter *taskWaiter) bool {
+	queue := r.deviceTaskWaiters[deviceID]
+	return len(queue) > 0 && queue[0] == waiter
+}
+
+func (r *Registry) removeTaskWaiterLocked(deviceID string, waiter *taskWaiter) bool {
+	queue := r.deviceTaskWaiters[deviceID]
+	for i, queued := range queue {
+		if queued != waiter {
+			continue
+		}
+		copy(queue[i:], queue[i+1:])
+		queue[len(queue)-1] = nil
+		queue = queue[:len(queue)-1]
+		if len(queue) == 0 {
+			delete(r.deviceTaskWaiters, deviceID)
+		} else {
+			r.deviceTaskWaiters[deviceID] = queue
+		}
+		return true
+	}
+	return false
 }
 
 func (r *Registry) FinishTask(taskID string) {
@@ -460,6 +592,7 @@ func (r *Registry) FinishTask(taskID string) {
 	default:
 		close(task.Done)
 	}
+	r.taskCond.Broadcast()
 }
 
 func (r *Registry) SendToDevice(ctx context.Context, deviceID string, typ MessageType, taskID string, payload any) error {
@@ -636,7 +769,9 @@ func (r *Registry) DeleteDevice(deviceID string) error {
 	}
 
 	delete(r.devices, deviceID)
-	return r.persistLocked()
+	err := r.persistLocked()
+	r.taskCond.Broadcast()
+	return err
 }
 
 func (r *Registry) UpdateAlias(deviceID, alias string) (Device, error) {

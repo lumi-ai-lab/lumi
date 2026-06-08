@@ -211,7 +211,7 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 	}
 	task := device.NewTaskRun(taskID, deviceID, input.ConversationID, input.AgentID, input.WorkspaceID, input.WorkspacePath)
 	task.SessionID = remoteSessionID
-	if err := s.devices.StartTask(task); err != nil {
+	if err := s.devices.WaitStartTask(ctx, task, remoteDeviceTaskQueueMaxWait); err != nil {
 		_ = sink.Emit("error", map[string]string{"message": deviceErrorMessage(err)})
 		return nil
 	}

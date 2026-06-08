@@ -446,8 +446,8 @@ func TestCreateSandboxWorkspaceStoresDefaults(t *testing.T) {
 	if response.Workspace.Kind != "sandbox" {
 		t.Fatalf("kind = %q, want sandbox", response.Workspace.Kind)
 	}
-	if response.Workspace.Image != "lumi/sandbox:latest" {
-		t.Fatalf("image = %q, want lumi/sandbox:latest", response.Workspace.Image)
+	if response.Workspace.Image != sandbox.DefaultImage {
+		t.Fatalf("image = %q, want %s", response.Workspace.Image, sandbox.DefaultImage)
 	}
 	if response.Workspace.IdleTimeoutSec != 1800 {
 		t.Fatalf("idleTimeoutSec = %d, want 1800", response.Workspace.IdleTimeoutSec)

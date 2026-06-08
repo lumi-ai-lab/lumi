@@ -95,6 +95,8 @@ type pendingPermissionState struct {
 	} `json:"toolCall"`
 }
 
+const remoteDeviceTaskQueueMaxWait = 5 * time.Minute
+
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -568,7 +570,7 @@ func (s *Server) handleDeviceChat(ctx chatRuntimeContext) {
 		ctx.Prepared.WorkspacePath,
 	)
 	task.SessionID = remoteSessionID
-	if err := s.devices.StartTask(task); err != nil {
+	if err := s.devices.WaitStartTask(ctx.requestContext(), task, remoteDeviceTaskQueueMaxWait); err != nil {
 		ctx.setError(err)
 		ctx.SendEvent("error", map[string]string{"message": deviceErrorMessage(err)})
 		return
@@ -1114,6 +1116,8 @@ func deviceErrorMessage(err error) string {
 		return "Device is offline"
 	case errors.Is(err, device.ErrSetupNotReady):
 		return "Device setup is not ready"
+	case errors.Is(err, device.ErrDeviceQueueTimeout):
+		return "当前设备任务较多，请稍后重试。"
 	case errors.Is(err, device.ErrDeviceBusy):
 		return "Device is busy"
 	default:

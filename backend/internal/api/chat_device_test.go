@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -229,6 +230,97 @@ func TestHandleDeviceChatBridgesSSEAndRoutesPermissionConfirm(t *testing.T) {
 	}
 }
 
+func TestHandleDeviceChatQueuesDifferentConversationsOnSameDevice(t *testing.T) {
+	server := newTestAPIServer(t)
+	server.conversations.Create("conv-1", "claude", "default")
+	server.agentSessions["conv-1"] = make(map[string]string)
+	server.conversations.Create("conv-2", "claude", "default")
+	server.agentSessions["conv-2"] = make(map[string]string)
+
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	secret, err := device.EnsureSecret("")
+	if err != nil {
+		t.Fatalf("EnsureSecret() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn := connectTestDevice(t, ctx, httpServer.URL, secret)
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+
+	registerAndReadyDevice(t, ctx, conn)
+
+	firstBodyCh, firstErrCh := startChatPost(ctx, httpServer.URL+"/api/chat", `{"message":"first","conversationId":"conv-1","workspaceId":"default","deviceId":"dev-1"}`)
+	firstTask := readEnvelope(t, ctx, conn)
+	if firstTask.Type != device.MsgTaskExecute {
+		t.Fatalf("first task type = %q, want %q", firstTask.Type, device.MsgTaskExecute)
+	}
+	if err := wsjson.Write(ctx, conn, device.AckEnvelope(firstTask.ID)); err != nil {
+		t.Fatalf("wsjson.Write(first task.execute ack) error = %v", err)
+	}
+
+	secondBodyCh, secondErrCh := startChatPost(ctx, httpServer.URL+"/api/chat", `{"message":"second","conversationId":"conv-2","workspaceId":"default","deviceId":"dev-1"}`)
+	select {
+	case err := <-secondErrCh:
+		t.Fatalf("second chat request returned before first task finished: %v", err)
+	case body := <-secondBodyCh:
+		t.Fatalf("second chat request returned before first task finished: %s", body)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskSession, "msg-session-queue-1", "dev-1", firstTask.TaskID, device.TaskSessionPayload{
+		SessionID: "remote-session-1",
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskDone, "msg-done-queue-1", "dev-1", firstTask.TaskID, device.TaskDonePayload{
+		Result: json.RawMessage(`{"stopReason":"end_turn"}`),
+	}))
+
+	select {
+	case err := <-firstErrCh:
+		t.Fatalf("first chat request error = %v", err)
+	case body := <-firstBodyCh:
+		if !strings.Contains(body, `event: done`) {
+			t.Fatalf("first SSE body missing done event: %s", body)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for first chat response")
+	}
+
+	secondTask := readEnvelope(t, ctx, conn)
+	if secondTask.Type != device.MsgTaskExecute {
+		t.Fatalf("second task type = %q, want %q", secondTask.Type, device.MsgTaskExecute)
+	}
+	if secondTask.TaskID == firstTask.TaskID {
+		t.Fatalf("second task reused first task ID %q", secondTask.TaskID)
+	}
+	if err := wsjson.Write(ctx, conn, device.AckEnvelope(secondTask.ID)); err != nil {
+		t.Fatalf("wsjson.Write(second task.execute ack) error = %v", err)
+	}
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskSession, "msg-session-queue-2", "dev-1", secondTask.TaskID, device.TaskSessionPayload{
+		SessionID: "remote-session-2",
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskDone, "msg-done-queue-2", "dev-1", secondTask.TaskID, device.TaskDonePayload{
+		Result: json.RawMessage(`{"stopReason":"end_turn"}`),
+	}))
+
+	select {
+	case err := <-secondErrCh:
+		t.Fatalf("second chat request error = %v", err)
+	case body := <-secondBodyCh:
+		if strings.Contains(body, "Device is busy") {
+			t.Fatalf("second SSE body should not contain busy error: %s", body)
+		}
+		if !strings.Contains(body, `remote-session-2`) || !strings.Contains(body, `event: done`) {
+			t.Fatalf("second SSE body missing queued task events: %s", body)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for second chat response")
+	}
+}
+
 func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	server := newTestAPIServer(t)
 	workspace := config.WorkspaceConfig{
@@ -359,6 +451,133 @@ func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	}
 	if !sink.hasUpdateText("hello from sandbox") {
 		t.Fatalf("sink events missing sandbox response: %+v", sink.events)
+	}
+}
+
+func TestRunWeComChatQueuesDifferentConversationsOnSameSandboxDevice(t *testing.T) {
+	server := newTestAPIServer(t)
+	workspace := config.WorkspaceConfig{
+		ID:    "sandbox-ws",
+		Name:  "Sandbox",
+		Path:  t.TempDir(),
+		Kind:  "sandbox",
+		Image: sandbox.DefaultImage,
+	}
+	server.config.Workspaces = append(server.config.Workspaces, workspace)
+	server.sandbox = &fakeSandboxManager{ensureState: sandbox.RuntimeState{
+		WorkspaceID:   workspace.ID,
+		DeviceID:      "dev-1",
+		WorkspacePath: sandbox.WorkspacePath,
+		Status:        sandbox.StatusRunning,
+	}}
+
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	secret, err := device.EnsureSecret("")
+	if err != nil {
+		t.Fatalf("EnsureSecret() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn := connectTestDevice(t, ctx, httpServer.URL, secret)
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgDeviceRegister, "msg-register-queue", "dev-1", "", device.DeviceRegisterPayload{
+		DeviceID: "dev-1",
+		Name:     "Office Mac",
+		Agents:   []device.DeviceAgentInfo{{ID: "claude", Name: "Claude Code"}},
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgSetupStatus, "msg-setup-queue", "dev-1", "", device.SetupStatusPayload{
+		Ready: true,
+	}))
+
+	firstSink := &recordingWeComSink{}
+	firstErrCh := make(chan error, 1)
+	go func() {
+		firstErrCh <- server.RunWeComChat(ctx, wecom.ChatRunInput{
+			Message:           "first sandbox",
+			ConversationID:    "wecom_queue_1",
+			WorkspaceID:       workspace.ID,
+			WorkspacePath:     workspace.Path,
+			AgentID:           "claude",
+			ConversationStore: &memoryIMStore{},
+		}, firstSink)
+	}()
+
+	firstTask := readEnvelope(t, ctx, conn)
+	if firstTask.Type != device.MsgTaskExecute {
+		t.Fatalf("first task type = %q, want %q", firstTask.Type, device.MsgTaskExecute)
+	}
+	if err := wsjson.Write(ctx, conn, device.AckEnvelope(firstTask.ID)); err != nil {
+		t.Fatalf("wsjson.Write(first task.execute ack) error = %v", err)
+	}
+
+	secondSink := &recordingWeComSink{}
+	secondErrCh := make(chan error, 1)
+	go func() {
+		secondErrCh <- server.RunWeComChat(ctx, wecom.ChatRunInput{
+			Message:           "second sandbox",
+			ConversationID:    "wecom_queue_2",
+			WorkspaceID:       workspace.ID,
+			WorkspacePath:     workspace.Path,
+			AgentID:           "claude",
+			ConversationStore: &memoryIMStore{},
+		}, secondSink)
+	}()
+
+	select {
+	case err := <-secondErrCh:
+		t.Fatalf("second RunWeComChat returned before first task finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskSession, "msg-wecom-session-queue-1", "dev-1", firstTask.TaskID, device.TaskSessionPayload{
+		SessionID: "wecom-session-1",
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskDone, "msg-wecom-done-queue-1", "dev-1", firstTask.TaskID, device.TaskDonePayload{
+		Result: json.RawMessage(`{"stopReason":"end_turn"}`),
+	}))
+
+	select {
+	case err := <-firstErrCh:
+		if err != nil {
+			t.Fatalf("first RunWeComChat() error = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for first RunWeComChat")
+	}
+
+	secondTask := readEnvelope(t, ctx, conn)
+	if secondTask.Type != device.MsgTaskExecute {
+		t.Fatalf("second task type = %q, want %q", secondTask.Type, device.MsgTaskExecute)
+	}
+	if secondTask.TaskID == firstTask.TaskID {
+		t.Fatalf("second task reused first task ID %q", secondTask.TaskID)
+	}
+	if err := wsjson.Write(ctx, conn, device.AckEnvelope(secondTask.ID)); err != nil {
+		t.Fatalf("wsjson.Write(second task.execute ack) error = %v", err)
+	}
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskSession, "msg-wecom-session-queue-2", "dev-1", secondTask.TaskID, device.TaskSessionPayload{
+		SessionID: "wecom-session-2",
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskDone, "msg-wecom-done-queue-2", "dev-1", secondTask.TaskID, device.TaskDonePayload{
+		Result: json.RawMessage(`{"stopReason":"end_turn"}`),
+	}))
+
+	select {
+	case err := <-secondErrCh:
+		if err != nil {
+			t.Fatalf("second RunWeComChat() error = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for second RunWeComChat")
+	}
+	for _, event := range secondSink.events {
+		if event.Name == "error" && strings.Contains(fmt.Sprint(event.Data), "Device is busy") {
+			t.Fatalf("second sink should not contain busy error: %+v", secondSink.events)
+		}
 	}
 }
 
@@ -931,6 +1150,34 @@ func readEnvelope(t *testing.T, ctx context.Context, conn *websocket.Conn) devic
 		t.Fatalf("wsjson.Read() error = %v", err)
 	}
 	return env
+}
+
+func startChatPost(ctx context.Context, url string, payload string) (<-chan string, <-chan error) {
+	bodyCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBufferString(payload))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer resp.Body.Close()
+
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		bodyCh <- string(data)
+	}()
+	return bodyCh, errCh
 }
 
 func mustEnvelope(t *testing.T, typ device.MessageType, id, deviceID, taskID string, payload any) device.Envelope {
