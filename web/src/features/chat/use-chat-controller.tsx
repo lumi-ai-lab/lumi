@@ -28,6 +28,7 @@ interface UseChatControllerOptions {
 
 const WORKSPACE_TREE_REFRESH_WINDOW_MS = 1500
 const SKILL_COMMAND_REFRESH_MS = 3000
+const GLOBAL_STREAM_SUPPRESS_MS = 5000
 const thinkBlockPattern = /<\s*think(?:ing)?\s*>[\s\S]*?<\s*\/\s*think(?:ing)?\s*>/gi
 const orphanThinkClosePrefixPattern = /^[\s\S]*?<\s*\/\s*think(?:ing)?\s*>/i
 const thinkTagPattern = /<\s*\/?\s*think(?:ing)?\s*>/gi
@@ -113,6 +114,24 @@ function normalizeWorkspace(workspace: Workspace): Workspace {
   }
 }
 
+function isGlobalStreamMutationEvent(eventName: string, data: Record<string, unknown>) {
+  if (eventName === 'tool_call' || eventName === 'thinking' || eventName === 'permission_request') {
+    return true
+  }
+
+  if (data.options && data.toolCall) {
+    return true
+  }
+
+  const update = (data as StreamEvent).update
+  return (
+    update?.sessionUpdate === 'agent_message_chunk' ||
+    update?.sessionUpdate === 'agent_thought_chunk' ||
+    update?.sessionUpdate === 'tool_call' ||
+    update?.sessionUpdate === 'tool_call_update'
+  )
+}
+
 export function useChatController({ routeSessionId, pushRoute }: UseChatControllerOptions) {
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const [cronJobs, setCronJobs] = useState<CronJob[]>([])
@@ -127,12 +146,12 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   const [currentAgent, setCurrentAgent] = useState('claude')
   const [currentWorkspace, setCurrentWorkspace] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [isSending, setIsSending] = useState(false)
-  const [agentSessionId, setAgentSessionId] = useState<string | null>(null)
-  const [sendingSessionId, setSendingSessionId] = useState<string | null>(null)
+  const [sendingSessionIds, setSendingSessionIds] = useState<Record<string, true>>({})
+  const [agentSessionIdBySession, setAgentSessionIdBySession] = useState<Record<string, string>>({})
+  const [agentBySession, setAgentBySession] = useState<Record<string, string>>({})
   const [streamItemsBySession, setStreamItemsBySession] = useState<Record<string, StreamItem[]>>({})
   const [pendingStreamAgentBySession, setPendingStreamAgentBySession] = useState<Record<string, string>>({})
-  const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
+  const [pendingPermissionBySession, setPendingPermissionBySession] = useState<Record<string, PermissionRequest>>({})
   const [workspaceTreeRefreshToken, setWorkspaceTreeRefreshToken] = useState(0)
   const [initialized, setInitialized] = useState(false)
   const initializedRef = useRef(false)
@@ -142,9 +161,14 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   const currentSessionIdRef = useRef<string | null>(null)
   const currentWorkspaceRef = useRef('')
   const currentAgentRef = useRef('claude')
-  const sendingSessionIdRef = useRef<string | null>(null)
+  const sendingSessionIdsRef = useRef<Record<string, true>>({})
+  const agentSessionIdBySessionRef = useRef<Record<string, string>>({})
+  const agentBySessionRef = useRef<Record<string, string>>({})
   const pendingStreamAgentRef = useRef<Record<string, string>>({})
   const streamItemsRef = useRef<Record<string, StreamItem[]>>({})
+  const abortControllersRef = useRef<Record<string, AbortController>>({})
+  const suppressedGlobalStreamUntilRef = useRef<Record<string, number>>({})
+  const backgroundStreamSessionIdsRef = useRef<Record<string, true>>({})
   const workspacesRef = useRef<Workspace[]>([])
   const agentsRef = useRef<Agent[]>([])
   const workspaceTreeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -168,8 +192,16 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   }, [currentAgent])
 
   useEffect(() => {
-    sendingSessionIdRef.current = sendingSessionId
-  }, [sendingSessionId])
+    sendingSessionIdsRef.current = sendingSessionIds
+  }, [sendingSessionIds])
+
+  useEffect(() => {
+    agentSessionIdBySessionRef.current = agentSessionIdBySession
+  }, [agentSessionIdBySession])
+
+  useEffect(() => {
+    agentBySessionRef.current = agentBySession
+  }, [agentBySession])
 
   useEffect(() => {
     pendingStreamAgentRef.current = pendingStreamAgentBySession
@@ -192,6 +224,8 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       if (workspaceTreeRefreshTimerRef.current) {
         clearTimeout(workspaceTreeRefreshTimerRef.current)
       }
+      Object.values(abortControllersRef.current).forEach((controller) => controller.abort())
+      abortControllersRef.current = {}
     }
   }, [])
 
@@ -201,6 +235,8 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     (session) => !currentWorkspace || session.workspaceId === currentWorkspace || !session.workspaceId
   )
   const streamItems = currentSessionId ? streamItemsBySession[currentSessionId] || [] : []
+  const currentSessionIsSending = currentSessionId ? Boolean(sendingSessionIds[currentSessionId]) : false
+  const currentPendingPermission = currentSessionId ? pendingPermissionBySession[currentSessionId] || null : null
   const skillCommandKey = currentWorkspace && currentAgent ? `${currentWorkspace}:${currentAgent}` : ''
   const commands = mergeSlashCommands(
     commandsByAgent[currentAgent] || [],
@@ -232,7 +268,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
 
     return (
       sessionDetailsRef.current[sessionId]?.workspaceId ||
-      (sessionId === sendingSessionIdRef.current || sessionId === currentSessionIdRef.current
+      (sendingSessionIdsRef.current[sessionId] || sessionId === currentSessionIdRef.current
         ? currentWorkspaceRef.current || null
         : null)
     )
@@ -310,12 +346,31 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     })
   }
 
+  const updateStreamItemsForSession = (
+    sessionId: string,
+    updater: (items: StreamItem[]) => StreamItem[]
+  ) => {
+    const nextItems = updater(streamItemsRef.current[sessionId] || [])
+    const next = {
+      ...streamItemsRef.current,
+      [sessionId]: nextItems,
+    }
+    streamItemsRef.current = next
+    setStreamItemsBySession(next)
+  }
+
+  const deleteStreamItemsForSession = (sessionId: string) => {
+    const next = { ...streamItemsRef.current }
+    delete next[sessionId]
+    streamItemsRef.current = next
+    setStreamItemsBySession(next)
+  }
+
   const upsertToolCall = (tool: ToolCall, targetSessionId?: string | null) => {
-    const sessionId = targetSessionId || sendingSessionIdRef.current || currentSessionIdRef.current
+    const sessionId = targetSessionId || currentSessionIdRef.current
     if (!sessionId) return
 
-    setStreamItemsBySession((current) => {
-      const existing = current[sessionId] || []
+    updateStreamItemsForSession(sessionId, (existing) => {
       const nextItems = [...existing]
       const existingIndex = nextItems.findIndex(
         (item) => item.type === 'tool' && item.data.toolCallId === tool.toolCallId
@@ -347,44 +402,33 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
         nextItems.push({ type: 'tool', data: tool })
       }
 
-      return {
-        ...current,
-        [sessionId]: nextItems,
-      }
+      return nextItems
     })
   }
 
   const addStreamingText = (text: string, targetSessionId?: string | null) => {
-    const sessionId = targetSessionId || sendingSessionIdRef.current || currentSessionIdRef.current
+    const sessionId = targetSessionId || currentSessionIdRef.current
     if (!sessionId) return
 
-    setStreamItemsBySession((current) => {
-      const existing = current[sessionId] || []
+    updateStreamItemsForSession(sessionId, (existing) => {
       const lastItem = existing[existing.length - 1]
 
       if (lastItem?.type === 'text') {
-        return {
-          ...current,
-          [sessionId]: [
-            ...existing.slice(0, -1),
-            { type: 'text', data: `${lastItem.data}${text}` },
-          ],
-        }
+        return [
+          ...existing.slice(0, -1),
+          { type: 'text', data: `${lastItem.data}${text}` },
+        ]
       }
 
-      return {
-        ...current,
-        [sessionId]: [...existing, { type: 'text', data: text }],
-      }
+      return [...existing, { type: 'text', data: text }]
     })
   }
 
   const upsertThinking = (thinking: ThinkingData, targetSessionId?: string | null) => {
-    const sessionId = targetSessionId || sendingSessionIdRef.current || currentSessionIdRef.current
+    const sessionId = targetSessionId || currentSessionIdRef.current
     if (!sessionId) return
 
-    setStreamItemsBySession((current) => {
-      const existing = current[sessionId] || []
+    updateStreamItemsForSession(sessionId, (existing) => {
       const nextItems = [...existing]
       const lastItem = nextItems[nextItems.length - 1]
 
@@ -394,10 +438,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
         nextItems.push({ type: 'thinking', data: thinking })
       }
 
-      return {
-        ...current,
-        [sessionId]: nextItems,
-      }
+      return nextItems
     })
   }
 
@@ -405,30 +446,131 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     const targetSessionId = sessionId || currentSessionIdRef.current
     if (!targetSessionId) return
 
-    setStreamItemsBySession((current) => ({
-      ...current,
-      [targetSessionId]: [],
-    }))
+    updateStreamItemsForSession(targetSessionId, () => [])
+  }
+
+  const setSessionSending = (sessionId: string, isSending: boolean) => {
+    const next = { ...sendingSessionIdsRef.current }
+    if (isSending) {
+      next[sessionId] = true
+    } else {
+      delete next[sessionId]
+    }
+    sendingSessionIdsRef.current = next
+    setSendingSessionIds(next)
+  }
+
+  const setSessionAgent = (sessionId: string, agent: string) => {
+    const next = {
+      ...agentBySessionRef.current,
+      [sessionId]: agent,
+    }
+    agentBySessionRef.current = next
+    setAgentBySession(next)
+  }
+
+  const clearSessionAgent = (sessionId: string) => {
+    const next = { ...agentBySessionRef.current }
+    delete next[sessionId]
+    agentBySessionRef.current = next
+    setAgentBySession(next)
+  }
+
+  const setSessionAgentSessionId = (sessionId: string, agentSessionId: string) => {
+    const next = {
+      ...agentSessionIdBySessionRef.current,
+      [sessionId]: agentSessionId,
+    }
+    agentSessionIdBySessionRef.current = next
+    setAgentSessionIdBySession(next)
+  }
+
+  const clearSessionAgentSessionId = (sessionId: string) => {
+    const next = { ...agentSessionIdBySessionRef.current }
+    delete next[sessionId]
+    agentSessionIdBySessionRef.current = next
+    setAgentSessionIdBySession(next)
+  }
+
+  const abortSessionStream = (sessionId: string) => {
+    const controller = abortControllersRef.current[sessionId]
+    if (!controller) return
+
+    controller.abort()
+    delete abortControllersRef.current[sessionId]
+  }
+
+  const clearSessionStreamController = (sessionId: string) => {
+    delete abortControllersRef.current[sessionId]
+  }
+
+  const suppressGlobalStreamMutations = (sessionId: string) => {
+    suppressedGlobalStreamUntilRef.current = {
+      ...suppressedGlobalStreamUntilRef.current,
+      [sessionId]: Date.now() + GLOBAL_STREAM_SUPPRESS_MS,
+    }
+  }
+
+  const clearGlobalStreamSuppression = (sessionId: string) => {
+    const next = { ...suppressedGlobalStreamUntilRef.current }
+    delete next[sessionId]
+    suppressedGlobalStreamUntilRef.current = next
+  }
+
+  const markBackgroundSessionStream = (sessionId: string) => {
+    clearGlobalStreamSuppression(sessionId)
+    backgroundStreamSessionIdsRef.current = {
+      ...backgroundStreamSessionIdsRef.current,
+      [sessionId]: true,
+    }
+  }
+
+  const clearBackgroundSessionStream = (sessionId: string) => {
+    const next = { ...backgroundStreamSessionIdsRef.current }
+    delete next[sessionId]
+    backgroundStreamSessionIdsRef.current = next
+  }
+
+  const shouldIgnoreGlobalStreamMutation = (
+    sessionId: string,
+    eventName: string,
+    data: Record<string, unknown>
+  ) => {
+    if (!isGlobalStreamMutationEvent(eventName, data)) return false
+    if (sendingSessionIdsRef.current[sessionId]) return false
+    if (backgroundStreamSessionIdsRef.current[sessionId]) return false
+    const suppressUntil = suppressedGlobalStreamUntilRef.current[sessionId]
+    if (!suppressUntil) return false
+    if (Date.now() <= suppressUntil) return true
+
+    clearGlobalStreamSuppression(sessionId)
+    return false
   }
 
   const finalizeStreamItems = (agent: string, sessionId?: string | null) => {
-    const targetSessionId = sessionId || sendingSessionIdRef.current || currentSessionIdRef.current
+    const targetSessionId = sessionId || currentSessionIdRef.current
     if (!targetSessionId) return
 
-    setPendingStreamAgentBySession((current) => ({
-      ...current,
+    const next = {
+      ...pendingStreamAgentRef.current,
       [targetSessionId]: agent,
-    }))
+    }
+    pendingStreamAgentRef.current = next
+    setPendingStreamAgentBySession(next)
   }
 
-  const commitStreamItems = (sessionId?: string | null) => {
+  const commitStreamItems = (sessionId?: string | null, agentOverride?: string) => {
     const targetSessionId = sessionId || currentSessionIdRef.current
     if (!targetSessionId) return
 
     const items = streamItemsRef.current[targetSessionId] || []
     if (items.length === 0) return
 
-    const agent = pendingStreamAgentRef.current[targetSessionId] || currentAgentRef.current || defaultAgent
+    const agent =
+      agentOverride ||
+      pendingStreamAgentRef.current[targetSessionId] ||
+      currentAgentRef.current ||
+      defaultAgent
 
     updateSessionMessages(targetSessionId, (messages) => {
       const committedMessages = items.map<Message>((item) => {
@@ -463,16 +605,12 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
         .filter((message) => message.type === 'thinking' || message.toolCall || message.content)
     })
 
-    setStreamItemsBySession((current) => ({
-      ...current,
-      [targetSessionId]: [],
-    }))
+    updateStreamItemsForSession(targetSessionId, () => [])
 
-    setPendingStreamAgentBySession((current) => {
-      const next = { ...current }
-      delete next[targetSessionId]
-      return next
-    })
+    const nextPendingStreamAgents = { ...pendingStreamAgentRef.current }
+    delete nextPendingStreamAgents[targetSessionId]
+    pendingStreamAgentRef.current = nextPendingStreamAgents
+    setPendingStreamAgentBySession(nextPendingStreamAgents)
   }
 
   const setCommands = (agentId: string, nextCommands: SlashCommand[]) => {
@@ -565,12 +703,17 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
         upsertSessionDetail(session)
       }
 
-	      setCurrentSessionId(session.id)
-	      setCurrentAgent(session.activeAgent)
-	      setPendingPermission(session.pendingPermission || null)
-	      if (session.workspaceId) {
-	        setCurrentWorkspace(session.workspaceId)
-	      }
+      setCurrentSessionId(session.id)
+      setCurrentAgent(session.activeAgent)
+      if (session.pendingPermission) {
+        setPendingPermissionBySession((current) => ({
+          ...current,
+          [session.id]: session.pendingPermission!,
+        }))
+      }
+      if (session.workspaceId) {
+        setCurrentWorkspace(session.workspaceId)
+      }
 
       if (syncRoute) {
         lastPushedRouteRef.current = session.id
@@ -690,6 +833,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   }
 
   const removeSession = async (sessionId: string) => {
+    abortSessionStream(sessionId)
     await api.deleteSession(sessionId)
     setSessions((current) => current.filter((session) => session.id !== sessionId))
     setSessionDetails((current) => {
@@ -697,12 +841,20 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       delete next[sessionId]
       return next
     })
-    setStreamItemsBySession((current) => {
+    deleteStreamItemsForSession(sessionId)
+    setPendingStreamAgentBySession((current) => {
       const next = { ...current }
       delete next[sessionId]
       return next
     })
-    setPendingStreamAgentBySession((current) => {
+    setSessionSending(sessionId, false)
+    clearSessionAgentSessionId(sessionId)
+    clearSessionAgent(sessionId)
+    {
+      clearGlobalStreamSuppression(sessionId)
+      clearBackgroundSessionStream(sessionId)
+    }
+    setPendingPermissionBySession((current) => {
       const next = { ...current }
       delete next[sessionId]
       return next
@@ -775,7 +927,6 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   const setWorkspace = (workspaceId: string) => {
     setCurrentWorkspace(workspaceId)
     setCurrentSessionId(null)
-    setPendingPermission(null)
     lastPushedRouteRef.current = null
     pushRoute(null)
 
@@ -829,15 +980,21 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   }
 
   const finishStreaming = async (targetSessionId?: string | null) => {
-    finalizeStreamItems(currentAgentRef.current, targetSessionId)
-    commitStreamItems(targetSessionId)
-    setIsSending(false)
-    setSendingSessionId(null)
-    setPendingPermission((current) => {
-      if (current && current.sessionId !== (targetSessionId || currentSessionIdRef.current)) {
-        return current
-      }
-      return null
+    const sessionId = targetSessionId || currentSessionIdRef.current
+    if (!sessionId) return
+
+    const agent = agentBySessionRef.current[sessionId] || currentAgentRef.current
+    finalizeStreamItems(agent, sessionId)
+    commitStreamItems(sessionId, agent)
+    clearSessionStreamController(sessionId)
+    clearBackgroundSessionStream(sessionId)
+    setSessionSending(sessionId, false)
+    clearSessionAgentSessionId(sessionId)
+    clearSessionAgent(sessionId)
+    setPendingPermissionBySession((current) => {
+      const next = { ...current }
+      delete next[sessionId]
+      return next
     })
     await Promise.all([loadSessions(true), loadCronJobs()])
   }
@@ -893,26 +1050,40 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       return
     }
 
-	    if (event.options && event.toolCall) {
-	      const permissionSessionId = targetSessionId || currentSessionIdRef.current || ''
-	      if (permissionSessionId) {
-	        setPendingPermission({
-	          sessionId: permissionSessionId,
-	          conversationId: typeof event.conversationId === 'string' ? event.conversationId : permissionSessionId,
-	          agentId: typeof event.agentId === 'string' ? event.agentId : event.agent,
-	          options: event.options,
-	          toolCall: event.toolCall,
-	        })
-	      }
+    const permissionOptions = event.options
+    const permissionToolCall = event.toolCall
+    if (permissionOptions && permissionToolCall) {
+      const permissionSessionId = targetSessionId || currentSessionIdRef.current || ''
+      if (permissionSessionId) {
+        setPendingPermissionBySession((current) => ({
+          ...current,
+          [permissionSessionId]: {
+            sessionId: permissionSessionId,
+            conversationId: typeof event.conversationId === 'string' ? event.conversationId : permissionSessionId,
+            agentId: typeof event.agentId === 'string' ? event.agentId : event.agent,
+            options: permissionOptions,
+            toolCall: permissionToolCall,
+          },
+        }))
+      }
       return
     }
 
-    if (event.conversationId && event.agent) {
-      setCurrentAgent(event.agent)
+    const eventAgent = event.agent
+    if (event.conversationId && eventAgent) {
+      const sessionId = targetSessionId || event.conversationId
+      setSessionAgent(sessionId, eventAgent)
+      if (sessionId === currentSessionIdRef.current) {
+        setCurrentAgent(eventAgent)
+      }
     }
 
-    if (event.sessionId) {
-      setAgentSessionId(event.sessionId)
+    const eventSessionId = event.sessionId
+    if (eventSessionId) {
+      const sessionId = targetSessionId || currentSessionIdRef.current
+      if (sessionId) {
+        setSessionAgentSessionId(sessionId, eventSessionId)
+      }
     }
 
     if (event.message && !event.update && !event.error && !event.stopReason) {
@@ -999,6 +1170,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       if (payload.conversationId !== currentSessionIdRef.current && !sessionDetailsRef.current[payload.conversationId]) return
 
       if (payload.event === 'cron_trigger') {
+        markBackgroundSessionStream(payload.conversationId)
         const message = payload.data.message as Message | undefined
         if (message) {
           if (sessionDetailsRef.current[payload.conversationId]) {
@@ -1010,6 +1182,10 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
           }
         }
         void loadSessions(true)
+        return
+      }
+
+      if (shouldIgnoreGlobalStreamMutation(payload.conversationId, payload.event, payload.data)) {
         return
       }
 
@@ -1035,22 +1211,38 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
   }, [initialized, routeSessionId])
 
   const sendCurrentMessage = async (message: string, files: MessageFile[] = []) => {
-    setIsSending(true)
-    commitStreamItems()
-    clearStreamItems()
-    setPendingPermission(null)
-
     let targetSessionId = currentSessionIdRef.current
     if (!targetSessionId) {
       targetSessionId = await createNewSession()
     }
 
     if (!targetSessionId) {
-      setIsSending(false)
       return
     }
 
-    setSendingSessionId(targetSessionId)
+    if (sendingSessionIdsRef.current[targetSessionId]) return
+
+    const targetWorkspaceId = currentWorkspaceRef.current || null
+    const workspace =
+      workspacesRef.current.find((item) => item.id === targetWorkspaceId) || null
+    const targetDeviceId =
+      workspace?.kind === 'remote' && workspace.deviceId ? workspace.deviceId : undefined
+    const agentMention = message.match(/@([\w-]+)/)?.[1]
+    const targetAgent =
+      agentMention
+        ? agentsRef.current.find((agent) => agent.id === agentMention)?.id || currentAgentRef.current
+        : currentAgentRef.current
+
+    commitStreamItems(targetSessionId)
+    clearStreamItems(targetSessionId)
+    setPendingPermissionBySession((current) => {
+      const next = { ...current }
+      delete next[targetSessionId]
+      return next
+    })
+    setSessionSending(targetSessionId, true)
+    setSessionAgent(targetSessionId, targetAgent)
+    clearGlobalStreamSuppression(targetSessionId)
     updateSessionMessages(targetSessionId, (messages) => [
       ...messages,
       {
@@ -1060,34 +1252,50 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
       },
     ])
 
-    const workspace =
-      workspacesRef.current.find((item) => item.id === currentWorkspaceRef.current) || null
-    const deviceId =
-      workspace?.kind === 'remote' && workspace.deviceId ? workspace.deviceId : undefined
-    const agentMention = message.match(/@([\w-]+)/)?.[1]
-    const mentionedAgent = agentMention
-      ? agentsRef.current.find((agent) => agent.id === agentMention)?.id
-      : undefined
-
-    api.sendMessage(
+    let streamController: AbortController | null = null
+    streamController = api.sendMessage(
       message,
       targetSessionId,
-      currentWorkspaceRef.current || null,
+      targetWorkspaceId,
       files,
       (event) => {
+        if (
+          !streamController ||
+          streamController.signal.aborted ||
+          abortControllersRef.current[targetSessionId] !== streamController
+        ) {
+          return
+        }
+
         handleStreamEvent(event as StreamEvent & Record<string, unknown>, targetSessionId)
       },
-      deviceId,
-      mentionedAgent,
+      targetDeviceId,
+      agentMention ? targetAgent : undefined,
     )
+    abortControllersRef.current[targetSessionId] = streamController
   }
 
   const cancelCurrentChat = async () => {
-    if (!agentSessionId || !currentAgentRef.current) return false
+    const targetSessionId = currentSessionIdRef.current
+    if (!targetSessionId) return false
 
-    const result = await api.cancelChat(currentAgentRef.current, agentSessionId)
-    if (result.success) {
-      await finishStreaming()
+    const targetAgent = agentBySessionRef.current[targetSessionId] || currentAgentRef.current
+    const targetAgentSessionId = agentSessionIdBySessionRef.current[targetSessionId]
+    const hadActiveStream = Boolean(abortControllersRef.current[targetSessionId])
+
+    suppressGlobalStreamMutations(targetSessionId)
+    abortSessionStream(targetSessionId)
+
+    if (!targetAgentSessionId || !targetAgent) {
+      if (hadActiveStream) {
+        await finishStreaming(targetSessionId)
+      }
+      return hadActiveStream
+    }
+
+    const result = await api.cancelChat(targetAgent, targetAgentSessionId)
+    if (result.success || hadActiveStream) {
+      await finishStreaming(targetSessionId)
     }
     return result.success
   }
@@ -1119,6 +1327,21 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     return result
   }
 
+  const setCurrentPendingPermission = (permission: PermissionRequest | null) => {
+    const sessionId = permission?.sessionId || currentSessionIdRef.current
+    if (!sessionId) return
+
+    setPendingPermissionBySession((current) => {
+      const next = { ...current }
+      if (permission) {
+        next[sessionId] = permission
+      } else {
+        delete next[sessionId]
+      }
+      return next
+    })
+  }
+
   return {
     agents,
     cronJobs,
@@ -1133,8 +1356,8 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     defaultWorkspace,
     filteredSessions,
     isLoading,
-    isSending,
-    pendingPermission,
+    isSending: currentSessionIsSending,
+    pendingPermission: currentPendingPermission,
     sessions,
     streamItems,
     workspaces,
@@ -1145,7 +1368,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     commitStreamItems,
     createNewSession,
     currentMessages: currentSession?.messages || [],
-    handlePermissionConfirmed: () => setPendingPermission(null),
+    handlePermissionConfirmed: () => setCurrentPendingPermission(null),
     loadSessions,
     refreshCronJobs: loadCronJobs,
     refreshSkillCommands,
@@ -1158,7 +1381,7 @@ export function useChatController({ routeSessionId, pushRoute }: UseChatControll
     setCronJobs,
     setCurrentAgent,
     setWorkspace,
-    setPendingPermission,
+    setPendingPermission: setCurrentPendingPermission,
     setSessions,
     warmupSandboxWorkspace,
     saveAgentEnv,
