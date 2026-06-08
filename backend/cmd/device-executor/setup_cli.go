@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pengmide/lumi/internal/acppatch"
 	"github.com/pengmide/lumi/internal/setupcheck"
 )
 
@@ -110,6 +111,14 @@ func installSetupDependencies(status setupcheck.SetupStatus) error {
 		}
 		seen[item.Package] = struct{}{}
 		fmt.Printf("Installing ACP dependency: %s (package: %s)\n", firstNonEmpty(item.Name, item.Package), item.Package)
+		if acppatch.IsTargetPiACP(item.Package) {
+			if _, err := acppatch.InstallAndPatch(acppatch.RuntimeOptions{Log: func(message string) {
+				fmt.Printf("  %s\n", message)
+			}}); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := npmInstallGlobal(item.Package); err != nil {
 			return err
 		}
@@ -158,7 +167,11 @@ func setupSignature(status setupcheck.SetupStatus) string {
 		values = append(values, "agent:"+item.Name+":"+item.Command+":"+item.Package)
 	}
 	for _, item := range status.ACPPackages {
-		values = append(values, "acp:"+item.Name+":"+item.Command+":"+item.Package)
+		patchID := ""
+		if acppatch.IsTargetPiACP(item.Package) {
+			patchID = acppatch.PiACPMultiSessionID
+		}
+		values = append(values, "acp:"+item.Name+":"+item.Command+":"+item.Package+":"+patchID)
 	}
 	sum := sha256.Sum256([]byte(strings.Join(values, "\n")))
 	return hex.EncodeToString(sum[:])

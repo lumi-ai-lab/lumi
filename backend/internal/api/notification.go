@@ -10,6 +10,7 @@ import (
 )
 
 var piStartupVersionLine = regexp.MustCompile(`^pi v\d+\.\d+\.\d+(?:[-+][^\s]+)?$`)
+var piStartupUpdateLine = regexp.MustCompile(`^New version available: v\d+\.\d+\.\d+(?:[-+][^\s]+)? \(installed v\d+\.\d+\.\d+(?:[-+][^\s]+)?\)\. Run: `)
 
 type sessionUpdate struct {
 	SessionUpdate     string             `json:"sessionUpdate"`
@@ -251,18 +252,37 @@ func extractTextContent(content any) string {
 }
 
 func stripPiStartupBanner(text string) string {
+	remaining := text
+	seenBanner := false
 	for {
-		remaining := strings.TrimLeft(text, "\r\n")
+		remaining = strings.TrimLeft(remaining, "\r\n")
 		line, rest := splitFirstLine(remaining)
-		if !piStartupVersionLine.MatchString(strings.TrimSpace(line)) {
-			return text
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
+			remaining = rest
+			continue
+		}
+		if !isPiStartupBannerLine(trimmed) {
+			if !seenBanner {
+				return text
+			}
+			remaining = strings.TrimLeft(remaining, "\r\n")
+			if strings.TrimSpace(remaining) == "" {
+				return ""
+			}
+			return remaining
 		}
 
-		text = trimPiStartupSeparator(rest)
-		if strings.TrimSpace(text) == "" {
+		seenBanner = true
+		remaining = rest
+		if strings.TrimSpace(remaining) == "" {
 			return ""
 		}
 	}
+}
+
+func isPiStartupBannerLine(line string) bool {
+	return piStartupVersionLine.MatchString(line) || piStartupUpdateLine.MatchString(line)
 }
 
 func splitFirstLine(text string) (string, string) {
@@ -270,14 +290,6 @@ func splitFirstLine(text string) (string, string) {
 		return strings.TrimSuffix(text[:idx], "\r"), text[idx+1:]
 	}
 	return strings.TrimSuffix(text, "\r"), ""
-}
-
-func trimPiStartupSeparator(text string) string {
-	line, rest := splitFirstLine(text)
-	if strings.TrimSpace(line) != "---" {
-		return text
-	}
-	return strings.TrimLeft(rest, "\r\n")
 }
 
 func extractInput(rawInput map[string]any) string {

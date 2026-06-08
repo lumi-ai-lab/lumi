@@ -904,6 +904,9 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 
 			case device.DeviceEventError:
 				if event.Err != nil {
+					if isRemoteSessionInvalidError(event.Err.Error()) {
+						s.clearRemoteSession(ctx.Prepared.ConvID, task.DeviceID, task.AgentID)
+					}
 					ctx.SendEvent("error", map[string]string{"message": event.Err.Error()})
 					ctx.setError(event.Err)
 					return
@@ -914,6 +917,9 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 					ctx.SendEvent("error", map[string]string{"message": "Device execution failed"})
 					ctx.setError(fmt.Errorf("device execution failed"))
 					return
+				}
+				if isRemoteSessionInvalidError(payload.Message) {
+					s.clearRemoteSession(ctx.Prepared.ConvID, task.DeviceID, task.AgentID)
 				}
 				ctx.SendEvent("error", map[string]string{"message": payload.Message})
 				ctx.setError(errors.New(payload.Message))
@@ -1226,6 +1232,46 @@ func (s *Server) setRemoteSessionForPromptVersion(conversationID, deviceID, agen
 		versionByDevice[deviceID] = versionByAgent
 	}
 	versionByAgent[agentID] = version
+}
+
+func (s *Server) clearRemoteSession(conversationID, deviceID, agentID string) {
+	if conversationID == "" || deviceID == "" || agentID == "" {
+		return
+	}
+	s.remoteSessionsMu.Lock()
+	if byDevice := s.remoteAgentSessions[conversationID]; byDevice != nil {
+		if byAgent := byDevice[deviceID]; byAgent != nil {
+			delete(byAgent, agentID)
+			if len(byAgent) == 0 {
+				delete(byDevice, deviceID)
+			}
+		}
+		if len(byDevice) == 0 {
+			delete(s.remoteAgentSessions, conversationID)
+		}
+	}
+	if byDevice := s.remoteAgentSessionPromptVersions[conversationID]; byDevice != nil {
+		if byAgent := byDevice[deviceID]; byAgent != nil {
+			delete(byAgent, agentID)
+			if len(byAgent) == 0 {
+				delete(byDevice, deviceID)
+			}
+		}
+		if len(byDevice) == 0 {
+			delete(s.remoteAgentSessionPromptVersions, conversationID)
+		}
+	}
+	s.remoteSessionsMu.Unlock()
+	s.persistConversation(conversationID)
+}
+
+func isRemoteSessionInvalidError(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "unknown sessionid") ||
+		strings.Contains(message, "unknown session id") ||
+		strings.Contains(message, "session not found") ||
+		strings.Contains(message, "no session found") ||
+		strings.Contains(message, "missing session")
 }
 
 func (s *Server) clearRemoteSessionsForDevice(deviceID string) {

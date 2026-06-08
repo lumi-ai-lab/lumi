@@ -169,9 +169,18 @@ func (p *Process) Start() error {
 	p.status = StatusStarting
 	p.mu.Unlock()
 
-	cmd := exec.Command(p.config.Command, p.config.Args...)
+	cfg, err := ResolveManagedConfig(p.config)
+	if err != nil {
+		p.setStatus(StatusError)
+		return err
+	}
+	if cfg != p.config {
+		fmt.Printf("Using Lumi managed agent [%s]: %s\n", p.ID, cfg.Command)
+	}
+
+	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Env = os.Environ()
-	for k, v := range p.config.Env {
+	for k, v := range cfg.Env {
 		envVar := fmt.Sprintf("%s=%s", k, v)
 		cmd.Env = append(cmd.Env, envVar)
 		if isSensitiveEnvKey(k) {

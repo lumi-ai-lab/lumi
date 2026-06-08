@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pengmide/lumi/internal/acppatch"
 	"github.com/pengmide/lumi/internal/config"
 )
 
@@ -161,6 +162,17 @@ func Check(agents []config.AgentConfig) SetupStatus {
 		case !npmReady || !npxReady:
 			item.Status = "blocked"
 			item.Message = "Requires npm/npx"
+			allACPReady = false
+		case acppatch.IsTargetPiACP(item.Package):
+			patchStatus := acppatch.Status(acppatch.RuntimeOptions{})
+			if patchStatus.Applied {
+				item.Status = "ready"
+				item.Message = patchStatus.Message
+				break
+			}
+			item.Status = "not_installed"
+			item.Message = patchStatus.Message
+			item.Install = "npm install -g --prefix " + acppatch.RuntimePrefix() + " " + item.Package
 			allACPReady = false
 		case isPackageCached(item.Package):
 			item.Status = "ready"

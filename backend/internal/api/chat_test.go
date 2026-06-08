@@ -83,6 +83,37 @@ func TestPersistAndRestoreConversationKeepsAgentSessions(t *testing.T) {
 	}
 }
 
+func TestClearRemoteSessionRemovesPromptVersionMapping(t *testing.T) {
+	server := newTestAPIServer(t)
+	server.setRemoteSessionForPromptVersion("conv-1", "dev-1", "pi", "remote-session-1", imSystemPromptVersion)
+
+	server.clearRemoteSession("conv-1", "dev-1", "pi")
+
+	if got := server.getRemoteSession("conv-1", "dev-1", "pi"); got != "" {
+		t.Fatalf("getRemoteSession() = %q, want empty", got)
+	}
+	if got := server.getRemoteSessionForPromptVersion("conv-1", "dev-1", "pi", imSystemPromptVersion); got != "" {
+		t.Fatalf("getRemoteSessionForPromptVersion() = %q, want empty", got)
+	}
+}
+
+func TestIsRemoteSessionInvalidError(t *testing.T) {
+	tests := []struct {
+		message string
+		want    bool
+	}{
+		{message: "Invalid params: Unknown sessionId", want: true},
+		{message: "Session not found", want: true},
+		{message: "No session found for id", want: true},
+		{message: "Invalid params: bad session mode", want: false},
+	}
+	for _, tt := range tests {
+		if got := isRemoteSessionInvalidError(tt.message); got != tt.want {
+			t.Fatalf("isRemoteSessionInvalidError(%q) = %v, want %v", tt.message, got, tt.want)
+		}
+	}
+}
+
 func TestPrepareChatRoutesQwenMention(t *testing.T) {
 	server := newTestAPIServer(t)
 
@@ -300,18 +331,20 @@ func TestHandleNotificationStripsPiStartupVersionBanner(t *testing.T) {
 		}
 	}
 
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pi v0.78.0\n---\n\n## Context\n- AGENTS.md\n"}}}`), send, &items, accumulator, toolMap, "pi")
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pi v0.78.0\n---\n\n---\nNew version available: v0.78.1 (installed v0.78.0). Run: `+"`"+`npm i -g @earendil-works/pi-coding-agent`+"`"+`\n\n## Context\n- AGENTS.md\n"}}}`), send, &items, accumulator, toolMap, "pi")
 	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pi v0.78.0\n"}}}`), send, &items, accumulator, toolMap, "pi")
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"New version available: v0.78.1 (installed v0.78.0). Run: npm i -g @earendil-works/pi-coding-agent\n"}}}`), send, &items, accumulator, toolMap, "pi")
 	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pi v0.78.0\n"}}}`), send, &items, accumulator, toolMap, "claude")
+	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"New version available: v0.78.1 (installed v0.78.0). Run: npm i -g @earendil-works/pi-coding-agent\n"}}}`), send, &items, accumulator, toolMap, "claude")
 
-	if len(events) != 2 {
-		t.Fatalf("len(events) = %d, want 2", len(events))
+	if len(events) != 3 {
+		t.Fatalf("len(events) = %d, want 3", len(events))
 	}
 	if len(items) != 0 {
 		t.Fatalf("items before finalize = %+v, want no flushed stream items", items)
 	}
 	accumulator.Finish(&items)
-	if len(items) != 1 || items[0].Text != "## Context\n- AGENTS.md\npi v0.78.0\n" {
+	if len(items) != 1 || items[0].Text != "## Context\n- AGENTS.md\npi v0.78.0\nNew version available: v0.78.1 (installed v0.78.0). Run: npm i -g @earendil-works/pi-coding-agent\n" {
 		t.Fatalf("items = %+v, want pi banner stripped only for pi agent", items)
 	}
 }

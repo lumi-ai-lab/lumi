@@ -381,6 +381,9 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 				return streamItems, nil
 			case device.DeviceEventError:
 				if event.Err != nil {
+					if isRemoteSessionInvalidError(event.Err.Error()) {
+						s.clearRemoteSession(input.ConversationID, task.DeviceID, task.AgentID)
+					}
 					_ = sink.Emit("error", map[string]string{"message": event.Err.Error()})
 					return nil, event.Err
 				}
@@ -388,6 +391,9 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 				if err != nil || payload.Message == "" {
 					_ = sink.Emit("error", map[string]string{"message": "Device execution failed"})
 					return nil, errors.New("device execution failed")
+				}
+				if isRemoteSessionInvalidError(payload.Message) {
+					s.clearRemoteSession(input.ConversationID, task.DeviceID, task.AgentID)
 				}
 				_ = sink.Emit("error", map[string]string{"message": payload.Message})
 				return nil, errors.New(payload.Message)

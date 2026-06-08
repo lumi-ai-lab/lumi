@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pengmide/lumi/internal/acppatch"
 	"github.com/pengmide/lumi/internal/setupcheck"
 )
 
@@ -47,5 +48,19 @@ func TestInstallSetupDependenciesWritesBootstrapManifest(t *testing.T) {
 	}
 	if !bootstrapManifestReady(setupSignature(status)) {
 		t.Fatal("bootstrap manifest was not written")
+	}
+}
+
+func TestSetupSignatureIncludesPiACPPatchID(t *testing.T) {
+	status := setupcheck.SetupStatus{
+		ACPPackages: []setupcheck.DependencyItem{
+			{Name: "PI", Package: acppatch.PiACPPackageSpec, Status: "ready"},
+		},
+	}
+	withPatch := setupSignature(status)
+	status.ACPPackages[0].Package = "pi-acp@0.0.28"
+	withoutPatch := setupSignature(status)
+	if withPatch == withoutPatch {
+		t.Fatal("setupSignature did not include PI ACP patch identity")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/pengmide/lumi/internal/agent"
@@ -82,68 +83,12 @@ func (r *Runner) Execute(ctx context.Context, env Envelope) {
 
 	sessionID := payload.SessionID
 	if sessionID == "" {
-		cwd := payload.WorkspacePath
-		if cwd == "" {
-			cwd = r.cfg.Workspace
-		}
-
-		agentCfg := findAgentConfig(r.cfg, payload.AgentID)
-		backend := agentmode.BackendUnknown
-		sessionMode := agentmode.ModeDefault
-		if agentCfg != nil {
-			backend = agentmode.DetectBackend(agentCfg.ID, agentCfg.Command, agentCfg.Args)
-			sessionMode = agentmode.ResolveSessionMode(backend, agentCfg.SessionMode, agentCfg.PermissionMode)
-			if err := agentmode.PrepareSessionMode(backend, sessionMode); err != nil {
-				r.sendTaskError(env.TaskID, fmt.Sprintf("failed to prepare agent mode: %v", err))
-				return
-			}
-		}
-
-		sessionNewParams := map[string]any{
-			"cwd":        cwd,
-			"mcpServers": MCPRecordsForBackend(backend),
-		}
-		if payload.SystemPromptAppend != "" {
-			sessionNewParams["_meta"] = map[string]any{
-				"systemPrompt": map[string]string{
-					"append": payload.SystemPromptAppend,
-				},
-			}
-		}
-		resp, err := proc.Request("session/new", sessionNewParams)
+		newSessionID, err := r.createSession(env.TaskID, proc, payload)
 		if err != nil {
 			r.sendTaskError(env.TaskID, err.Error())
 			return
 		}
-
-		var result struct {
-			SessionID string `json:"sessionId"`
-		}
-		if err := resp.ParseResult(&result); err != nil {
-			r.sendTaskError(env.TaskID, fmt.Sprintf("failed to parse session/new result: %v", err))
-			return
-		}
-		if result.SessionID == "" {
-			r.sendTaskError(env.TaskID, "session/new returned empty sessionId")
-			return
-		}
-		sessionID = result.SessionID
-
-		r.setSessionForTask(env.TaskID, sessionID)
-		if err := r.client.Send(MsgTaskSession, env.TaskID, TaskSessionPayload{SessionID: sessionID}); err != nil {
-			r.sendTaskError(env.TaskID, err.Error())
-			return
-		}
-
-		if agentmode.ShouldSetACPMode(backend, sessionMode) {
-			if _, err := proc.Request("session/set_mode", map[string]any{
-				"sessionId": sessionID,
-				"modeId":    sessionMode,
-			}); err != nil {
-				r.sendTaskError(env.TaskID, fmt.Sprintf("failed to set session mode: %v", err))
-				return
-			}
-		}
+		sessionID = newSessionID
 	} else {
 		r.setSessionForTask(env.TaskID, sessionID)
 		if err := r.client.Send(MsgTaskSession, env.TaskID, TaskSessionPayload{SessionID: sessionID}); err != nil {
@@ -159,6 +104,27 @@ func (r *Runner) Execute(ctx context.Context, env Envelope) {
 		},
 	})
 	if err != nil {
+		if shouldRecoverUnknownSession(err) && payload.SessionID != "" {
+			log.Printf("remote session %s is no longer valid for task %s; creating a replacement session", payload.SessionID, env.TaskID)
+			newSessionID, newErr := r.createSession(env.TaskID, proc, payload)
+			if newErr != nil {
+				r.sendTaskError(env.TaskID, fmt.Sprintf("%s; failed to recover session: %v", err.Error(), newErr))
+				return
+			}
+			sessionID = newSessionID
+			resp, err = proc.Request("session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]string{
+					{"type": "text", "text": payload.Prompt},
+				},
+			})
+			if err == nil {
+				if err := r.client.Send(MsgTaskDone, env.TaskID, TaskDonePayload{Result: resp.Result}); err != nil {
+					log.Printf("failed to send task.done for %s: %v", env.TaskID, err)
+				}
+				return
+			}
+		}
 		r.sendTaskError(env.TaskID, err.Error())
 		return
 	}
@@ -166,6 +132,77 @@ func (r *Runner) Execute(ctx context.Context, env Envelope) {
 	if err := r.client.Send(MsgTaskDone, env.TaskID, TaskDonePayload{Result: resp.Result}); err != nil {
 		log.Printf("failed to send task.done for %s: %v", env.TaskID, err)
 	}
+}
+
+func (r *Runner) createSession(taskID string, proc *agent.Process, payload TaskExecutePayload) (string, error) {
+	cwd := payload.WorkspacePath
+	if cwd == "" {
+		cwd = r.cfg.Workspace
+	}
+
+	agentCfg := findAgentConfig(r.cfg, payload.AgentID)
+	backend := agentmode.BackendUnknown
+	sessionMode := agentmode.ModeDefault
+	if agentCfg != nil {
+		backend = agentmode.DetectBackend(agentCfg.ID, agentCfg.Command, agentCfg.Args)
+		sessionMode = agentmode.ResolveSessionMode(backend, agentCfg.SessionMode, agentCfg.PermissionMode)
+		if err := agentmode.PrepareSessionMode(backend, sessionMode); err != nil {
+			return "", fmt.Errorf("failed to prepare agent mode: %v", err)
+		}
+	}
+
+	sessionNewParams := map[string]any{
+		"cwd":        cwd,
+		"mcpServers": MCPRecordsForBackend(backend),
+	}
+	if payload.SystemPromptAppend != "" {
+		sessionNewParams["_meta"] = map[string]any{
+			"systemPrompt": map[string]string{
+				"append": payload.SystemPromptAppend,
+			},
+		}
+	}
+	resp, err := proc.Request("session/new", sessionNewParams)
+	if err != nil {
+		return "", err
+	}
+
+	var result struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := resp.ParseResult(&result); err != nil {
+		return "", fmt.Errorf("failed to parse session/new result: %v", err)
+	}
+	if result.SessionID == "" {
+		return "", fmt.Errorf("session/new returned empty sessionId")
+	}
+
+	r.setSessionForTask(taskID, result.SessionID)
+	if err := r.client.Send(MsgTaskSession, taskID, TaskSessionPayload{SessionID: result.SessionID}); err != nil {
+		return "", err
+	}
+
+	if agentmode.ShouldSetACPMode(backend, sessionMode) {
+		if _, err := proc.Request("session/set_mode", map[string]any{
+			"sessionId": result.SessionID,
+			"modeId":    sessionMode,
+		}); err != nil {
+			return "", fmt.Errorf("failed to set session mode: %v", err)
+		}
+	}
+	return result.SessionID, nil
+}
+
+func shouldRecoverUnknownSession(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unknown sessionid") ||
+		strings.Contains(message, "unknown session id") ||
+		strings.Contains(message, "session not found") ||
+		strings.Contains(message, "no session found") ||
+		strings.Contains(message, "missing session")
 }
 
 func (r *Runner) Cancel(_ context.Context, env Envelope) {
@@ -321,7 +358,11 @@ func (r *Runner) getOrStartAgent(agentID, workspacePath string) (*agent.Process,
 			return nil, fmt.Errorf("agent not found: %s", agentID)
 		}
 		runtimeEnv := buildLumiRuntimeEnv(r.client.server, r.cfg)
-		proc = agent.NewProcess(mergeAgentEnv(agentCfg, runtimeEnv))
+		resolvedAgentCfg, err := agent.ResolveManagedConfig(agentCfg)
+		if err != nil {
+			return nil, err
+		}
+		proc = agent.NewProcess(mergeAgentEnv(resolvedAgentCfg, runtimeEnv))
 		r.agents[agentID] = proc
 	}
 

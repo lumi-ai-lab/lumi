@@ -39,6 +39,9 @@ type Error struct {
 
 func (e *Error) Error() string {
 	if e.Data != nil {
+		if detail, ok := e.Data.(string); ok && detail != "" {
+			return fmt.Sprintf("%s: %s", e.Message, detail)
+		}
 		if dataMap, ok := e.Data.(map[string]any); ok {
 			if details, ok := dataMap["details"].(string); ok {
 				return fmt.Sprintf("%s: %s", e.Message, details)

@@ -20,7 +20,7 @@ mkdir -p "$(dirname "$OUTPUT")"
 echo "Building device-executor for Intel Mac (darwin/amd64)..."
 (
   cd "$BACKEND_DIR"
-  GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$OUTPUT" ./cmd/device-executor
+  GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="-s -w" -o "$OUTPUT" ./cmd/device-executor
 )
 
 chmod +x "$OUTPUT"

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -139,6 +140,30 @@ func TestBuildLumiRuntimeEnv(t *testing.T) {
 	}
 	if env["LUMI_CLI"] != cliPath {
 		t.Fatalf("LUMI_CLI = %q, want %q", env["LUMI_CLI"], cliPath)
+	}
+}
+
+func TestShouldRecoverUnknownSession(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "unknown session id compact", err: errors.New("Invalid params: Unknown sessionId"), want: true},
+		{name: "session not found", err: errors.New("Session not found"), want: true},
+		{name: "invalid params session", err: errors.New("Invalid params: bad session"), want: false},
+		{name: "other error", err: errors.New("model unavailable"), want: false},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shouldRecoverUnknownSession(tt.err); got != tt.want {
+				t.Fatalf("shouldRecoverUnknownSession(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
