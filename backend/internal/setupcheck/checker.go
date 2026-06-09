@@ -36,7 +36,7 @@ var installInstructions = map[string]string{
 	"claude": "npm install -g @anthropic-ai/claude-code",
 	"codex":  "npm install -g @openai/codex",
 	"qwen":   "npm install -g @qwen-code/qwen-code",
-	"pi":     "npm install -g @earendil-works/pi-coding-agent",
+	"pi":     "npm install -g @earendil-works/pi-coding-agent@0.78.0",
 }
 
 var acpToAgentCommand = map[string]struct {
