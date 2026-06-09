@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 //go:embed lumi.config.example.json
@@ -132,25 +134,17 @@ func loadFromFile(path string) (*Config, error) {
 }
 
 func defaultPaths() []string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
-	}
 	return []string{
 		"./lumi.config.json",
 		"./lumi.json",
-		filepath.Join(home, ".lumi", "lumi.config.json"),
-		filepath.Join(home, ".config", "lumi", "config.json"),
+		lumipaths.Path("lumi.config.json"),
+		lumipaths.LegacyConfigPath(),
 	}
 }
 
-// userConfigPath returns the user config path ~/.lumi/lumi.config.json
+// userConfigPath returns the Lumi home config path.
 func userConfigPath() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
-	}
-	return filepath.Join(home, ".lumi", "lumi.config.json")
+	return lumipaths.Path("lumi.config.json")
 }
 
 // EnsureConfigExists creates config from example if it doesn't exist

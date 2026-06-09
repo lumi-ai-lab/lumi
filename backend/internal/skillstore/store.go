@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 // CurrentVersion is the schema version embedded in newly written files.
@@ -43,11 +45,7 @@ func New(path, cacheDir, archDir string) *Store {
 
 // Default returns the conventional store rooted under ~/.lumi.
 func Default() (*Store, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("resolve home: %w", err)
-	}
-	root := filepath.Join(home, ".lumi")
+	root := lumipaths.Home()
 	return New(
 		filepath.Join(root, "skills.json"),
 		filepath.Join(root, "skills", "_cache"),

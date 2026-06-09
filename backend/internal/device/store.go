@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 type Store struct {
@@ -25,14 +27,7 @@ func NewStore(path string) *Store {
 }
 
 func DefaultDevicesPath() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
-	}
-	if home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".lumi", "devices.json")
+	return lumipaths.Path("devices.json")
 }
 
 func (s *Store) Load() ([]Device, error) {

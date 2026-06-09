@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pengmide/lumi/internal/conversation"
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 const defaultWorkspace = "_default"
@@ -59,14 +60,7 @@ func NewSessionStore(baseDir string) *SessionStore {
 }
 
 func defaultBaseDir() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
-	}
-	if home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".lumi", "sessions")
+	return lumipaths.Path("sessions")
 }
 
 func (s *SessionStore) workspaceDir(workspaceID string) string {

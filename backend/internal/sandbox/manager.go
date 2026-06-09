@@ -43,9 +43,10 @@ type Manager struct {
 
 	ssotApplier func(workspaceID, credentialsRoot string)
 
-	mu       sync.Mutex
-	runtimes map[string]*RuntimeRecord
-	ensures  map[string]*ensureResult
+	mu        sync.Mutex
+	runtimes  map[string]*RuntimeRecord
+	ensures   map[string]*ensureResult
+	runtimeMu sync.Mutex
 
 	stop     chan struct{}
 	done     chan struct{}
@@ -587,13 +588,90 @@ func (m *Manager) getOrCreateRuntimeLocked(workspace config.WorkspaceConfig) *Ru
 }
 
 func (m *Manager) prepareWorkspaceRuntime(workspaceID string) (string, error) {
-	dir := filepath.Join(m.runtimeDir, "sandboxes", workspaceID, "runtime")
+	m.runtimeMu.Lock()
+	defer m.runtimeMu.Unlock()
+
+	dir := filepath.Join(m.runtimeDir, "shared", "runtime")
+	if err := m.seedSharedRuntimeFromLegacy(workspaceID, dir); err != nil {
+		return "", err
+	}
 	for _, child := range []string{"npm/bin", "npm/lib/node_modules", "npm-cache"} {
 		if err := os.MkdirAll(filepath.Join(dir, child), 0o755); err != nil {
 			return "", err
 		}
 	}
 	return dir, nil
+}
+
+func (m *Manager) seedSharedRuntimeFromLegacy(workspaceID, sharedRuntimeDir string) error {
+	if hasNPMModules(sharedRuntimeDir) {
+		return nil
+	}
+	candidate := m.bestLegacyRuntime(workspaceID, sharedRuntimeDir)
+	if candidate == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(sharedRuntimeDir), 0o755); err != nil {
+		return err
+	}
+	_ = os.RemoveAll(sharedRuntimeDir)
+	if err := os.Rename(candidate, sharedRuntimeDir); err == nil {
+		return nil
+	}
+	return nil
+}
+
+func (m *Manager) bestLegacyRuntime(workspaceID, sharedRuntimeDir string) string {
+	sandboxRoot := filepath.Join(m.runtimeDir, "sandboxes")
+	candidates := []string{}
+	if strings.TrimSpace(workspaceID) != "" {
+		candidates = append(candidates, filepath.Join(sandboxRoot, workspaceID, "runtime"))
+	}
+	entries, err := os.ReadDir(sandboxRoot)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			candidates = append(candidates, filepath.Join(sandboxRoot, entry.Name(), "runtime"))
+		}
+	}
+
+	var best string
+	var bestSize int64 = -1
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		if candidate == sharedRuntimeDir || seen[candidate] || !hasNPMModules(candidate) {
+			continue
+		}
+		seen[candidate] = true
+		size := dirSize(candidate)
+		if size > bestSize {
+			best = candidate
+			bestSize = size
+		}
+	}
+	return best
+}
+
+func hasNPMModules(runtimeDir string) bool {
+	entries, err := os.ReadDir(filepath.Join(runtimeDir, "npm", "lib", "node_modules"))
+	return err == nil && len(entries) > 0
+}
+
+func dirSize(root string) int64 {
+	var total int64
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }
 
 func (m *Manager) writeExecutorConfig(workspace config.WorkspaceConfig, runtimeState RuntimeState) (string, error) {

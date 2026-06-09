@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 // WorkspaceStore manages workspace persistence
@@ -24,14 +25,7 @@ func NewWorkspaceStore(filePath string) *WorkspaceStore {
 }
 
 func defaultWorkspacePath() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
-	}
-	if home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".lumi", "workspaces.json")
+	return lumipaths.Path("workspaces.json")
 }
 
 // workspaceFile matches TypeScript format: {"workspaces": [...]}

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 type Store struct {
@@ -22,14 +24,7 @@ func NewStore(path string) *Store {
 }
 
 func defaultPath() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
-	}
-	if home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".lumi", "cron", "jobs.json")
+	return lumipaths.Path("cron", "jobs.json")
 }
 
 func (s *Store) List() ([]Job, error) {

@@ -37,7 +37,10 @@ Config file locations (in order of priority):
 1. Specified via `-config` flag
 2. `./lumi.config.json`
 3. `./lumi.json`
-4. `~/.config/lumi/config.json`
+4. `$LUMI_HOME/lumi.config.json` (defaults to `~/.lumi/lumi.config.json`)
+5. `~/.config/lumi/config.json`
+
+`LUMI_HOME` relocates Lumi's global config, sessions, IM state, device records, and sandbox runtime storage.
 
 ## API Endpoints
 

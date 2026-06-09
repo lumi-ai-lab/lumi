@@ -92,7 +92,7 @@ func TestRuntimePrefixIgnoresNonSandboxNPMConfigPrefix(t *testing.T) {
 	t.Setenv("NPM_CONFIG_PREFIX", userPrefix)
 	t.Setenv("LUMI_NPM_RUNTIME_PREFIX", "")
 
-	want := filepath.Join(home, ".lumi", "runtime", "npm")
+	want := filepath.Join(home, ".lumi", "runtime", "shared", "runtime", "npm")
 	if got := RuntimePrefix(); got != want {
 		t.Fatalf("RuntimePrefix() = %q, want %q", got, want)
 	}

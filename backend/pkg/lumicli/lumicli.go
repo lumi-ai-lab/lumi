@@ -14,6 +14,7 @@ import (
 	"github.com/pengmide/lumi/internal/api"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/device"
+	"github.com/pengmide/lumi/internal/lumipaths"
 	"github.com/pengmide/lumi/internal/sandbox"
 	"github.com/pengmide/lumi/internal/setupcheck"
 	"github.com/pengmide/lumi/internal/wechat"
@@ -538,11 +539,7 @@ func PruneSandboxes(ctx context.Context, configPath string) (SandboxPruneResult,
 }
 
 func DefaultConfigPath() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
-	}
-	return filepath.Join(home, ".lumi", "lumi.config.json")
+	return lumipaths.Path("lumi.config.json")
 }
 
 func upsertWorkspace(cfg *config.Config, ws config.WorkspaceConfig) {

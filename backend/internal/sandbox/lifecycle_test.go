@@ -86,7 +86,7 @@ func TestPrepareWorkspaceRuntimeCreatesNpmDirs(t *testing.T) {
 		t.Fatalf("prepareWorkspaceRuntime() error = %v", err)
 	}
 
-	want := filepath.Join(runtimeDir, "sandboxes", "workspace-1", "runtime")
+	want := filepath.Join(runtimeDir, "shared", "runtime")
 	if got != want {
 		t.Fatalf("runtime path = %q, want %q", got, want)
 	}
@@ -99,6 +99,38 @@ func TestPrepareWorkspaceRuntimeCreatesNpmDirs(t *testing.T) {
 		if !info.IsDir() {
 			t.Fatalf("%q is not a directory", path)
 		}
+	}
+}
+
+func TestPrepareWorkspaceRuntimeSeedsSharedRuntimeFromLargestLegacyRuntime(t *testing.T) {
+	runtimeDir := t.TempDir()
+	manager := &Manager{runtimeDir: runtimeDir}
+
+	smallPkg := filepath.Join(runtimeDir, "sandboxes", "small", "runtime", "npm", "lib", "node_modules", "pkg")
+	largePkg := filepath.Join(runtimeDir, "sandboxes", "large", "runtime", "npm", "lib", "node_modules", "pkg")
+	if err := os.MkdirAll(smallPkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(smallPkg, "small.bin"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(largePkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(largePkg, "large.bin"), []byte("larger"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := manager.prepareWorkspaceRuntime("small")
+	if err != nil {
+		t.Fatalf("prepareWorkspaceRuntime() error = %v", err)
+	}
+
+	if got != filepath.Join(runtimeDir, "shared", "runtime") {
+		t.Fatalf("runtime path = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(got, "npm", "lib", "node_modules", "pkg", "large.bin")); err != nil {
+		t.Fatalf("shared runtime was not seeded from largest legacy runtime: %v", err)
 	}
 }
 

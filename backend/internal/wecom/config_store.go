@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 const (
@@ -147,14 +149,7 @@ func maskSecret(secret string) string {
 }
 
 func wecomRootDir() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
-	}
-	if home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".lumi", "wecom")
+	return lumipaths.Path("wecom")
 }
 
 func wecomActiveRootDir() string {

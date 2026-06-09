@@ -8,17 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 func DefaultSecretPath() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
-	}
-	if home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".lumi", "device.secret")
+	return lumipaths.Path("device.secret")
 }
 
 func EnsureSecret(path string) (string, error) {

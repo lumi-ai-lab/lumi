@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 const defaultBaseURL = "https://ilinkai.weixin.qq.com"
@@ -120,14 +122,7 @@ func MaskToken(token string) string {
 }
 
 func wechatRootDir() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
-	}
-	if home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".lumi", "wechat")
+	return lumipaths.Path("wechat")
 }
 
 func wechatActiveRootDir() string {

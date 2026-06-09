@@ -166,6 +166,7 @@ cd backend && go mod download
 ### 2. 配置
 
 首次启动时，如果没有找到配置文件，会自动创建 `~/.lumi/lumi.config.json`。
+可以设置 `LUMI_HOME` 将 Lumi 的全局配置、会话、IM 实例状态和 sandbox runtime 统一放到其他目录，例如 `LUMI_HOME=/data/lumi`。
 
 你也可以手动复制配置文件:
 ```bash
@@ -243,7 +244,7 @@ export CLAUDE_CODE_EXECUTABLE=/opt/nodejs/bin/claude
 
 1. `./lumi.config.json` - 当前目录
 2. `./lumi.json` - 当前目录
-3. `~/.lumi/lumi.config.json` - 用户目录 (首次启动自动创建)
+3. `$LUMI_HOME/lumi.config.json` - Lumi home；未设置时为 `~/.lumi/lumi.config.json` (首次启动自动创建)
 4. `~/.config/lumi/config.json` - XDG 配置目录
 
 ### 配置格式

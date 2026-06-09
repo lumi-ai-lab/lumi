@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 type StoredShare struct {
@@ -41,14 +43,7 @@ func NewShareStore(filePath string) *ShareStore {
 }
 
 func defaultSharePath() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
-	}
-	if home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".lumi", "shares.json")
+	return lumipaths.Path("shares.json")
 }
 
 func (s *ShareStore) Load() []StoredShare {

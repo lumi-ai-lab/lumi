@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 const (
@@ -73,11 +75,7 @@ func RuntimePrefix() string {
 	if prefix := strings.TrimSpace(os.Getenv("NPM_CONFIG_PREFIX")); prefix == "/lumi/runtime/npm" {
 		return prefix
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".lumi", "runtime", "npm")
+	return filepath.Join(lumipaths.Home(), "runtime", "shared", "runtime", "npm")
 }
 
 func PackageDir(prefix string) string {

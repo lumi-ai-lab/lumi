@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 // CurrentVersion is the schema version embedded in newly written files.
@@ -33,14 +35,9 @@ func New(path string) *Store {
 	return &Store{path: path, file: File{Version: CurrentVersion}}
 }
 
-// Default returns the conventional ~/.lumi/mcp.json store, or an error if the
-// home directory cannot be resolved.
+// Default returns the conventional Lumi home mcp.json store.
 func Default() (*Store, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("resolve home: %w", err)
-	}
-	return New(filepath.Join(home, ".lumi", "mcp.json")), nil
+	return New(lumipaths.Path("mcp.json")), nil
 }
 
 // Path returns the file path backing the store.
