@@ -525,7 +525,7 @@ func (rt *wsRuntime) Send(ctx context.Context, rctx replyContext, content string
 	if rctx.ChatID == "" {
 		return fmt.Errorf("wecom-ws: chatID is empty")
 	}
-	chunks := splitByBytes(content, 2000)
+	chunks := splitWeComMarkdownMessages(content, wecomMarkdownSendMaxBytes)
 	for _, chunk := range chunks {
 		reqID := rt.generateReqID("aibot_send_msg")
 		frame := map[string]any{
@@ -833,33 +833,4 @@ func wsVoiceText(v struct {
 		return s
 	}
 	return strings.TrimSpace(v.Text)
-}
-
-func splitByBytes(s string, maxBytes int) []string {
-	if maxBytes <= 0 {
-		return []string{s}
-	}
-	if len(s) == 0 {
-		return []string{""}
-	}
-	if len(s) <= maxBytes {
-		return []string{s}
-	}
-	out := make([]string, 0, len(s)/maxBytes+1)
-	for start := 0; start < len(s); {
-		end := start + maxBytes
-		if end >= len(s) {
-			out = append(out, s[start:])
-			break
-		}
-		for end > start && (s[end]&0xC0) == 0x80 {
-			end--
-		}
-		if end == start {
-			end = start + maxBytes
-		}
-		out = append(out, s[start:end])
-		start = end
-	}
-	return out
 }

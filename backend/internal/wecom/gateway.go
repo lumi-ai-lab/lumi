@@ -2,9 +2,11 @@ package wecom
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/sha1"
 	"errors"
 	"fmt"
+	"math/big"
 	"mime"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/imagent"
@@ -25,6 +28,7 @@ const (
 	busyReplyText             = "上一条消息还在处理中，请稍后再发。"
 	attachmentFailedReplyText = "附件处理失败，请重新发送。"
 	fallbackDoneText          = "已完成。"
+	lengthLimitNoticeText     = "模型回复达到单次长度上限，回答“继续”可补全"
 	uploadsTTL                = 72 * time.Hour
 	maxMediaBytes             = 20 << 20
 )
@@ -111,6 +115,7 @@ type gatewayEventSink struct {
 	debug                storage.IMDebugSettings
 	finalTextBuilder     strings.Builder
 	finalTextAccumulated string
+	stopReason           string
 }
 
 type wecomStreamSender struct {
@@ -127,10 +132,42 @@ type wecomStreamSender struct {
 	timer         *time.Timer
 }
 
+type wecomStreamCompleteResult struct {
+	FullDelivered bool
+	Preview       string
+	Remaining     string
+}
+
 const (
-	wecomStreamFlushInterval = 200 * time.Millisecond
-	wecomStreamMaxDuration   = 330 * time.Second
+	wecomStreamFlushInterval  = 200 * time.Millisecond
+	wecomStreamMaxDuration    = 330 * time.Second
+	wecomStreamMaxBytes       = 20480
+	wecomMarkdownSendMaxBytes = 4096
+	wecomLongReplyNotice      = "（回答较长，以下继续发送剩余内容）"
 )
+
+var wecomStreamPlaceholders = []string{
+	"收到你的消息，我会用最直白、不绕弯、一看就懂的方式回答你，请稍等片刻...\n",
+	"我已经收到啦，先快速理清你的问题，再给你一个清楚直接的回答...\n",
+	"收到，我会尽量把答案讲清楚、讲明白，不让你来回猜，请稍等...\n",
+	"我先看一下你的问题，会用更好理解的方式整理后回复你...\n",
+	"收到消息了，我会先抓重点，再给你一个不绕弯的回答...\n",
+	"我正在处理你的问题，会尽量用简单清楚的话说明白...\n",
+	"稍等一下，我先把问题拆清楚，再给你直接可用的答案...\n",
+	"我看到了，接下来会用直白、清楚的方式回答你...\n",
+	"收到，我会把重点整理好后回复，尽量让你一眼看懂...\n",
+	"我先思考一下怎么讲最清楚，马上给你回复...\n",
+	"消息收到，我会尽量少绕弯，直接说重点，请稍等...\n",
+	"我正在准备回答，会把复杂的地方尽量讲简单...\n",
+	"稍等片刻，我会先确认关键信息，再给你清楚的答复...\n",
+	"收到，我会用更容易理解的方式来回答这个问题...\n",
+	"我先整理一下思路，马上给你一个清晰的回复...\n",
+	"看到了，我会尽快把答案组织成你容易判断的方式...\n",
+	"收到你的问题，我会直接说结论，也会说明关键依据...\n",
+	"请稍等，我会把答案讲得明确一点，避免含糊不清...\n",
+	"我正在处理，会尽量用简洁、直接的方式回复你...\n",
+	"收到，我会先抓住核心，再给你一个好理解的回答...\n",
+}
 
 func (s *gatewayEventSink) Emit(event ChatEvent) error {
 	if s.buffer == nil {
@@ -189,7 +226,8 @@ func (s *gatewayEventSink) Emit(event ChatEvent) error {
 			return err
 		}
 	case "done":
-		if err := s.flushAllSegments(); err != nil {
+		s.stopReason = eventStopReason(event.Data)
+		if err := s.flushDebugSegments(); err != nil {
 			return err
 		}
 	case "error":
@@ -208,6 +246,33 @@ func (s *gatewayEventSink) FinalText() string {
 		return ""
 	}
 	return s.buffer.Text()
+}
+
+func eventStopReason(data any) string {
+	switch payload := data.(type) {
+	case map[string]any:
+		reason, _ := payload["stopReason"].(string)
+		return reason
+	case map[string]string:
+		return payload["stopReason"]
+	default:
+		return ""
+	}
+}
+
+func appendLengthLimitNotice(text string) string {
+	if text == "" {
+		return text
+	}
+	separator := ""
+	var last rune
+	for _, r := range text {
+		last = r
+	}
+	if !unicode.IsSpace(last) {
+		separator = "\n\n"
+	}
+	return text + separator + "> " + lengthLimitNoticeText
 }
 
 func (s *gatewayEventSink) addFinalMessageChunk(text string) {
@@ -266,6 +331,22 @@ func (s *gatewayEventSink) flushAllSegments() error {
 	return nil
 }
 
+func (s *gatewayEventSink) flushDebugSegments() error {
+	if s.buffer == nil || s.sendSegment == nil {
+		return nil
+	}
+	s.buffer.FlushDebug()
+	for _, segment := range s.buffer.PopSegments() {
+		if segment.Kind != imdebug.SegmentDebug {
+			continue
+		}
+		if err := s.sendSegment(segment); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func newWeComStreamSender(sender wsMessageSender, rctx replyContext, workspacePath string) *wecomStreamSender {
 	return &wecomStreamSender{
 		sender:        sender,
@@ -276,11 +357,37 @@ func newWeComStreamSender(sender wsMessageSender, rctx replyContext, workspacePa
 	}
 }
 
+func randomWeComStreamPlaceholder() string {
+	if len(wecomStreamPlaceholders) == 0 {
+		return ""
+	}
+	n, err := crand.Int(crand.Reader, big.NewInt(int64(len(wecomStreamPlaceholders))))
+	if err != nil {
+		return wecomStreamPlaceholders[int(time.Now().UnixNano()%int64(len(wecomStreamPlaceholders)))]
+	}
+	return wecomStreamPlaceholders[n.Int64()]
+}
+
+func (s *wecomStreamSender) SendPlaceholder(ctx context.Context) {
+	if s == nil || s.failed || s.rctx.ReqID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastSent != "" {
+		return
+	}
+	s.pending = randomWeComStreamPlaceholder()
+	s.flushLocked(ctx, false)
+}
+
 func (s *wecomStreamSender) Update(ctx context.Context, fullText string) {
 	if s == nil || s.failed || s.rctx.ReqID == "" {
 		return
 	}
 	visible := ParseSendProtocol(fullText, s.workspacePath).VisibleText
+	visible = stabilizeWeComMarkdownStream(visible)
+	visible, _ = splitWeComLongReply(visible, wecomStreamMaxBytes)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.failed || visible == "" || visible == s.lastSent {
@@ -295,16 +402,37 @@ func (s *wecomStreamSender) Update(ctx context.Context, fullText string) {
 	s.flushLocked(ctx, false)
 }
 
-func (s *wecomStreamSender) Complete(ctx context.Context, fullText string) {
+func (s *wecomStreamSender) Complete(ctx context.Context, fullText string) wecomStreamCompleteResult {
+	result := wecomStreamCompleteResult{FullDelivered: true}
 	if s == nil || s.failed || s.rctx.ReqID == "" {
-		return
+		return result
 	}
 	visible := ParseSendProtocol(fullText, s.workspacePath).VisibleText
+	visible = normalizeWeComMarkdown(visible)
+	previewLimit := wecomStreamMaxBytes - len("\n\n") - len(wecomLongReplyNotice)
+	if previewLimit <= 0 {
+		previewLimit = wecomStreamMaxBytes
+	}
+	preview, remaining := splitWeComLongReply(visible, previewLimit)
+	result.Preview = preview
+	result.Remaining = remaining
+	result.FullDelivered = strings.TrimSpace(remaining) == ""
+	finalStreamText := preview
+	if !result.FullDelivered {
+		separator := "\n\n"
+		if strings.HasSuffix(preview, "\n\n") {
+			separator = ""
+		} else if strings.HasSuffix(preview, "\n") {
+			separator = "\n"
+		}
+		finalStreamText = preview + separator + wecomLongReplyNotice
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stopTimerLocked()
-	s.pending = visible
+	s.pending = finalStreamText
 	s.flushLocked(ctx, true)
+	return result
 }
 
 func (s *wecomStreamSender) Failed() bool {
@@ -428,6 +556,7 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 	streamSender := (*wecomStreamSender)(nil)
 	if cfg.Stream && msg.ReplyContext.ReqID != "" {
 		streamSender = newWeComStreamSender(sender, msg.ReplyContext, workspace.Path)
+		streamSender.SendPlaceholder(ctx)
 		sink.textUpdate = func(text string) {
 			streamSender.Update(ctx, text)
 		}
@@ -439,7 +568,13 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 		if streamSender != nil && !streamSender.Failed() {
 			return nil
 		}
-		sent, err := s.sendTextSegment(ctx, sender, msg, workspace.Path, segment.Text)
+		var sent bool
+		var err error
+		if streamSender != nil && streamSender.Failed() {
+			sent, err = s.sendTextSegmentViaSend(ctx, sender, msg, workspace.Path, segment.Text)
+		} else {
+			sent, err = s.sendTextSegment(ctx, sender, msg, workspace.Path, segment.Text)
+		}
 		if sent {
 			sentVisible = true
 		}
@@ -481,31 +616,54 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 	}
 
 	finalText := sink.FinalText()
+	lengthLimitReached := sink.stopReason == "length" && finalText != ""
+	if lengthLimitReached {
+		finalText = appendLengthLimitNotice(finalText)
+	}
 	if sink.lastError != "" && finalText == "" {
 		return sender.Reply(ctx, msg.ReplyContext, sink.lastError)
 	}
-	if err := sink.flushAllSegments(); err != nil {
-		return err
-	}
 	if sentVisible {
+		if err := sink.flushAllSegments(); err != nil {
+			return err
+		}
+		if lengthLimitReached {
+			return sender.Send(ctx, msg.ReplyContext, "> "+lengthLimitNoticeText)
+		}
 		return nil
+	}
+	if err := sink.flushDebugSegments(); err != nil {
+		return err
 	}
 
 	if finalText == "" {
 		return sender.Reply(ctx, msg.ReplyContext, fallbackDoneText)
 	}
 	if streamSender != nil && !streamSender.Failed() {
-		streamSender.Complete(ctx, finalText)
+		result := streamSender.Complete(ctx, finalText)
 		if !streamSender.Failed() {
 			sent, err := s.sendTextSegmentAfterStream(ctx, sender, msg, workspace.Path, finalText)
 			if err != nil {
 				return err
+			}
+			if !result.FullDelivered && strings.TrimSpace(result.Remaining) != "" {
+				return sender.Send(ctx, msg.ReplyContext, "续上：\n\n"+result.Remaining)
 			}
 			if sent {
 				return nil
 			}
 			return nil
 		}
+	}
+	if streamSender != nil && streamSender.Failed() {
+		sent, err := s.sendTextSegmentViaSend(ctx, sender, msg, workspace.Path, finalText)
+		if err != nil {
+			return err
+		}
+		if sent {
+			return nil
+		}
+		return sender.Send(ctx, msg.ReplyContext, fallbackDoneText)
 	}
 	sent, err := s.sendTextSegment(ctx, sender, msg, workspace.Path, finalText)
 	if err != nil {
@@ -577,13 +735,57 @@ func (s *Service) sendTextSegment(ctx context.Context, sender wsMessageSender, m
 			visibleText += "\n\n" + failureTextBlock
 		}
 	}
+	visibleText = normalizeWeComMarkdown(visibleText)
 	if visibleText == "" && !sentMedia {
 		return false, nil
 	}
 	if visibleText == "" {
 		return sentMedia, nil
 	}
-	return true, sender.Reply(ctx, msg.ReplyContext, visibleText)
+	if msg.ReplyContext.ChatID == "" {
+		return true, sender.Reply(ctx, msg.ReplyContext, visibleText)
+	}
+	return true, sender.Send(ctx, msg.ReplyContext, visibleText)
+}
+
+func (s *Service) sendTextSegmentViaSend(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text string) (bool, error) {
+	parsed := ParseSendProtocol(text, workspacePath)
+	sentMedia := false
+	failures := append([]string(nil), parsed.Failures...)
+	for _, action := range parsed.Actions {
+		if action.Caption != "" {
+			if err := sender.Send(ctx, msg.ReplyContext, action.Caption); err != nil {
+				failures = append(failures, failureText(action.Path, err.Error()))
+				continue
+			}
+		}
+		if err := sender.SendMedia(ctx, msg.ReplyContext, action); err != nil {
+			failures = append(failures, failureText(action.Path, err.Error()))
+			continue
+		}
+		sentMedia = true
+	}
+
+	visibleText := parsed.VisibleText
+	if len(failures) > 0 {
+		failureTextBlock := strings.Join(failures, "\n")
+		if visibleText == "" {
+			visibleText = failureTextBlock
+		} else {
+			visibleText += "\n\n" + failureTextBlock
+		}
+	}
+	visibleText = normalizeWeComMarkdown(visibleText)
+	if visibleText == "" && !sentMedia {
+		return false, nil
+	}
+	if visibleText == "" {
+		return sentMedia, nil
+	}
+	if err := sender.Send(ctx, msg.ReplyContext, visibleText); err != nil {
+		return sentMedia, err
+	}
+	return true, nil
 }
 
 func deriveConversationID(conversationKey string) string {

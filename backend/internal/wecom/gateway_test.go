@@ -34,9 +34,11 @@ func (r *scriptedRunner) RunWeComChat(ctx context.Context, input ChatRunInput, s
 type fakeSender struct {
 	mu            sync.Mutex
 	replies       []string
+	sends         []string
 	media         []SendAction
 	streams       []fakeStreamFrame
 	failStreaming bool
+	splitSends    bool
 	streamSeq     int
 }
 
@@ -44,6 +46,31 @@ type fakeStreamFrame struct {
 	ID      string
 	Content string
 	Finish  bool
+}
+
+func isWeComStreamPlaceholder(text string) bool {
+	for _, placeholder := range wecomStreamPlaceholders {
+		if text == placeholder {
+			return true
+		}
+	}
+	return false
+}
+
+func TestWeComStreamPlaceholdersHaveExpectedShape(t *testing.T) {
+	if len(wecomStreamPlaceholders) != 20 {
+		t.Fatalf("len(wecomStreamPlaceholders) = %d, want 20", len(wecomStreamPlaceholders))
+	}
+	seen := map[string]bool{}
+	for _, placeholder := range wecomStreamPlaceholders {
+		if !strings.HasSuffix(placeholder, "\n") {
+			t.Fatalf("placeholder %q does not end with newline", placeholder)
+		}
+		if seen[placeholder] {
+			t.Fatalf("duplicate placeholder %q", placeholder)
+		}
+		seen[placeholder] = true
+	}
 }
 
 func (s *fakeSender) Reply(_ context.Context, _ replyContext, content string) error {
@@ -73,6 +100,14 @@ func (s *fakeSender) NewStreamID() string {
 func (s *fakeSender) Send(_ context.Context, _ replyContext, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.splitSends {
+		for _, chunk := range splitWeComMarkdownMessages(content, wecomMarkdownSendMaxBytes) {
+			s.sends = append(s.sends, chunk)
+			s.replies = append(s.replies, chunk)
+		}
+		return nil
+	}
+	s.sends = append(s.sends, content)
 	s.replies = append(s.replies, content)
 	return nil
 }
@@ -141,6 +176,88 @@ func TestGatewayHandlesPureTextReply(t *testing.T) {
 	}
 }
 
+func TestGatewayNormalizesNonStreamMarkdownReply(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "行动建议### 行动一：利润下钻"},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-normalize-reply",
+		ReplyContext:    replyContext{ReqID: "req-normalize", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	want := "行动建议\n\n### 行动一：利润下钻"
+	if len(sender.replies) != 1 || sender.replies[0] != want {
+		t.Fatalf("replies = %v, want %q", sender.replies, want)
+	}
+}
+
+func TestGatewayNonStreamLongMarkdownReplyUsesOrdinarySendSplitting(t *testing.T) {
+	longBody := "开头\n\n" + strings.Repeat("这是一段很长的企业微信非流式回复，用来触发 markdown 分片。\n\n", 260)
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": longBody},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{splitSends: true}
+	cfg := testGatewayConfig()
+	cfg.Stream = false
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-nonstream-long",
+		ReplyContext:    replyContext{ReqID: "req-nonstream", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.streams) != 0 {
+		t.Fatalf("streams = %v, want no stream frames", sender.streams)
+	}
+	if len(sender.sends) < 2 {
+		t.Fatalf("sends = %d, want ordinary markdown send chunks", len(sender.sends))
+	}
+	for _, send := range sender.sends {
+		if len(send) > wecomMarkdownSendMaxBytes {
+			t.Fatalf("send bytes = %d, want <= %d", len(send), wecomMarkdownSendMaxBytes)
+		}
+	}
+	joined := strings.Join(sender.sends, "")
+	for _, want := range []string{"开头", "企业微信非流式回复", "markdown 分片"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("send chunks missing %q: %q", want, joined)
+		}
+	}
+}
+
 func TestGatewayStreamsAgentMessageChunksWhenEnabled(t *testing.T) {
 	runner := &scriptedRunner{
 		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
@@ -177,19 +294,256 @@ func TestGatewayStreamsAgentMessageChunksWhenEnabled(t *testing.T) {
 		t.Fatalf("replies = %v, want none", sender.replies)
 	}
 	if len(sender.streams) < 2 {
-		t.Fatalf("streams = %v, want update and complete", sender.streams)
+		t.Fatalf("streams = %v, want placeholder and complete", sender.streams)
 	}
 	for _, frame := range sender.streams {
 		if frame.ID != "stream-test" {
 			t.Fatalf("stream id = %q, want stream-test", frame.ID)
 		}
 	}
-	if sender.streams[0].Finish {
-		t.Fatalf("first stream frame finish = true, want false")
+	first := sender.streams[0]
+	if first.Finish || !isWeComStreamPlaceholder(first.Content) || !strings.HasSuffix(first.Content, "\n") {
+		t.Fatalf("first stream frame = %+v, want unfinished placeholder with trailing newline", first)
 	}
 	last := sender.streams[len(sender.streams)-1]
 	if !last.Finish || last.Content != "hello" {
 		t.Fatalf("last stream frame = %+v, want finish hello", last)
+	}
+	if strings.Contains(last.Content, first.Content) {
+		t.Fatalf("final stream content includes placeholder: %q", last.Content)
+	}
+}
+
+func TestGatewayStreamLengthStopReasonAppendsNotice(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "reply text"},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "length"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+	cfg := testGatewayConfig()
+	cfg.Stream = true
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-stream-length",
+		ReplyContext:    replyContext{ReqID: "req-stream", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.streams) == 0 {
+		t.Fatal("streams = nil, want stream frames")
+	}
+	last := sender.streams[len(sender.streams)-1]
+	want := "reply text\n\n> " + lengthLimitNoticeText
+	if !last.Finish || last.Content != want {
+		t.Fatalf("last stream frame = %+v, want finish %q", last, want)
+	}
+	if len(sender.sends) != 0 {
+		t.Fatalf("sends = %v, want no continuation for short reply", sender.sends)
+	}
+}
+
+func TestGatewayNonStreamLengthStopReasonAppendsNotice(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "reply text"},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "length"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+	cfg := testGatewayConfig()
+	cfg.Stream = false
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-nonstream-length",
+		ReplyContext:    replyContext{ReqID: "req-nonstream", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	want := "reply text\n\n> " + lengthLimitNoticeText
+	if len(sender.replies) != 1 || sender.replies[0] != want {
+		t.Fatalf("replies = %v, want %q", sender.replies, want)
+	}
+}
+
+func TestGatewayEndTurnStopReasonDoesNotAppendLengthNotice(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "reply text"},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-end-turn-no-length-notice",
+		ReplyContext:    replyContext{ReqID: "req-end-turn", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.replies) != 1 || sender.replies[0] != "reply text" {
+		t.Fatalf("replies = %v, want reply text", sender.replies)
+	}
+}
+
+func TestGatewayLengthStopReasonWithEmptyFinalTextKeepsFallback(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "length"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-empty-length",
+		ReplyContext:    replyContext{ReqID: "req-empty-length", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.replies) != 1 || sender.replies[0] != fallbackDoneText {
+		t.Fatalf("replies = %v, want fallback only", sender.replies)
+	}
+}
+
+func TestGatewayStreamSkipsPlaceholderWithoutReqID(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "reply text"},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+	cfg := testGatewayConfig()
+	cfg.Stream = true
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-stream-no-req",
+		ReplyContext:    replyContext{ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.streams) != 0 {
+		t.Fatalf("streams = %v, want no stream frames without req id", sender.streams)
+	}
+	if len(sender.replies) != 1 || sender.replies[0] != "reply text" {
+		t.Fatalf("replies = %v, want final reply text", sender.replies)
+	}
+}
+
+func TestGatewayStreamStabilizesMarkdownFrames(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			for _, text := range []string{
+				"变化；- ✅ 毛利",
+				"变化；- ✅ 毛利分析\n",
+				"变化；- ✅ 毛利分析\n\n📌 口径说明\n| 项目 | 内容 |",
+				"变化；- ✅ 毛利分析\n\n📌 口径说明\n| 项目 | 内容 |\n| --- | --- |",
+				"变化；- ✅ 毛利分析\n\n📌 口径说明\n| 项目 | 内容 |\n| --- | --- |\n| 毛利 | 10",
+				"变化；- ✅ 毛利分析\n\n📌 口径说明\n| 项目 | 内容 |\n| --- | --- |\n| 毛利 | 10 |\n",
+			} {
+				if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk",
+						"content":       map[string]any{"type": "text", "text": text},
+					},
+				}}); err != nil {
+					return err
+				}
+				time.Sleep(wecomStreamFlushInterval)
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+	cfg := testGatewayConfig()
+	cfg.Stream = true
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-stream-markdown",
+		ReplyContext:    replyContext{ReqID: "req-stream", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.streams) == 0 {
+		t.Fatal("streams = nil, want stream frames")
+	}
+	for _, frame := range sender.streams {
+		if frame.ID != "stream-test" {
+			t.Fatalf("stream id = %q, want stream-test", frame.ID)
+		}
+		if strings.Contains(frame.Content, "变化；-") {
+			t.Fatalf("stream sent inline list marker before normalization: %+v", frame)
+		}
+		if strings.Contains(frame.Content, "| 项目 | 内容 |") && !strings.Contains(frame.Content, "| --- | --- |") {
+			t.Fatalf("stream sent half table: %+v", frame)
+		}
+		if strings.Contains(frame.Content, "| 毛利 | 10") && !strings.Contains(frame.Content, "| 毛利 | 10 |") {
+			t.Fatalf("stream sent incomplete table row: %+v", frame)
+		}
+	}
+	last := sender.streams[len(sender.streams)-1]
+	want := "变化；\n- ✅ 毛利分析\n\n📌 口径说明\n\n| 项目 | 内容 |\n| --- | --- |\n| 毛利 | 10 |"
+	if !last.Finish || last.Content != want {
+		t.Fatalf("last stream frame = %+v, want finish %q", last, want)
 	}
 }
 
@@ -254,6 +608,9 @@ func TestGatewayStreamFailureFallsBackToFinalReply(t *testing.T) {
 	}
 	if len(sender.replies) != 1 || sender.replies[0] != "reply text" {
 		t.Fatalf("replies = %v", sender.replies)
+	}
+	if len(sender.sends) != 1 || sender.sends[0] != "reply text" {
+		t.Fatalf("sends = %v, want ordinary send fallback", sender.sends)
 	}
 }
 
@@ -955,6 +1312,218 @@ func TestGatewayStreamHidesMediaProtocolUntilFinalSend(t *testing.T) {
 	}
 	if len(sender.media) != 1 || sender.media[0].Type != "image" {
 		t.Fatalf("media = %v", sender.media)
+	}
+}
+
+func TestGatewayStreamLongReplySendsPreviewThenRemaining(t *testing.T) {
+	longBody := "开头\n\n" + strings.Repeat("这是一段很长的回答内容，用来触发企业微信 stream 安全阈值。\n\n", 260)
+	normalized := normalizeWeComMarkdown(longBody)
+	previewLimit := wecomStreamMaxBytes - len("\n\n") - len(wecomLongReplyNotice)
+	wantPreview, wantRemaining := splitWeComLongReply(normalized, previewLimit)
+	if wantRemaining == "" {
+		t.Fatal("test fixture did not exceed long reply threshold")
+	}
+
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": longBody},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+	cfg := testGatewayConfig()
+	cfg.Stream = true
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-stream-long",
+		ReplyContext:    replyContext{ReqID: "req-stream", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.streams) == 0 {
+		t.Fatal("streams = nil, want stream frames")
+	}
+	last := sender.streams[len(sender.streams)-1]
+	separator := "\n\n"
+	if strings.HasSuffix(wantPreview, "\n\n") {
+		separator = ""
+	} else if strings.HasSuffix(wantPreview, "\n") {
+		separator = "\n"
+	}
+	wantFinalStream := wantPreview + separator + wecomLongReplyNotice
+	if !last.Finish || last.Content != wantFinalStream {
+		t.Fatalf("last stream frame = finish:%v len:%d, want finish preview+notice len:%d", last.Finish, len(last.Content), len(wantFinalStream))
+	}
+	if len(last.Content) > wecomStreamMaxBytes {
+		t.Fatalf("final stream bytes = %d, want <= %d", len(last.Content), wecomStreamMaxBytes)
+	}
+	if len(sender.sends) != 1 || sender.sends[0] != "续上：\n\n"+wantRemaining {
+		t.Fatalf("sends = %v, want continuation", sender.sends)
+	}
+	gotFull := strings.TrimSuffix(last.Content, separator+wecomLongReplyNotice) + strings.TrimPrefix(sender.sends[0], "续上：\n\n")
+	if gotFull != normalized {
+		t.Fatalf("preview + remaining did not reconstruct normalized reply")
+	}
+}
+
+func TestGatewayStreamLongChineseReplyUsesBytePreviewLimit(t *testing.T) {
+	longBody := strings.Repeat("中", wecomStreamMaxBytes+500)
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": longBody},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+	cfg := testGatewayConfig()
+	cfg.Stream = true
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-stream-long-chinese",
+		ReplyContext:    replyContext{ReqID: "req-stream", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	last := sender.streams[len(sender.streams)-1]
+	if !last.Finish {
+		t.Fatalf("last stream finish = false, want true")
+	}
+	preview := strings.TrimSuffix(last.Content, "\n\n"+wecomLongReplyNotice)
+	wantPreviewBytes := wecomStreamMaxBytes - len("\n\n") - len(wecomLongReplyNotice)
+	wantPreviewBytes = utf8SafeIndex(longBody, wantPreviewBytes)
+	if got := len(preview); got != wantPreviewBytes {
+		t.Fatalf("preview bytes = %d, want %d", got, wantPreviewBytes)
+	}
+	if len(last.Content) > wecomStreamMaxBytes {
+		t.Fatalf("final stream bytes = %d, want <= %d", len(last.Content), wecomStreamMaxBytes)
+	}
+	wantRemaining := longBody[wantPreviewBytes:]
+	if len(sender.sends) != 1 || sender.sends[0] != "续上：\n\n"+wantRemaining {
+		t.Fatalf("sends = %v, want continuation bytes=%d", sender.sends, len(wantRemaining))
+	}
+}
+
+func TestGatewayStreamRemainingUsesOrdinaryMarkdownSendSplitting(t *testing.T) {
+	longBody := "开头\n\n" + strings.Repeat("这是一段很长的回答内容，用来触发企业微信普通 markdown 分片。\n\n", 360)
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": longBody},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{splitSends: true}
+	cfg := testGatewayConfig()
+	cfg.Stream = true
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-stream-remaining-split",
+		ReplyContext:    replyContext{ReqID: "req-stream", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.sends) < 2 {
+		t.Fatalf("sends = %d, want ordinary markdown chunks", len(sender.sends))
+	}
+	for _, send := range sender.sends {
+		if len(send) > wecomMarkdownSendMaxBytes {
+			t.Fatalf("send bytes = %d, want <= %d", len(send), wecomMarkdownSendMaxBytes)
+		}
+	}
+	if !strings.HasPrefix(sender.sends[0], "续上：") {
+		t.Fatalf("first send = %q, want continuation prefix", sender.sends[0])
+	}
+}
+
+func TestGatewayStreamLongReplyWithMediaDoesNotLeakProtocolAndSendsMedia(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, "chart.png")
+	if err := os.WriteFile(out, []byte("pngdata"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	longVisible := "报告\n\n" + strings.Repeat("明细内容用于触发长文补发。\n\n", 620)
+	finalText := longVisible + "\n\n[LUMI_WECOM_SEND]\n{\"type\":\"image\",\"path\":\"chart.png\",\"caption\":\"chart\"}\n[/LUMI_WECOM_SEND]"
+
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": finalText},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	service.config.Workspaces[0].Path = root
+	sender := &fakeSender{}
+	cfg := testGatewayConfig()
+	cfg.Stream = true
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-stream-long-media",
+		ReplyContext:    replyContext{ReqID: "req-stream", ChatID: "chat", UserID: "user"},
+		Text:            "send chart",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	for _, frame := range sender.streams {
+		if strings.Contains(frame.Content, "LUMI_WECOM_SEND") {
+			t.Fatalf("stream leaked protocol block: %+v", frame)
+		}
+	}
+	if len(sender.media) != 1 || sender.media[0].Type != "image" {
+		t.Fatalf("media = %v", sender.media)
+	}
+	if len(sender.sends) != 1 || !strings.HasPrefix(sender.sends[0], "续上：\n\n") {
+		t.Fatalf("sends = %v, want one continuation Send", sender.sends)
+	}
+	if strings.Contains(sender.sends[0], "chart") || strings.Contains(sender.sends[0], "LUMI_WECOM_SEND") {
+		t.Fatalf("continuation leaked media caption or protocol: %q", sender.sends[0])
+	}
+	if len(sender.replies) < 2 || sender.replies[0] != "chart" {
+		t.Fatalf("replies = %v, want media caption plus continuation", sender.replies)
 	}
 }
 
