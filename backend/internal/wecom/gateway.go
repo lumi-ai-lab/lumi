@@ -139,11 +139,12 @@ type wecomStreamCompleteResult struct {
 }
 
 const (
-	wecomStreamFlushInterval  = 200 * time.Millisecond
-	wecomStreamMaxDuration    = 330 * time.Second
-	wecomStreamMaxBytes       = 20480
-	wecomMarkdownSendMaxBytes = 4096
-	wecomLongReplyNotice      = "（回答较长，以下继续发送剩余内容）"
+	wecomStreamFlushInterval   = 200 * time.Millisecond
+	wecomStreamMaxDuration     = 330 * time.Second
+	wecomStreamMaxBytes        = 20480
+	wecomStreamPreviewMaxBytes = 8000
+	wecomMarkdownSendMaxBytes  = 4096
+	wecomLongReplyNotice       = "（回答较长，以下继续发送剩余内容）"
 )
 
 var wecomStreamPlaceholders = []string{
@@ -387,7 +388,7 @@ func (s *wecomStreamSender) Update(ctx context.Context, fullText string) {
 	}
 	visible := ParseSendProtocol(fullText, s.workspacePath).VisibleText
 	visible = stabilizeWeComMarkdownStream(visible)
-	visible, _ = splitWeComLongReply(visible, wecomStreamMaxBytes)
+	visible, _ = splitWeComLongReply(visible, wecomStreamPreviewMaxBytes)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.failed || visible == "" || visible == s.lastSent {
@@ -409,9 +410,9 @@ func (s *wecomStreamSender) Complete(ctx context.Context, fullText string) wecom
 	}
 	visible := ParseSendProtocol(fullText, s.workspacePath).VisibleText
 	visible = normalizeWeComMarkdown(visible)
-	previewLimit := wecomStreamMaxBytes - len("\n\n") - len(wecomLongReplyNotice)
+	previewLimit := wecomStreamPreviewMaxBytes - len("\n\n") - len(wecomLongReplyNotice)
 	if previewLimit <= 0 {
-		previewLimit = wecomStreamMaxBytes
+		previewLimit = wecomStreamPreviewMaxBytes
 	}
 	preview, remaining := splitWeComLongReply(visible, previewLimit)
 	result.Preview = preview
