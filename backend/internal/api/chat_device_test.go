@@ -581,6 +581,138 @@ func TestRunWeComChatQueuesDifferentConversationsOnSameSandboxDevice(t *testing.
 	}
 }
 
+func TestRunWeComChatTimeoutCancelsAndReleasesSandboxDevice(t *testing.T) {
+	originalMaxDuration := imDeviceTaskMaxDuration
+	imDeviceTaskMaxDuration = 50 * time.Millisecond
+	t.Cleanup(func() {
+		imDeviceTaskMaxDuration = originalMaxDuration
+	})
+
+	server := newTestAPIServer(t)
+	workspace := config.WorkspaceConfig{
+		ID:    "sandbox-ws",
+		Name:  "Sandbox",
+		Path:  t.TempDir(),
+		Kind:  "sandbox",
+		Image: sandbox.DefaultImage,
+	}
+	server.config.Workspaces = append(server.config.Workspaces, workspace)
+	server.sandbox = &fakeSandboxManager{ensureState: sandbox.RuntimeState{
+		WorkspaceID:   workspace.ID,
+		DeviceID:      "dev-1",
+		WorkspacePath: sandbox.WorkspacePath,
+		Status:        sandbox.StatusRunning,
+	}}
+
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	secret, err := device.EnsureSecret("")
+	if err != nil {
+		t.Fatalf("EnsureSecret() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn := connectTestDevice(t, ctx, httpServer.URL, secret)
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	registerAndReadyDevice(t, ctx, conn)
+
+	sink := &recordingWeComSink{}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.RunWeComChat(ctx, wecom.ChatRunInput{
+			Message:           "slow sandbox",
+			ConversationID:    "wecom_timeout_1",
+			WorkspaceID:       workspace.ID,
+			WorkspacePath:     workspace.Path,
+			AgentID:           "claude",
+			ConversationStore: &memoryIMStore{},
+		}, sink)
+	}()
+
+	taskExecute := readEnvelope(t, ctx, conn)
+	if taskExecute.Type != device.MsgTaskExecute {
+		t.Fatalf("taskExecute.Type = %q, want %q", taskExecute.Type, device.MsgTaskExecute)
+	}
+	if err := wsjson.Write(ctx, conn, device.AckEnvelope(taskExecute.ID)); err != nil {
+		t.Fatalf("wsjson.Write(task.execute ack) error = %v", err)
+	}
+
+	cancelEnv := readEnvelope(t, ctx, conn)
+	if cancelEnv.Type != device.MsgTaskCancel || cancelEnv.TaskID != taskExecute.TaskID {
+		t.Fatalf("cancel envelope = %+v, want task.cancel for %s", cancelEnv, taskExecute.TaskID)
+	}
+	var cancelPayload device.TaskCancelPayload
+	if err := json.Unmarshal(cancelEnv.Payload, &cancelPayload); err != nil {
+		t.Fatalf("Unmarshal(task.cancel) error = %v", err)
+	}
+	if cancelPayload.Reason != "task_timeout" {
+		t.Fatalf("cancel reason = %q, want task_timeout", cancelPayload.Reason)
+	}
+	if err := wsjson.Write(ctx, conn, device.AckEnvelope(cancelEnv.ID)); err != nil {
+		t.Fatalf("wsjson.Write(task.cancel ack) error = %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("RunWeComChat() error = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for timed-out RunWeComChat")
+	}
+	if !sink.hasErrorText(imDeviceTaskTimeoutMessage) {
+		t.Fatalf("sink events missing timeout error: %+v", sink.events)
+	}
+
+	imDeviceTaskMaxDuration = originalMaxDuration
+	secondSink := &recordingWeComSink{}
+	secondErrCh := make(chan error, 1)
+	go func() {
+		secondErrCh <- server.RunWeComChat(ctx, wecom.ChatRunInput{
+			Message:           "after timeout",
+			ConversationID:    "wecom_timeout_2",
+			WorkspaceID:       workspace.ID,
+			WorkspacePath:     workspace.Path,
+			AgentID:           "claude",
+			ConversationStore: &memoryIMStore{},
+		}, secondSink)
+	}()
+
+	secondTask := readEnvelope(t, ctx, conn)
+	if secondTask.Type != device.MsgTaskExecute {
+		t.Fatalf("second task type = %q, want %q", secondTask.Type, device.MsgTaskExecute)
+	}
+	if secondTask.TaskID == taskExecute.TaskID {
+		t.Fatalf("second task reused timed-out task ID %q", secondTask.TaskID)
+	}
+	if err := wsjson.Write(ctx, conn, device.AckEnvelope(secondTask.ID)); err != nil {
+		t.Fatalf("wsjson.Write(second task.execute ack) error = %v", err)
+	}
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskSession, "msg-timeout-session-2", "dev-1", secondTask.TaskID, device.TaskSessionPayload{
+		SessionID: "timeout-session-2",
+	}))
+	sendDeviceEventWithAck(t, ctx, conn, mustEnvelope(t, device.MsgTaskDone, "msg-timeout-done-2", "dev-1", secondTask.TaskID, device.TaskDonePayload{
+		Result: json.RawMessage(`{"stopReason":"end_turn"}`),
+	}))
+
+	select {
+	case err := <-secondErrCh:
+		if err != nil {
+			t.Fatalf("second RunWeComChat() error = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for second RunWeComChat")
+	}
+	for _, event := range secondSink.events {
+		if event.Name == "error" && strings.Contains(fmt.Sprint(event.Data), "Device is busy") {
+			t.Fatalf("second sink should not contain busy error: %+v", secondSink.events)
+		}
+	}
+}
+
 func TestRunWeComChatSandboxSwitchPersistsActiveAgentAndInjectsContext(t *testing.T) {
 	server := newTestAPIServer(t)
 	workspace := config.WorkspaceConfig{
@@ -1213,6 +1345,15 @@ func (s *recordingWeComSink) hasUpdateText(text string) bool {
 			continue
 		}
 		if content, _ := update["content"].(map[string]any); strings.Contains(extractTextContent(content), text) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *recordingWeComSink) hasErrorText(text string) bool {
+	for _, event := range s.events {
+		if event.Name == "error" && strings.Contains(fmt.Sprint(event.Data), text) {
 			return true
 		}
 	}

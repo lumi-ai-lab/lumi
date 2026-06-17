@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -55,6 +56,10 @@ func (s wecomSinkAdapter) Emit(name string, data any) error {
 type wechatSinkAdapter struct {
 	sink wechat.ChatEventSink
 }
+
+const imDeviceTaskTimeoutMessage = "处理超时，请稍后重试或缩小问题范围"
+
+var imDeviceTaskMaxDuration = 15 * time.Minute
 
 func (s wechatSinkAdapter) Emit(name string, data any) error {
 	if name == "update" {
@@ -215,7 +220,15 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 		_ = sink.Emit("error", map[string]string{"message": deviceErrorMessage(err)})
 		return nil
 	}
+	log.Printf("im device task start: deviceID=%s taskID=%s conversationID=%s agentID=%s workspaceID=%s", deviceID, task.ID, input.ConversationID, input.AgentID, input.WorkspaceID)
 	defer s.devices.FinishTask(task.ID)
+
+	taskCtx := ctx
+	taskCancel := func() {}
+	if imDeviceTaskMaxDuration > 0 {
+		taskCtx, taskCancel = context.WithTimeout(ctx, imDeviceTaskMaxDuration)
+	}
+	defer taskCancel()
 
 	payload := device.TaskExecutePayload{
 		ConversationID:     input.ConversationID,
@@ -227,12 +240,12 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 		SystemPromptAppend: input.SystemPromptAppend,
 		Files:              input.Files,
 	}
-	if err := s.devices.SendToDevice(ctx, deviceID, device.MsgTaskExecute, task.ID, payload); err != nil {
+	if err := s.devices.SendToDevice(taskCtx, deviceID, device.MsgTaskExecute, task.ID, payload); err != nil {
 		_ = sink.Emit("error", map[string]string{"message": err.Error()})
 		return nil
 	}
 
-	streamItems, err := s.consumeIMDeviceTaskEvents(ctx, input, task, sink, isNew)
+	streamItems, err := s.consumeIMDeviceTaskEvents(taskCtx, input, task, sink, isNew)
 	if err != nil {
 		return nil
 	}
@@ -292,7 +305,12 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 	for {
 		select {
 		case <-ctx.Done():
-			sendCancel("client_disconnected")
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				_ = sink.Emit("error", map[string]string{"message": imDeviceTaskTimeoutMessage})
+				sendCancel("task_timeout")
+			} else {
+				sendCancel("client_disconnected")
+			}
 			return nil, ctx.Err()
 		case <-sessionTimer.C:
 			if !sessionReady {
@@ -360,6 +378,7 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 					return nil, err
 				}
 			case device.DeviceEventDone:
+				log.Printf("im device task.done consumed: deviceID=%s taskID=%s conversationID=%s", task.DeviceID, task.ID, input.ConversationID)
 				if !sessionReady {
 					_ = sink.Emit("error", map[string]string{"message": "Device protocol error"})
 					sendCancel("protocol_error")

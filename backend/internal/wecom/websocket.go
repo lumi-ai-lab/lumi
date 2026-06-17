@@ -356,7 +356,7 @@ func (rt *wsRuntime) heartbeat(ctx context.Context, conn *websocket.Conn) {
 				"cmd":     "ping",
 				"headers": map[string]string{"req_id": rt.generateReqID("ping")},
 			}
-			if err := rt.writeJSON(pingFrame); err != nil {
+			if err := rt.writeJSON(ctx, pingFrame); err != nil {
 				_ = conn.Close()
 				return
 			}
@@ -489,7 +489,7 @@ func (rt *wsRuntime) Reply(ctx context.Context, rctx replyContext, content strin
 	return rt.ReplyStream(ctx, rctx, rt.NewStreamID(), content, true)
 }
 
-func (rt *wsRuntime) ReplyStream(_ context.Context, rctx replyContext, streamID, content string, finish bool) error {
+func (rt *wsRuntime) ReplyStream(ctx context.Context, rctx replyContext, streamID, content string, finish bool) error {
 	if strings.TrimSpace(content) == "" {
 		return nil
 	}
@@ -511,7 +511,7 @@ func (rt *wsRuntime) ReplyStream(_ context.Context, rctx replyContext, streamID,
 			},
 		},
 	}
-	return rt.writeJSON(frame)
+	return rt.writeJSON(ctx, frame)
 }
 
 func (rt *wsRuntime) NewStreamID() string {
@@ -559,7 +559,7 @@ func (rt *wsRuntime) ReplyMedia(ctx context.Context, rctx replyContext, action S
 		"headers": map[string]string{"req_id": rctx.ReqID},
 		"body":    buildMediaMsgBody(action.Type, mediaID),
 	}
-	return rt.writeJSON(frame)
+	return rt.writeJSON(ctx, frame)
 }
 
 func (rt *wsRuntime) SendMedia(ctx context.Context, rctx replyContext, action SendAction) error {
@@ -682,12 +682,12 @@ func (rt *wsRuntime) writeAndReadAck(ctx context.Context, frame map[string]any, 
 	ch := make(chan error, 1)
 	respCh := make(chan *wsFrame, 1)
 	rt.pendingAcks.Store(reqID, ackWaiter{errCh: ch, respCh: respCh})
-	if err := rt.writeJSON(frame); err != nil {
+	if err := rt.writeJSON(ctx, frame); err != nil {
 		rt.pendingAcks.Delete(reqID)
 		return nil, err
 	}
 
-	timeout := time.Duration(rt.cfg.MessageAckTimeoutMs) * time.Millisecond
+	timeout := rt.messageAckTimeout()
 	select {
 	case err := <-ch:
 		if err != nil {
@@ -713,7 +713,14 @@ type ackWaiter struct {
 	respCh chan *wsFrame
 }
 
-func (rt *wsRuntime) writeJSON(v any) error {
+func (rt *wsRuntime) writeJSON(ctx context.Context, v any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	rt.writeMu.Lock()
 	defer rt.writeMu.Unlock()
 	rt.connMu.RLock()
@@ -722,18 +729,44 @@ func (rt *wsRuntime) writeJSON(v any) error {
 	if conn == nil {
 		return fmt.Errorf("wecom-ws: not connected")
 	}
-	return conn.WriteJSON(v)
+
+	deadline := time.Now().Add(rt.messageAckTimeout())
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return fmt.Errorf("wecom-ws: write deadline: %w", err)
+	}
+	defer conn.SetWriteDeadline(time.Time{})
+	if err := conn.WriteJSON(v); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return fmt.Errorf("wecom-ws: write: %w", err)
+	}
+	return nil
+}
+
+func (rt *wsRuntime) messageAckTimeout() time.Duration {
+	ms := rt.cfg.MessageAckTimeoutMs
+	if ms <= 0 {
+		ms = defaultMessageAckTimeoutMs
+	}
+	if ms < 1000 {
+		ms = 1000
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func (rt *wsRuntime) writeAndWaitAck(ctx context.Context, frame map[string]any, reqID string) error {
 	ch := make(chan error, 1)
 	rt.pendingAcks.Store(reqID, ackWaiter{errCh: ch, respCh: nil})
-	if err := rt.writeJSON(frame); err != nil {
+	if err := rt.writeJSON(ctx, frame); err != nil {
 		rt.pendingAcks.Delete(reqID)
 		return err
 	}
 
-	timeout := time.Duration(rt.cfg.MessageAckTimeoutMs) * time.Millisecond
+	timeout := rt.messageAckTimeout()
 	select {
 	case err := <-ch:
 		return err
@@ -742,7 +775,7 @@ func (rt *wsRuntime) writeAndWaitAck(ctx context.Context, frame map[string]any, 
 		return ctx.Err()
 	case <-time.After(timeout):
 		rt.pendingAcks.Delete(reqID)
-		return nil
+		return fmt.Errorf("wecom-ws: ack timeout")
 	}
 }
 

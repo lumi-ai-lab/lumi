@@ -228,6 +228,143 @@ func TestWaitStartTaskStartsAfterCurrentTaskFinishes(t *testing.T) {
 	registry.FinishTask(task2.ID)
 }
 
+func TestUpdateDeviceStatusOnlineReconcilesStaleCurrentTask(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	registerReadyTestDevice(t, registry, "dev-1")
+
+	task1 := NewTaskRun("task-1", "dev-1", "conv-1", "claude", "ws-1", "/tmp/project")
+	if err := registry.StartTask(task1); err != nil {
+		t.Fatalf("StartTask(task1) error = %v", err)
+	}
+	registry.setTaskSession(task1.ID, "session-1")
+	registry.RegisterPermission("tool-1", task1.ID)
+
+	task2 := NewTaskRun("task-2", "dev-1", "conv-2", "claude", "ws-1", "/tmp/project")
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- registry.WaitStartTask(context.Background(), task2, time.Second)
+	}()
+	waitForQueuedTask(t, registry, "dev-1", 1)
+
+	if err := registry.UpdateDeviceStatus("dev-1", StatusOnline); err != nil {
+		t.Fatalf("UpdateDeviceStatus(online) error = %v", err)
+	}
+
+	select {
+	case event := <-task1.Events:
+		if event.Type != DeviceEventError || event.Err == nil {
+			t.Fatalf("task1 event = %+v, want error", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for task1 reconciliation error")
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("WaitStartTask(task2) error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for task2 to start")
+	}
+	if _, ok := registry.TaskBySession("session-1"); ok {
+		t.Fatal("TaskBySession(session-1) ok = true after reconciliation, want false")
+	}
+	if _, ok := registry.TaskByToolCall("tool-1"); ok {
+		t.Fatal("TaskByToolCall(tool-1) ok = true after reconciliation, want false")
+	}
+
+	registry.FinishTask(task1.ID)
+	device, _ := registry.GetDevice("dev-1")
+	if device.Status != StatusBusy || len(device.RunningTaskIDs) != 1 || device.RunningTaskIDs[0] != task2.ID {
+		t.Fatalf("device after stale FinishTask = status:%s running:%v, want busy task2", device.Status, device.RunningTaskIDs)
+	}
+	registry.FinishTask(task2.ID)
+}
+
+func TestHeartbeatEmptyRunningTasksReconcilesStaleCurrentTask(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	registerReadyTestDevice(t, registry, "dev-1")
+
+	task1 := NewTaskRun("task-1", "dev-1", "conv-1", "claude", "ws-1", "/tmp/project")
+	if err := registry.StartTask(task1); err != nil {
+		t.Fatalf("StartTask(task1) error = %v", err)
+	}
+
+	task2 := NewTaskRun("task-2", "dev-1", "conv-2", "claude", "ws-1", "/tmp/project")
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- registry.WaitStartTask(context.Background(), task2, time.Second)
+	}()
+	waitForQueuedTask(t, registry, "dev-1", 1)
+
+	if err := registry.Heartbeat("dev-1", nil); err != nil {
+		t.Fatalf("Heartbeat(empty) error = %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("WaitStartTask(task2) error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for task2 to start")
+	}
+	device, _ := registry.GetDevice("dev-1")
+	if device.Status != StatusBusy || len(device.RunningTaskIDs) != 1 || device.RunningTaskIDs[0] != task2.ID {
+		t.Fatalf("device = status:%s running:%v, want busy task2", device.Status, device.RunningTaskIDs)
+	}
+	registry.FinishTask(task1.ID)
+	registry.FinishTask(task2.ID)
+}
+
+func TestHeartbeatWithRunningTaskDoesNotReconcileCurrentTask(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	registerReadyTestDevice(t, registry, "dev-1")
+
+	task1 := NewTaskRun("task-1", "dev-1", "conv-1", "claude", "ws-1", "/tmp/project")
+	if err := registry.StartTask(task1); err != nil {
+		t.Fatalf("StartTask(task1) error = %v", err)
+	}
+
+	task2 := NewTaskRun("task-2", "dev-1", "conv-2", "claude", "ws-1", "/tmp/project")
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- registry.WaitStartTask(context.Background(), task2, time.Second)
+	}()
+	waitForQueuedTask(t, registry, "dev-1", 1)
+
+	if err := registry.Heartbeat("dev-1", []string{task1.ID}); err != nil {
+		t.Fatalf("Heartbeat(running task1) error = %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("WaitStartTask(task2) returned before task1 finished: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	device, _ := registry.GetDevice("dev-1")
+	if device.Status != StatusBusy || len(device.RunningTaskIDs) != 1 || device.RunningTaskIDs[0] != task1.ID {
+		t.Fatalf("device = status:%s running:%v, want busy task1", device.Status, device.RunningTaskIDs)
+	}
+
+	registry.FinishTask(task1.ID)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("WaitStartTask(task2) error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for task2 to start after FinishTask")
+	}
+	registry.FinishTask(task2.ID)
+}
+
 func TestWaitStartTaskTimesOutWhileQueued(t *testing.T) {
 	t.Parallel()
 

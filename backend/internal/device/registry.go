@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -312,10 +313,11 @@ func (r *Registry) UpdateDeviceStatus(deviceID string, status string) error {
 
 	switch status {
 	case StatusOnline:
+		if r.deviceCurrentTask[deviceID] != "" {
+			r.reconcileFinishedCurrentTaskLocked(deviceID, "device_status_online", time.Now().UnixMilli())
+		}
 		if !device.SetupReady {
 			device.Status = StatusSetupRequired
-		} else if r.deviceCurrentTask[deviceID] != "" {
-			device.Status = StatusBusy
 		} else {
 			device.Status = StatusOnline
 		}
@@ -348,6 +350,9 @@ func (r *Registry) Heartbeat(deviceID string, runningTaskIDs []string) error {
 	device.LastHeartbeat = now
 	device.UpdatedAt = now
 	device.RunningTaskIDs = append([]string(nil), runningTaskIDs...)
+	if len(runningTaskIDs) == 0 && r.deviceCurrentTask[deviceID] != "" {
+		r.reconcileFinishedCurrentTaskLocked(deviceID, "heartbeat_empty_running_tasks", now)
+	}
 
 	switch {
 	case !device.SetupReady:
@@ -357,6 +362,7 @@ func (r *Registry) Heartbeat(deviceID string, runningTaskIDs []string) error {
 	default:
 		device.Status = StatusOnline
 	}
+	r.taskCond.Broadcast()
 
 	return nil
 }
@@ -561,12 +567,16 @@ func (r *Registry) FinishTask(taskID string) {
 	if task == nil {
 		return
 	}
+	log.Printf("device FinishTask called: deviceID=%s taskID=%s age=%s", task.DeviceID, task.ID, taskAgeString(task, time.Now().UnixMilli()))
 
 	delete(r.tasks, taskID)
 	if task.SessionID != "" {
 		delete(r.sessionToTask, task.SessionID)
 	}
-	delete(r.deviceCurrentTask, task.DeviceID)
+	releasedCurrent := r.deviceCurrentTask[task.DeviceID] == taskID
+	if releasedCurrent {
+		delete(r.deviceCurrentTask, task.DeviceID)
+	}
 
 	for toolCallID, mappedTaskID := range r.toolCallToTask {
 		if mappedTaskID == taskID {
@@ -574,7 +584,7 @@ func (r *Registry) FinishTask(taskID string) {
 		}
 	}
 
-	if device := r.devices[task.DeviceID]; device != nil {
+	if device := r.devices[task.DeviceID]; device != nil && releasedCurrent {
 		device.RunningTaskIDs = nil
 		device.UpdatedAt = time.Now().UnixMilli()
 		switch {
@@ -817,14 +827,18 @@ func (r *Registry) releaseTaskRoutingLocked(taskID string) {
 	if task.SessionID != "" {
 		delete(r.sessionToTask, task.SessionID)
 	}
-	delete(r.deviceCurrentTask, task.DeviceID)
+	releasedCurrent := r.deviceCurrentTask[task.DeviceID] == taskID
+	if releasedCurrent {
+		delete(r.deviceCurrentTask, task.DeviceID)
+	}
 	for toolCallID, mappedTaskID := range r.toolCallToTask {
 		if mappedTaskID == taskID {
 			delete(r.toolCallToTask, toolCallID)
 		}
 	}
-	if device := r.devices[task.DeviceID]; device != nil {
+	if device := r.devices[task.DeviceID]; device != nil && releasedCurrent {
 		device.RunningTaskIDs = nil
+		device.UpdatedAt = time.Now().UnixMilli()
 		if r.conns[task.DeviceID] == nil {
 			device.Status = StatusOffline
 		} else if !device.SetupReady {
@@ -833,6 +847,44 @@ func (r *Registry) releaseTaskRoutingLocked(taskID string) {
 			device.Status = StatusOnline
 		}
 	}
+}
+
+func (r *Registry) reconcileFinishedCurrentTaskLocked(deviceID, reason string, now int64) bool {
+	taskID := r.deviceCurrentTask[deviceID]
+	if taskID == "" {
+		return false
+	}
+	task := r.tasks[taskID]
+	age := "unknown"
+	if task != nil {
+		age = taskAgeString(task, now)
+	}
+	log.Printf("device status reconciliation: deviceID=%s taskID=%s reason=%s age=%s", deviceID, taskID, reason, age)
+	if task == nil {
+		delete(r.deviceCurrentTask, deviceID)
+		if device := r.devices[deviceID]; device != nil {
+			device.RunningTaskIDs = nil
+			device.UpdatedAt = now
+			if r.conns[deviceID] == nil {
+				device.Status = StatusOffline
+			} else if !device.SetupReady {
+				device.Status = StatusSetupRequired
+			} else {
+				device.Status = StatusOnline
+			}
+		}
+		return true
+	}
+	r.failTaskLocked(taskID, "Device task ended without task.done")
+	r.releaseTaskRoutingLocked(taskID)
+	return true
+}
+
+func taskAgeString(task *TaskRun, now int64) string {
+	if task == nil || task.StartedAt <= 0 || now < task.StartedAt {
+		return "unknown"
+	}
+	return (time.Duration(now-task.StartedAt) * time.Millisecond).String()
 }
 
 func (r *Registry) failTaskLocked(taskID, message string) {
@@ -880,6 +932,7 @@ func (r *Registry) forwardTaskEvent(env Envelope) {
 	case MsgPermissionRequest:
 		event.Type = DeviceEventPermissionRequest
 	case MsgTaskDone:
+		log.Printf("device task.done received: deviceID=%s taskID=%s", env.DeviceID, env.TaskID)
 		event.Type = DeviceEventDone
 	case MsgTaskError:
 		event.Type = DeviceEventError

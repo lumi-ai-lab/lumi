@@ -186,7 +186,7 @@ func splitWeComMarkdownMessages(content string, maxBytes int) []string {
 			appendBlock(text)
 			continue
 		}
-		if current.Len() > 0 {
+		if current.Len() > 0 && block.kind == "paragraph" {
 			currentText := strings.TrimSpace(current.String())
 			firstBudget := maxBytes - len(currentText) - len("\n\n")
 			if firstBudget > 0 {
@@ -204,20 +204,11 @@ func splitWeComMarkdownMessages(content string, maxBytes int) []string {
 				}
 				if firstPart != "" && len(currentText)+len("\n\n")+len(firstPart) <= maxBytes {
 					parts = append(parts, currentText+"\n\n"+firstPart)
-					if block.kind == "paragraph" {
-						remainingText := strings.TrimSpace(text[len(firstParts[firstPartIndex]):])
-						if remainingText != "" {
-							remainingBlock := block
-							remainingBlock.text = remainingText
-							for _, part := range splitOversizedWeComMarkdownBlock(remainingBlock, maxBytes) {
-								part = strings.TrimSpace(part)
-								if part != "" {
-									parts = append(parts, part)
-								}
-							}
-						}
-					} else {
-						for _, part := range firstParts[firstPartIndex+1:] {
+					remainingText := strings.TrimSpace(text[len(firstParts[firstPartIndex]):])
+					if remainingText != "" {
+						remainingBlock := block
+						remainingBlock.text = remainingText
+						for _, part := range splitOversizedWeComMarkdownBlock(remainingBlock, maxBytes) {
 							part = strings.TrimSpace(part)
 							if part != "" {
 								parts = append(parts, part)
@@ -480,6 +471,9 @@ func splitWeComLongReply(content string, maxPreviewBytes int) (preview string, r
 	lines := splitWeComMarkdownLines(content)
 	unsafeRanges := wecomMarkdownUnsafeCutRanges(lines)
 
+	if cut := wecomMarkdownUnsafeRangeStartContainingLimit(limit, unsafeRanges); cut > 0 {
+		return content[:cut], content[cut:]
+	}
 	if cut := bestWeComMarkdownParagraphCut(content, limit, unsafeRanges); cut > 0 {
 		return content[:cut], content[cut:]
 	}
@@ -992,6 +986,15 @@ func wecomMarkdownUnsafeCutRanges(lines []wecomMarkdownLine) []wecomMarkdownRang
 		i++
 	}
 	return ranges
+}
+
+func wecomMarkdownUnsafeRangeStartContainingLimit(limit int, unsafe []wecomMarkdownRange) int {
+	for _, r := range unsafe {
+		if limit > r.start && limit < r.end && r.start > 0 {
+			return r.start
+		}
+	}
+	return 0
 }
 
 func bestWeComMarkdownParagraphCut(content string, limit int, unsafe []wecomMarkdownRange) int {

@@ -39,6 +39,7 @@ type fakeSender struct {
 	media         []SendAction
 	streams       []fakeStreamFrame
 	failStreaming bool
+	failSend      bool
 	splitSends    bool
 	streamSeq     int
 }
@@ -101,6 +102,9 @@ func (s *fakeSender) NewStreamID() string {
 func (s *fakeSender) Send(_ context.Context, _ replyContext, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failSend {
+		return errors.New("send failed")
+	}
 	if s.splitSends {
 		for _, chunk := range splitWeComMarkdownMessages(content, wecomMarkdownSendMaxBytes) {
 			s.sends = append(s.sends, chunk)
@@ -424,6 +428,195 @@ func TestGatewayEndTurnStopReasonDoesNotAppendLengthNotice(t *testing.T) {
 	}
 }
 
+func TestGatewayEndTurnIncompleteReplyContinuesOnce(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			switch input.Message {
+			case "hello":
+				if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk",
+						"content":       map[string]any{"type": "text", "text": "代码如下：\n```go\nfmt.Println(\"x\")"},
+					},
+				}}); err != nil {
+					return err
+				}
+			case continueReplyPrompt:
+				if input.NewSession {
+					t.Fatalf("continuation NewSession = true, want false")
+				}
+				if len(input.Files) != 0 {
+					t.Fatalf("continuation Files = %v, want none", input.Files)
+				}
+				if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk",
+						"content":       map[string]any{"type": "text", "text": "\n```\n完成。"},
+					},
+				}}); err != nil {
+					return err
+				}
+			default:
+				t.Fatalf("unexpected input message %q", input.Message)
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-end-turn-incomplete-continue",
+		ReplyContext:    replyContext{ReqID: "req-end-turn", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 2 {
+		t.Fatalf("runner inputs = %d, want first run plus one continuation", len(runner.inputs))
+	}
+	if len(sender.replies) != 1 || !strings.Contains(sender.replies[0], "fmt.Println") || !strings.Contains(sender.replies[0], "完成。") {
+		t.Fatalf("replies = %v, want original plus continuation", sender.replies)
+	}
+	if strings.Contains(sender.replies[0], incompleteReplyNoticeText) {
+		t.Fatalf("reply contains incomplete notice after successful continuation: %q", sender.replies[0])
+	}
+}
+
+func TestGatewayEndTurnCompleteReplyDoesNotContinue(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if input.Message == continueReplyPrompt {
+				t.Fatalf("unexpected continuation run")
+			}
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "完整回答。"},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-end-turn-complete-no-continue",
+		ReplyContext:    replyContext{ReqID: "req-end-turn", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 1 {
+		t.Fatalf("runner inputs = %d, want one", len(runner.inputs))
+	}
+	if len(sender.replies) != 1 || sender.replies[0] != "完整回答。" {
+		t.Fatalf("replies = %v, want complete reply", sender.replies)
+	}
+}
+
+func TestGatewayIncompleteContinuationFailureAddsNotice(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if input.Message == continueReplyPrompt {
+				return errors.New("continuation failed")
+			}
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "待办：\n-"},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-end-turn-continue-fail",
+		ReplyContext:    replyContext{ReqID: "req-end-turn", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 2 {
+		t.Fatalf("runner inputs = %d, want continuation attempt", len(runner.inputs))
+	}
+	if len(sender.replies) != 1 || !strings.Contains(sender.replies[0], incompleteReplyNoticeText) {
+		t.Fatalf("replies = %v, want incomplete notice", sender.replies)
+	}
+}
+
+func TestGatewayStreamContinuationUsesOrdinarySend(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			switch input.Message {
+			case "hello":
+				if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk",
+						"content":       map[string]any{"type": "text", "text": "待办：\n-"},
+					},
+				}}); err != nil {
+					return err
+				}
+			case continueReplyPrompt:
+				if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk",
+						"content":       map[string]any{"type": "text", "text": " 第一项"},
+					},
+				}}); err != nil {
+					return err
+				}
+			default:
+				t.Fatalf("unexpected input message %q", input.Message)
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+	cfg := testGatewayConfig()
+	cfg.Stream = true
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-stream-continue-ordinary",
+		ReplyContext:    replyContext{ReqID: "req-stream", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(sender.streams) == 0 {
+		t.Fatal("streams = nil, want original streamed")
+	}
+	last := sender.streams[len(sender.streams)-1]
+	if !last.Finish || strings.Contains(last.Content, "第一项") {
+		t.Fatalf("last stream frame = %+v, want original only", last)
+	}
+	if len(sender.sends) != 1 || sender.sends[0] != "第一项" {
+		t.Fatalf("sends = %v, want continuation through ordinary send", sender.sends)
+	}
+}
+
 func TestGatewayLengthStopReasonWithEmptyFinalTextKeepsFallback(t *testing.T) {
 	runner := &scriptedRunner{
 		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
@@ -582,7 +775,7 @@ func TestGatewayStreamUpdateUsesPreviewByteLimit(t *testing.T) {
 	sender := &fakeSender{}
 	streamSender := newWeComStreamSender(sender, replyContext{ReqID: "req-stream", ChatID: "chat", UserID: "user"}, "")
 	ctx := context.Background()
-	longText := strings.Repeat("a", wecomStreamPreviewMaxBytes+1000)
+	longText := strings.Repeat("a", wecomStreamLivePreviewMaxBytes+1000)
 
 	streamSender.Update(ctx, longText)
 
@@ -595,8 +788,131 @@ func TestGatewayStreamUpdateUsesPreviewByteLimit(t *testing.T) {
 	if frame.Finish {
 		t.Fatalf("stream frame finish = true, want false")
 	}
-	if len(frame.Content) > wecomStreamPreviewMaxBytes {
-		t.Fatalf("stream update bytes = %d, want <= %d", len(frame.Content), wecomStreamPreviewMaxBytes)
+	if len(frame.Content) > wecomStreamLivePreviewMaxBytes {
+		t.Fatalf("stream update bytes = %d, want <= %d", len(frame.Content), wecomStreamLivePreviewMaxBytes)
+	}
+	if !utf8.ValidString(frame.Content) {
+		t.Fatalf("stream update content is invalid utf8")
+	}
+}
+
+func TestWeComStreamSenderFallsBackToSendAfterSafeDurationOnUpdate(t *testing.T) {
+	sender := &fakeSender{}
+	streamSender := newWeComStreamSender(sender, replyContext{ReqID: "req-stream", ChatID: "chat", UserID: "user"}, "")
+	streamSender.startedAt = time.Now().Add(-wecomStreamSafeDuration - time.Second)
+
+	streamSender.Update(context.Background(), "partial answer")
+
+	if streamSender.Failed() {
+		t.Fatal("stream sender failed = true, want send fallback without stream failure")
+	}
+	if preview, fallback := streamSender.SendFallbackPreview(); !fallback || preview != "partial answer" {
+		t.Fatalf("fallback preview = %q fallback=%v, want partial answer fallback", preview, fallback)
+	}
+	if len(sender.streams) != 1 {
+		t.Fatalf("streams = %d, want timeout finish frame", len(sender.streams))
+	}
+	frame := sender.streams[0]
+	if !frame.Finish {
+		t.Fatalf("stream frame finish = false, want true")
+	}
+	if !strings.Contains(frame.Content, "partial answer") || !strings.Contains(frame.Content, wecomStreamFallbackNotice) {
+		t.Fatalf("stream frame content = %q, want preview with fallback notice", frame.Content)
+	}
+}
+
+func TestWeComStreamSenderFallsBackToSendAfterSafeDurationOnComplete(t *testing.T) {
+	sender := &fakeSender{}
+	streamSender := newWeComStreamSender(sender, replyContext{ReqID: "req-stream", ChatID: "chat", UserID: "user"}, "")
+	streamSender.startedAt = time.Now().Add(-wecomStreamSafeDuration - time.Second)
+
+	streamSender.Complete(context.Background(), "final answer")
+
+	if streamSender.Failed() {
+		t.Fatal("stream sender failed = true, want send fallback without stream failure")
+	}
+	if preview, fallback := streamSender.SendFallbackPreview(); !fallback || preview != "final answer" {
+		t.Fatalf("fallback preview = %q fallback=%v, want final answer fallback", preview, fallback)
+	}
+	if len(sender.streams) != 1 {
+		t.Fatalf("streams = %d, want timeout finish frame", len(sender.streams))
+	}
+	frame := sender.streams[0]
+	if !frame.Finish {
+		t.Fatalf("stream frame finish = false, want true")
+	}
+	if frame.Content != "final answer\n\n"+wecomStreamFallbackNotice {
+		t.Fatalf("stream frame content = %q, want final preview with fallback notice", frame.Content)
+	}
+}
+
+func TestGatewayStreamFallbackSendsOnlyRemainingText(t *testing.T) {
+	service := newTestService(t, nil)
+	sender := &fakeSender{}
+	msg := WeComInboundMessage{ReplyContext: replyContext{ChatID: "chat", UserID: "user"}}
+	finalText := "第一段\n\n第二段\n\n第三段"
+	preview := "第一段\n\n第二段"
+
+	sent, err := service.sendTextSegmentAfterStreamFallback(context.Background(), sender, msg, "", finalText, preview)
+	if err != nil {
+		t.Fatalf("sendTextSegmentAfterStreamFallback() error = %v", err)
+	}
+	if !sent {
+		t.Fatal("sent = false, want continuation send")
+	}
+	if len(sender.sends) != 1 || sender.sends[0] != "续上：\n\n第三段" {
+		t.Fatalf("sends = %v, want only remaining text", sender.sends)
+	}
+	if strings.Contains(sender.sends[0], "第一段") || strings.Contains(sender.sends[0], "第二段") {
+		t.Fatalf("continuation duplicated stream preview: %q", sender.sends[0])
+	}
+}
+
+func TestGatewayStreamFallbackSendsCompleteAnswerWhenPreviewMismatch(t *testing.T) {
+	service := newTestService(t, nil)
+	sender := &fakeSender{}
+	msg := WeComInboundMessage{ReplyContext: replyContext{ChatID: "chat", UserID: "user"}}
+
+	sent, err := service.sendTextSegmentAfterStreamFallback(context.Background(), sender, msg, "", "最终完整回答", "旧的前缀")
+	if err != nil {
+		t.Fatalf("sendTextSegmentAfterStreamFallback() error = %v", err)
+	}
+	if !sent {
+		t.Fatal("sent = false, want complete answer send")
+	}
+	want := "完整回答：\n\n最终完整回答"
+	if len(sender.sends) != 1 || sender.sends[0] != want {
+		t.Fatalf("sends = %v, want %q", sender.sends, want)
+	}
+}
+
+func TestGatewayStreamFallbackSendsRemainingAndMedia(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, "chart.png")
+	if err := os.WriteFile(out, []byte("pngdata"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	service := newTestService(t, nil)
+	sender := &fakeSender{}
+	msg := WeComInboundMessage{ReplyContext: replyContext{ChatID: "chat", UserID: "user"}}
+	finalText := "报告开头\n\n后续说明\n\n[LUMI_WECOM_SEND]\n{\"type\":\"image\",\"path\":\"chart.png\",\"caption\":\"chart\"}\n[/LUMI_WECOM_SEND]"
+
+	sent, err := service.sendTextSegmentAfterStreamFallback(context.Background(), sender, msg, root, finalText, "报告开头")
+	if err != nil {
+		t.Fatalf("sendTextSegmentAfterStreamFallback() error = %v", err)
+	}
+	if !sent {
+		t.Fatal("sent = false, want continuation and media")
+	}
+	if len(sender.media) != 1 || sender.media[0].Type != "image" {
+		t.Fatalf("media = %v, want one image", sender.media)
+	}
+	if len(sender.sends) != 2 || sender.sends[0] != "chart" || sender.sends[1] != "续上：\n\n后续说明" {
+		t.Fatalf("sends = %v, want media caption then continuation", sender.sends)
+	}
+	if strings.Contains(sender.sends[1], "LUMI_WECOM_SEND") || strings.Contains(sender.sends[1], "chart.png") {
+		t.Fatalf("continuation leaked protocol: %q", sender.sends[1])
 	}
 }
 
@@ -1341,7 +1657,7 @@ func TestGatewayStreamHidesMediaProtocolUntilFinalSend(t *testing.T) {
 func TestGatewayStreamLongReplySendsPreviewThenRemaining(t *testing.T) {
 	longBody := "开头\n\n" + strings.Repeat("这是一段很长的回答内容，用来触发企业微信 stream 安全阈值。\n\n", 260)
 	normalized := normalizeWeComMarkdown(longBody)
-	previewLimit := wecomStreamPreviewMaxBytes - len("\n\n") - len(wecomLongReplyNotice)
+	previewLimit := wecomStreamFinalMaxBytes - len("\n\n") - len(wecomLongReplyNotice)
 	wantPreview, wantRemaining := splitWeComLongReply(normalized, previewLimit)
 	if wantRemaining == "" {
 		t.Fatal("test fixture did not exceed long reply threshold")
@@ -1389,8 +1705,8 @@ func TestGatewayStreamLongReplySendsPreviewThenRemaining(t *testing.T) {
 	if !last.Finish || last.Content != wantFinalStream {
 		t.Fatalf("last stream frame = finish:%v len:%d, want finish preview+notice len:%d", last.Finish, len(last.Content), len(wantFinalStream))
 	}
-	if len(last.Content) > wecomStreamPreviewMaxBytes {
-		t.Fatalf("final stream bytes = %d, want <= %d", len(last.Content), wecomStreamPreviewMaxBytes)
+	if len(last.Content) > wecomStreamFinalMaxBytes {
+		t.Fatalf("final stream bytes = %d, want <= %d", len(last.Content), wecomStreamFinalMaxBytes)
 	}
 	if len(sender.sends) != 1 || sender.sends[0] != "续上：\n\n"+wantRemaining {
 		t.Fatalf("sends = %v, want continuation", sender.sends)
@@ -1401,8 +1717,47 @@ func TestGatewayStreamLongReplySendsPreviewThenRemaining(t *testing.T) {
 	}
 }
 
+func TestGatewayStreamContinuationSendErrorReturns(t *testing.T) {
+	longBody := "开头\n\n" + strings.Repeat("这是一段很长的回答内容，用来触发企业微信 stream 安全阈值。\n\n", 260)
+	normalized := normalizeWeComMarkdown(longBody)
+	previewLimit := wecomStreamFinalMaxBytes - len("\n\n") - len(wecomLongReplyNotice)
+	_, remaining := splitWeComLongReply(normalized, previewLimit)
+	if remaining == "" {
+		t.Fatal("test fixture did not exceed long reply threshold")
+	}
+
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": longBody},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{failSend: true}
+	cfg := testGatewayConfig()
+	cfg.Stream = true
+
+	err := service.handleInboundMessage(context.Background(), cfg, WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-stream-continuation-fail",
+		ReplyContext:    replyContext{ReqID: "req-stream", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err == nil || !strings.Contains(err.Error(), "send failed") {
+		t.Fatalf("handleInboundMessage() error = %v, want send failed", err)
+	}
+}
+
 func TestGatewayStreamLongChineseReplyUsesBytePreviewLimit(t *testing.T) {
-	longBody := strings.Repeat("中", wecomStreamPreviewMaxBytes+500)
+	longBody := strings.Repeat("中", wecomStreamFinalMaxBytes+500)
 	runner := &scriptedRunner{
 		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
 			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
@@ -1436,13 +1791,13 @@ func TestGatewayStreamLongChineseReplyUsesBytePreviewLimit(t *testing.T) {
 		t.Fatalf("last stream finish = false, want true")
 	}
 	preview := strings.TrimSuffix(last.Content, "\n\n"+wecomLongReplyNotice)
-	wantPreviewBytes := wecomStreamPreviewMaxBytes - len("\n\n") - len(wecomLongReplyNotice)
+	wantPreviewBytes := wecomStreamFinalMaxBytes - len("\n\n") - len(wecomLongReplyNotice)
 	wantPreviewBytes = utf8SafeIndex(longBody, wantPreviewBytes)
 	if got := len(preview); got != wantPreviewBytes {
 		t.Fatalf("preview bytes = %d, want %d", got, wantPreviewBytes)
 	}
-	if len(last.Content) > wecomStreamPreviewMaxBytes {
-		t.Fatalf("final stream bytes = %d, want <= %d", len(last.Content), wecomStreamPreviewMaxBytes)
+	if len(last.Content) > wecomStreamFinalMaxBytes {
+		t.Fatalf("final stream bytes = %d, want <= %d", len(last.Content), wecomStreamFinalMaxBytes)
 	}
 	wantRemaining := longBody[wantPreviewBytes:]
 	if len(sender.sends) != 1 || sender.sends[0] != "续上：\n\n"+wantRemaining {
@@ -1451,7 +1806,7 @@ func TestGatewayStreamLongChineseReplyUsesBytePreviewLimit(t *testing.T) {
 }
 
 func TestGatewayStreamShortReplyBelowPreviewLimitStaysInFinalStream(t *testing.T) {
-	body := strings.Repeat("a", wecomStreamPreviewMaxBytes-100)
+	body := strings.Repeat("a", wecomStreamFinalMaxBytes-100)
 	runner := &scriptedRunner{
 		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
 			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
@@ -1532,7 +1887,7 @@ func TestGatewayStreamRemainingUsesOrdinaryMarkdownSendSplitting(t *testing.T) {
 	}
 }
 
-func TestGatewayStreamLongReportReconstructsNormalizedReplyAndKeepsUTF8(t *testing.T) {
+func TestGatewayStreamFinalReplyAround18KBStaysInFinalStream(t *testing.T) {
 	section := strings.Join([]string{
 		"## 盈利分析",
 		"- 收入增长来自华东与华南门店。",
@@ -1550,10 +1905,8 @@ func TestGatewayStreamLongReportReconstructsNormalizedReplyAndKeepsUTF8(t *testi
 	if len(normalized) < 18000 {
 		t.Fatalf("fixture bytes = %d, want around 18KB", len(normalized))
 	}
-	previewLimit := wecomStreamPreviewMaxBytes - len("\n\n") - len(wecomLongReplyNotice)
-	wantPreview, wantRemaining := splitWeComLongReply(normalized, previewLimit)
-	if wantRemaining == "" {
-		t.Fatal("test fixture did not exceed stream preview threshold")
+	if len(normalized) > wecomStreamFinalMaxBytes {
+		t.Fatalf("fixture bytes = %d, want <= final stream limit %d", len(normalized), wecomStreamFinalMaxBytes)
 	}
 	runner := &scriptedRunner{
 		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
@@ -1587,31 +1940,20 @@ func TestGatewayStreamLongReportReconstructsNormalizedReplyAndKeepsUTF8(t *testi
 	if !last.Finish {
 		t.Fatalf("last stream finish = false, want true")
 	}
-	if len(last.Content) > wecomStreamPreviewMaxBytes {
-		t.Fatalf("final stream bytes = %d, want <= %d", len(last.Content), wecomStreamPreviewMaxBytes)
+	if last.Content != normalized {
+		t.Fatalf("last stream content length = %d, want full normalized reply length %d", len(last.Content), len(normalized))
+	}
+	if len(last.Content) > wecomStreamFinalMaxBytes {
+		t.Fatalf("final stream bytes = %d, want <= %d", len(last.Content), wecomStreamFinalMaxBytes)
 	}
 	if !utf8.ValidString(last.Content) {
 		t.Fatalf("final stream content is invalid utf8")
 	}
-	if len(sender.sends) != 1 || sender.sends[0] != "续上：\n\n"+wantRemaining {
-		t.Fatalf("sends = %v, want one continuation", sender.sends)
+	if len(sender.sends) != 0 {
+		t.Fatalf("sends = %v, want no continuation", sender.sends)
 	}
-	for i, chunk := range splitWeComMarkdownMessages(sender.sends[0], wecomMarkdownSendMaxBytes) {
-		if len(chunk) > wecomMarkdownSendMaxBytes {
-			t.Fatalf("continuation chunk %d bytes = %d, want <= %d", i, len(chunk), wecomMarkdownSendMaxBytes)
-		}
-		if !utf8.ValidString(chunk) {
-			t.Fatalf("continuation chunk %d is invalid utf8", i)
-		}
-	}
-	if !strings.HasPrefix(last.Content, wantPreview) || !strings.HasSuffix(last.Content, wecomLongReplyNotice) {
-		t.Fatalf("final stream did not contain expected preview plus notice")
-	}
-	if wantPreview+wantRemaining != normalized {
-		t.Fatalf("preview + continuation did not reconstruct normalized reply")
-	}
-	if !strings.Contains(wantPreview+wantRemaining, "| 区域 | 收入 | 同比 |") || !strings.Contains(wantPreview+wantRemaining, "😊") {
-		t.Fatalf("reconstructed reply lost markdown table or emoji")
+	if !strings.Contains(last.Content, "| 区域 | 收入 | 同比 |") || !strings.Contains(last.Content, "😊") {
+		t.Fatalf("final stream lost markdown table or emoji")
 	}
 }
 

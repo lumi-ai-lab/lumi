@@ -422,7 +422,38 @@ func TestSplitWeComMarkdownMessagesContinuationPrefixOnlyFirstPart(t *testing.T)
 	}
 }
 
-func TestSplitWeComMarkdownMessagesContinuationPrefixIncludesFirstTableChunk(t *testing.T) {
+func TestSplitWeComMarkdownMessagesDoesNotUseRemainderBudgetForTable(t *testing.T) {
+	header := "| Region | Sales | YoY |"
+	delimiter := "| --- | ---: | ---: |"
+	rows := []string{header, delimiter}
+	for i := 0; i < 10; i++ {
+		rows = append(rows, "| South China | 12345 | 9.8% |")
+	}
+	table := strings.Join(rows, "\n")
+	prefix := strings.Repeat("a", wecomMarkdownSendMaxBytes-len(table)/2)
+	content := prefix + "\n\n" + table
+
+	parts := splitWeComMarkdownMessages(content, wecomMarkdownSendMaxBytes)
+	if len(parts) != 2 {
+		t.Fatalf("parts = %d, want prefix and whole table", len(parts))
+	}
+	if parts[0] != prefix {
+		t.Fatalf("first part = %q, want prefix only", parts[0])
+	}
+	if parts[1] != table {
+		t.Fatalf("second part = %q, want whole table", parts[1])
+	}
+	for i, part := range parts {
+		if len(part) > wecomMarkdownSendMaxBytes {
+			t.Fatalf("part %d bytes = %d, want <= %d", i, len(part), wecomMarkdownSendMaxBytes)
+		}
+	}
+	if got, want := strings.Join(parts, "\n\n"), normalizeWeComMarkdown(content); got != want {
+		t.Fatalf("rebuilt content = %q, want %q", got, want)
+	}
+}
+
+func TestSplitWeComMarkdownMessagesContinuationPrefixFlushesBeforeOversizedTable(t *testing.T) {
 	rows := []string{
 		"续上：",
 		"",
@@ -436,11 +467,8 @@ func TestSplitWeComMarkdownMessagesContinuationPrefixIncludesFirstTableChunk(t *
 	if len(parts) < 2 {
 		t.Fatalf("parts = %d, want continuation table split", len(parts))
 	}
-	if !strings.HasPrefix(parts[0], "续上：\n\n| 区域 | 销售额 | 同比 |\n| --- | ---: | ---: |\n") {
-		t.Fatalf("first part did not include table header/delimiter: %q", parts[0])
-	}
-	if !strings.Contains(parts[0], "| 华南大区 |") {
-		t.Fatalf("first part did not include first table row: %q", parts[0])
+	if parts[0] != "续上：" {
+		t.Fatalf("first part = %q, want continuation prefix only", parts[0])
 	}
 	for i, part := range parts {
 		if len(part) > 160 {
@@ -536,5 +564,43 @@ func TestSplitWeComLongReplyAvoidsMarkdownBlocks(t *testing.T) {
 	}
 	if preview != "intro\n\n" {
 		t.Fatalf("fence preview = %q, want prefix before fence", preview)
+	}
+}
+
+func TestSplitWeComLongReplyMovesWholeLargeTableToRemaining(t *testing.T) {
+	rows := []string{
+		"## 门店经营分析",
+		"",
+		"以下为各区域客单价表现，表格较长时应整体续发。",
+		"",
+		"| 区域 | 客单价 | 环比 | 同比 | 订单数 | 销售额 |",
+		"| --- | ---: | ---: | ---: | ---: | ---: |",
+	}
+	for i := 0; i < 120; i++ {
+		rows = append(rows, "| 华南大区 | 128.50 | 3.2% | 5.1% | 1024 | 131584 |")
+	}
+	normalized := normalizeWeComMarkdown(strings.Join(rows, "\n"))
+	tableHeader := "| 区域 | 客单价 | 环比 | 同比 | 订单数 | 销售额 |"
+	tableStart := strings.Index(normalized, tableHeader)
+	if tableStart < 0 {
+		t.Fatalf("normalized content missing table header: %q", normalized)
+	}
+	const previewLimit = 3500
+	if tableStart >= previewLimit {
+		t.Fatalf("test setup table starts at %d, want before preview limit %d", tableStart, previewLimit)
+	}
+
+	preview, remaining := splitWeComLongReply(normalized, previewLimit)
+	if preview+remaining != normalized {
+		t.Fatalf("split did not preserve content")
+	}
+	if strings.Contains(preview, tableHeader) || strings.Contains(preview, "| 华南大区 |") {
+		t.Fatalf("preview contains partial table: %q", preview)
+	}
+	if !strings.HasPrefix(remaining, tableHeader) {
+		t.Fatalf("remaining = %q, want full table from header", remaining[:min(len(remaining), 120)])
+	}
+	if len(preview) > previewLimit {
+		t.Fatalf("preview bytes = %d, want <= %d", len(preview), previewLimit)
 	}
 }
