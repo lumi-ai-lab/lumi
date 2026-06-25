@@ -12,9 +12,11 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
