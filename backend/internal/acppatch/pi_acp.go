@@ -145,6 +145,10 @@ func EnsurePiACPPatched(opts RuntimeOptions) (PatchStatus, error) {
 		status.Message = err.Error()
 		return status, err
 	}
+	if err := ensureExecutable(opts.Prefix, pkgDir); err != nil {
+		status.Message = err.Error()
+		return status, err
+	}
 	status.Applied = true
 	status.Message = "Installed with Lumi patch: " + PiACPMultiSessionID
 	return status, nil
@@ -296,6 +300,51 @@ func markerExists(pkgDir string) bool {
 		return false
 	}
 	return marker.ID == PiACPMultiSessionID && marker.Package == PiACPPackage && marker.Version == PiACPVersion
+}
+
+func ensureExecutable(prefix, pkgDir string) error {
+	exe := ExecutablePath(prefix)
+	if runtime.GOOS == "windows" {
+		if _, err := os.Stat(exe); err == nil {
+			return nil
+		}
+		return fmt.Errorf("patched pi-acp executable not found at %s", exe)
+	}
+
+	target := filepath.Join(pkgDir, piACPSourceFile)
+	binDir := filepath.Dir(exe)
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		return fmt.Errorf("failed to create pi-acp bin directory: %w", err)
+	}
+
+	if info, err := os.Lstat(exe); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			currentTarget, err := os.Readlink(exe)
+			if err != nil {
+				return fmt.Errorf("failed to inspect pi-acp executable: %w", err)
+			}
+			if !filepath.IsAbs(currentTarget) {
+				currentTarget = filepath.Join(binDir, currentTarget)
+			}
+			if filepath.Clean(currentTarget) == filepath.Clean(target) {
+				return nil
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to inspect pi-acp executable: %w", err)
+	}
+
+	if err := os.Remove(exe); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to replace pi-acp executable: %w", err)
+	}
+	relTarget, err := filepath.Rel(binDir, target)
+	if err != nil {
+		relTarget = target
+	}
+	if err := os.Symlink(relTarget, exe); err != nil {
+		return fmt.Errorf("failed to link pi-acp executable: %w", err)
+	}
+	return nil
 }
 
 func logf(opts RuntimeOptions, message string) {

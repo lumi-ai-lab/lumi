@@ -238,6 +238,63 @@ func splitWeComMarkdownMessages(content string, maxBytes int) []string {
 	return parts
 }
 
+func splitWeComFinalStreamMarkdownChunks(content string, maxBytes int) []string {
+	content = normalizeWeComMarkdown(content)
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	if maxBytes <= 0 || len(content) <= maxBytes {
+		return []string{strings.TrimSpace(content)}
+	}
+	blocks := scanWeComMarkdownBlocks(content)
+	parts := make([]string, 0, len(content)/maxBytes+1)
+	var current strings.Builder
+	flush := func() {
+		part := strings.TrimSpace(current.String())
+		if part != "" {
+			parts = append(parts, part)
+		}
+		current.Reset()
+	}
+	appendBlock := func(block string) {
+		block = strings.TrimSpace(block)
+		if block == "" {
+			return
+		}
+		if current.Len() > 0 {
+			current.WriteString("\n\n")
+		}
+		current.WriteString(block)
+	}
+	for _, block := range blocks {
+		text := strings.TrimSpace(block.text)
+		if text == "" {
+			continue
+		}
+		if len(text) <= maxBytes {
+			currentText := strings.TrimSpace(current.String())
+			if currentText == "" || len(currentText)+len("\n\n")+len(text) <= maxBytes {
+				appendBlock(text)
+				continue
+			}
+			flush()
+			appendBlock(text)
+			continue
+		}
+		if current.Len() > 0 {
+			flush()
+		}
+		for _, part := range splitOversizedWeComMarkdownBlock(block, maxBytes) {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				parts = append(parts, part)
+			}
+		}
+	}
+	flush()
+	return parts
+}
+
 func scanWeComMarkdownBlocks(content string) []wecomMarkdownBlock {
 	lines := splitWeComMarkdownLines(content)
 	blocks := make([]wecomMarkdownBlock, 0, len(lines))

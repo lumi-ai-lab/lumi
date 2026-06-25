@@ -480,6 +480,31 @@ func TestSplitWeComMarkdownMessagesContinuationPrefixFlushesBeforeOversizedTable
 	}
 }
 
+func TestSplitWeComMarkdownMessagesOversizedTablePartsRemainMarkdownTables(t *testing.T) {
+	rows := []string{
+		"| 区域 | 销售额 | 同比 |",
+		"| --- | ---: | ---: |",
+	}
+	for i := 0; i < 220; i++ {
+		rows = append(rows, "| 华南大区 | 12345 | 9.8% |")
+	}
+	parts := splitWeComMarkdownMessages(strings.Join(rows, "\n"), wecomMarkdownSendMaxBytes)
+	if len(parts) < 2 {
+		t.Fatalf("parts = %d, want oversized table split", len(parts))
+	}
+	for i, part := range parts {
+		if len(part) > wecomMarkdownSendMaxBytes {
+			t.Fatalf("part %d bytes = %d, want <= %d", i, len(part), wecomMarkdownSendMaxBytes)
+		}
+		if !strings.Contains(part, "| 区域 | 销售额 | 同比 |") || !strings.Contains(part, "| --- | ---: | ---: |") {
+			t.Fatalf("part %d missing table header/delimiter: %q", i, part)
+		}
+		if strings.Contains(part, "```") {
+			t.Fatalf("part %d contains code fence: %q", i, part)
+		}
+	}
+}
+
 func TestSplitWeComLongReplyShortText(t *testing.T) {
 	content := "短回答"
 	preview, remaining := splitWeComLongReply(content, 100)

@@ -98,8 +98,12 @@ func makePiRuntime(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(pkgDir, "package.json"), data, 0644); err != nil {
 		t.Fatalf("WriteFile(package.json) error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "dist", "index.js"), []byte(piACPOriginalSource()), 0644); err != nil {
+	index := filepath.Join(pkgDir, "dist", "index.js")
+	if err := os.WriteFile(index, []byte(piACPOriginalSource()), 0755); err != nil {
 		t.Fatalf("WriteFile(index.js) error = %v", err)
+	}
+	if err := os.Chmod(index, 0755); err != nil {
+		t.Fatalf("Chmod(index.js) error = %v", err)
 	}
 
 	binDir := filepath.Join(prefix, "bin")
@@ -111,11 +115,20 @@ func makePiRuntime(t *testing.T) string {
 	if err := os.WriteFile(bin, []byte(script), 0755); err != nil {
 		t.Fatalf("WriteFile(pi-acp) error = %v", err)
 	}
+	if err := os.Chmod(bin, 0755); err != nil {
+		t.Fatalf("Chmod(pi-acp) error = %v", err)
+	}
 	return prefix
 }
 
 func piACPOriginalSource() string {
-	return `var pkg = readNearestPackageJson(import.meta.url);
+	return `#!/bin/sh
+printf started > "$MARKER"
+trap 'exit 0' INT TERM
+sleep 30
+exit 0
+: <<'PI_ACP_SOURCE'
+var pkg = readNearestPackageJson(import.meta.url);
 var PiAcpAgent = class {
   async newSession(params) {
     this.sessions.closeAllExcept?.(session.sessionId);
@@ -123,7 +136,9 @@ var PiAcpAgent = class {
   async loadSession(params) {
     this.sessions.closeAllExcept?.(session.sessionId);
   }
-};`
+};
+PI_ACP_SOURCE
+`
 }
 
 func TestResolveManagedConfigLeavesOtherAgentsUnchanged(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -82,6 +83,37 @@ func TestEnsurePiACPPatchedWritesMarkerWhenAlreadyPatched(t *testing.T) {
 	status = Status(RuntimeOptions{Prefix: runtimePrefixForPackageDir(pkgDir)})
 	if !status.Applied {
 		t.Fatalf("Status().Applied = false after marker write: %s", status.Message)
+	}
+}
+
+func TestEnsurePiACPPatchedReplacesCopiedExecutableWithPackageLink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinked npm bin layout is only used on Unix")
+	}
+	pkgDir := makePackage(t, originalSource())
+	prefix := runtimePrefixForPackageDir(pkgDir)
+	exe := filepath.Join(prefix, "bin", "pi-acp")
+	if err := os.MkdirAll(filepath.Dir(exe), 0755); err != nil {
+		t.Fatalf("MkdirAll(bin) error = %v", err)
+	}
+	if err := os.WriteFile(exe, []byte("#!/usr/bin/env node\nimport \"@agentclientprotocol/sdk\";\n"), 0755); err != nil {
+		t.Fatalf("WriteFile(exe) error = %v", err)
+	}
+
+	if _, err := EnsurePiACPPatched(RuntimeOptions{Prefix: prefix}); err != nil {
+		t.Fatalf("EnsurePiACPPatched() error = %v", err)
+	}
+
+	linkTarget, err := os.Readlink(exe)
+	if err != nil {
+		t.Fatalf("Readlink(exe) error = %v", err)
+	}
+	if !filepath.IsAbs(linkTarget) {
+		linkTarget = filepath.Join(filepath.Dir(exe), linkTarget)
+	}
+	want := filepath.Join(pkgDir, piACPSourceFile)
+	if filepath.Clean(linkTarget) != filepath.Clean(want) {
+		t.Fatalf("pi-acp executable link = %q, want %q", linkTarget, want)
 	}
 }
 

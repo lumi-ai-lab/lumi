@@ -12,11 +12,9 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -977,7 +975,6 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 		restoreEnv := setProcessEnv("LUMI_WECOM_INSTANCE_ID", resolvedWorkspaceID)
 		defer restoreEnv()
 	}
-
 	runtime, err := startServer(cfg, nil, *port)
 	if err != nil {
 		return err

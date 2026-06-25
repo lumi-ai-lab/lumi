@@ -59,7 +59,7 @@ func TestInitialStatusIncludesPiACPAndCLI(t *testing.T) {
 	if got := status.Agents[0].Command; got != "pi" {
 		t.Fatalf("PI command = %q, want pi", got)
 	}
-	if got := installInstructions["pi"]; got != "npm install -g @earendil-works/pi-coding-agent" {
+	if got := installInstructions["pi"]; got != "npm install -g @earendil-works/pi-coding-agent@0.78.0" {
 		t.Fatalf("pi install instruction = %q", got)
 	}
 }

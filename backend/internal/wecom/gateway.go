@@ -2,18 +2,17 @@ package wecom
 
 import (
 	"context"
-	crand "crypto/rand"
 	"crypto/sha1"
 	"errors"
 	"fmt"
 	"log"
-	"math/big"
 	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +77,7 @@ type WeComInboundMessage struct {
 type wsMessageSender interface {
 	Reply(ctx context.Context, rctx replyContext, content string) error
 	ReplyStream(ctx context.Context, rctx replyContext, streamID, content string, finish bool) error
+	ReplyStreamFinal(ctx context.Context, rctx replyContext, streamID, content string) error
 	NewStreamID() string
 	Send(ctx context.Context, rctx replyContext, content string) error
 	ReplyMedia(ctx context.Context, rctx replyContext, action SendAction) error
@@ -119,65 +119,6 @@ type gatewayEventSink struct {
 	finalTextBuilder     strings.Builder
 	finalTextAccumulated string
 	stopReason           string
-}
-
-type wecomStreamSender struct {
-	mu              sync.Mutex
-	sender          wsMessageSender
-	rctx            replyContext
-	workspacePath   string
-	streamID        string
-	lastSent        string
-	pending         string
-	failed          bool
-	fallbackToSend  bool
-	fallbackPreview string
-	startedAt       time.Time
-	lastFlush       time.Time
-	timer           *time.Timer
-}
-
-type wecomStreamCompleteResult struct {
-	FullDelivered bool
-	Preview       string
-	Remaining     string
-}
-
-const (
-	wecomStreamFlushInterval = 200 * time.Millisecond
-	// Keep stream replies inside WeCom's short-lived callback window. After
-	// this, finish the preview and send the final answer through aibot_send_msg.
-	wecomStreamSafeDuration = 290 * time.Second
-	// replyStream.content protocol hard limit for WeCom WebSocket AI Bot.
-	wecomStreamMaxBytes            = 20480
-	wecomStreamLivePreviewMaxBytes = 16000
-	wecomStreamFinalMaxBytes       = 20000
-	wecomMarkdownSendMaxBytes      = 4096
-	wecomLongReplyNotice           = "（回答较长，以下继续发送剩余内容）"
-	wecomStreamFallbackNotice      = "（处理时间较长，最终结果将通过普通消息发送）"
-)
-
-var wecomStreamPlaceholders = []string{
-	"收到你的消息，我会用最直白、不绕弯、一看就懂的方式回答你，请稍等片刻...\n",
-	"我已经收到啦，先快速理清你的问题，再给你一个清楚直接的回答...\n",
-	"收到，我会尽量把答案讲清楚、讲明白，不让你来回猜，请稍等...\n",
-	"我先看一下你的问题，会用更好理解的方式整理后回复你...\n",
-	"收到消息了，我会先抓重点，再给你一个不绕弯的回答...\n",
-	"我正在处理你的问题，会尽量用简单清楚的话说明白...\n",
-	"稍等一下，我先把问题拆清楚，再给你直接可用的答案...\n",
-	"我看到了，接下来会用直白、清楚的方式回答你...\n",
-	"收到，我会把重点整理好后回复，尽量让你一眼看懂...\n",
-	"我先思考一下怎么讲最清楚，马上给你回复...\n",
-	"消息收到，我会尽量少绕弯，直接说重点，请稍等...\n",
-	"我正在准备回答，会把复杂的地方尽量讲简单...\n",
-	"稍等片刻，我会先确认关键信息，再给你清楚的答复...\n",
-	"收到，我会用更容易理解的方式来回答这个问题...\n",
-	"我先整理一下思路，马上给你一个清晰的回复...\n",
-	"看到了，我会尽快把答案组织成你容易判断的方式...\n",
-	"收到你的问题，我会直接说结论，也会说明关键依据...\n",
-	"请稍等，我会把答案讲得明确一点，避免含糊不清...\n",
-	"我正在处理，会尽量用简洁、直接的方式回复你...\n",
-	"收到，我会先抓住核心，再给你一个好理解的回答...\n",
 }
 
 func (s *gatewayEventSink) Emit(event ChatEvent) error {
@@ -432,216 +373,6 @@ func (s *gatewayEventSink) flushDebugSegments() error {
 	return nil
 }
 
-func newWeComStreamSender(sender wsMessageSender, rctx replyContext, workspacePath string) *wecomStreamSender {
-	return &wecomStreamSender{
-		sender:        sender,
-		rctx:          rctx,
-		workspacePath: workspacePath,
-		streamID:      sender.NewStreamID(),
-		startedAt:     time.Now(),
-	}
-}
-
-func randomWeComStreamPlaceholder() string {
-	if len(wecomStreamPlaceholders) == 0 {
-		return ""
-	}
-	n, err := crand.Int(crand.Reader, big.NewInt(int64(len(wecomStreamPlaceholders))))
-	if err != nil {
-		return wecomStreamPlaceholders[int(time.Now().UnixNano()%int64(len(wecomStreamPlaceholders)))]
-	}
-	return wecomStreamPlaceholders[n.Int64()]
-}
-
-func (s *wecomStreamSender) SendPlaceholder(ctx context.Context) {
-	if s == nil || s.failed || s.rctx.ReqID == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.lastSent != "" {
-		return
-	}
-	s.pending = randomWeComStreamPlaceholder()
-	s.flushLocked(ctx, false)
-}
-
-func (s *wecomStreamSender) Update(ctx context.Context, fullText string) {
-	if s == nil || s.rctx.ReqID == "" {
-		return
-	}
-	visible := ParseSendProtocol(fullText, s.workspacePath).VisibleText
-	visible = stabilizeWeComMarkdownStream(visible)
-	liveLimit := wecomStreamLivePreviewMaxBytes
-	if liveLimit > wecomStreamMaxBytes {
-		liveLimit = wecomStreamMaxBytes
-	}
-	visible, _ = splitWeComLongReply(visible, liveLimit)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.failed || s.fallbackToSend || visible == "" || visible == s.lastSent {
-		return
-	}
-	s.pending = visible
-	if time.Since(s.lastFlush) < wecomStreamFlushInterval {
-		s.scheduleFlushLocked(ctx)
-		return
-	}
-	s.stopTimerLocked()
-	s.flushLocked(ctx, false)
-}
-
-func (s *wecomStreamSender) Complete(ctx context.Context, fullText string) wecomStreamCompleteResult {
-	result := wecomStreamCompleteResult{FullDelivered: true}
-	if s == nil || s.rctx.ReqID == "" {
-		return result
-	}
-	visible := ParseSendProtocol(fullText, s.workspacePath).VisibleText
-	visible = normalizeWeComMarkdown(visible)
-	finalLimit := wecomStreamFinalMaxBytes
-	if finalLimit > wecomStreamMaxBytes {
-		finalLimit = wecomStreamMaxBytes
-	}
-	previewLimit := finalLimit - len("\n\n") - len(wecomLongReplyNotice)
-	if previewLimit <= 0 {
-		previewLimit = finalLimit
-	}
-	preview, remaining := splitWeComLongReply(visible, previewLimit)
-	result.Preview = preview
-	result.Remaining = remaining
-	result.FullDelivered = strings.TrimSpace(remaining) == ""
-	finalStreamText := preview
-	if !result.FullDelivered {
-		separator := "\n\n"
-		if strings.HasSuffix(preview, "\n\n") {
-			separator = ""
-		} else if strings.HasSuffix(preview, "\n") {
-			separator = "\n"
-		}
-		finalStreamText = preview + separator + wecomLongReplyNotice
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.failed || s.fallbackToSend {
-		return result
-	}
-	s.stopTimerLocked()
-	if time.Since(s.startedAt) >= wecomStreamSafeDuration {
-		s.finishForSendFallbackLocked(ctx, preview)
-		return result
-	}
-	s.pending = finalStreamText
-	s.flushLocked(ctx, true)
-	return result
-}
-
-func (s *wecomStreamSender) Failed() bool {
-	if s == nil {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.failed
-}
-
-func (s *wecomStreamSender) SendFallbackPreview() (string, bool) {
-	if s == nil {
-		return "", false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.fallbackPreview, s.fallbackToSend
-}
-
-func (s *wecomStreamSender) scheduleFlushLocked(ctx context.Context) {
-	delay := wecomStreamFlushInterval - time.Since(s.lastFlush)
-	if delay < 0 {
-		delay = 0
-	}
-	if s.timer != nil {
-		s.timer.Reset(delay)
-		return
-	}
-	s.timer = time.AfterFunc(delay, func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.timer = nil
-		if s.failed || s.fallbackToSend || s.pending == "" || time.Since(s.lastFlush) < wecomStreamFlushInterval {
-			return
-		}
-		s.flushLocked(ctx, false)
-	})
-}
-
-func (s *wecomStreamSender) stopTimerLocked() {
-	if s.timer == nil {
-		return
-	}
-	s.timer.Stop()
-	s.timer = nil
-}
-
-func (s *wecomStreamSender) flushLocked(ctx context.Context, finish bool) {
-	if s.pending == "" && !finish {
-		return
-	}
-	if s.failed || s.fallbackToSend {
-		return
-	}
-	if time.Since(s.startedAt) >= wecomStreamSafeDuration && !finish {
-		s.finishForSendFallbackLocked(ctx, s.pending)
-		return
-	}
-	content := s.pending
-	if finish && content == "" {
-		content = s.lastSent
-	}
-	if content == "" {
-		return
-	}
-	if err := s.sender.ReplyStream(ctx, s.rctx, s.streamID, content, finish); err != nil {
-		log.Printf("wecom stream write failed: reqID=%s chatID=%s streamID=%s finish=%v err=%v", s.rctx.ReqID, s.rctx.ChatID, s.streamID, finish, err)
-		s.failed = true
-		return
-	}
-	s.lastSent = content
-	s.pending = ""
-	s.lastFlush = time.Now()
-}
-
-func (s *wecomStreamSender) finishForSendFallbackLocked(ctx context.Context, preview string) {
-	content := appendWeComStreamFallbackNotice(preview)
-	if err := s.sender.ReplyStream(ctx, s.rctx, s.streamID, content, true); err != nil {
-		log.Printf("wecom stream fallback finish failed: reqID=%s chatID=%s streamID=%s err=%v", s.rctx.ReqID, s.rctx.ChatID, s.streamID, err)
-		s.failed = true
-		s.pending = ""
-		return
-	}
-	log.Printf("wecom stream switched to send fallback: reqID=%s chatID=%s streamID=%s previewBytes=%d", s.rctx.ReqID, s.rctx.ChatID, s.streamID, len(preview))
-	s.fallbackToSend = true
-	s.fallbackPreview = strings.TrimSpace(preview)
-	s.lastSent = content
-	s.pending = ""
-	s.lastFlush = time.Now()
-}
-
-func appendWeComStreamFallbackNotice(content string) string {
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return wecomStreamFallbackNotice
-	}
-	if strings.Contains(content, wecomStreamFallbackNotice) {
-		return content
-	}
-	separator := "\n\n"
-	if strings.HasSuffix(content, "\n\n") {
-		separator = ""
-	} else if strings.HasSuffix(content, "\n") {
-		separator = "\n"
-	}
-	return content + separator + wecomStreamFallbackNotice
-}
-
 func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeComInboundMessage, sender wsMessageSender) error {
 	if strings.TrimSpace(msg.ConversationKey) == "" {
 		return nil
@@ -695,8 +426,9 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 	sentVisible := false
 	sink := &gatewayEventSink{debug: imdebug.ToolDebugEnabled(s.convStore, conversationID)}
 	streamSender := (*wecomStreamSender)(nil)
+	traceID := newWeComTraceID()
 	if cfg.Stream && msg.ReplyContext.ReqID != "" {
-		streamSender = newWeComStreamSender(sender, msg.ReplyContext, workspace.Path)
+		streamSender = newWeComStreamSenderWithTrace(sender, msg.ReplyContext, workspace.Path, traceID)
 		streamSender.SendPlaceholder(ctx)
 		sink.textUpdate = func(text string) {
 			streamSender.Update(ctx, text)
@@ -705,6 +437,9 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 	sink.sendSegment = func(segment imdebug.Segment) error {
 		if segment.Kind == imdebug.SegmentDebug {
 			return sender.Reply(ctx, msg.ReplyContext, segment.Text)
+		}
+		if streamSender != nil && streamSender.Failed() {
+			return nil
 		}
 		if streamSender != nil && !streamSender.Failed() {
 			return nil
@@ -744,7 +479,7 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 			UserID:   msg.ReplyContext.UserID,
 		}},
 	}
-	log.Printf("wecom task start: conversationID=%s workspaceID=%s agentID=%s stream=%v", conversationID, workspace.ID, agentID, streamSender != nil)
+	log.Printf("wecom task start: traceID=%s conversationID=%s workspaceID=%s agentID=%s stream=%v", traceID, conversationID, workspace.ID, agentID, streamSender != nil)
 	runErr := s.runner.RunWeComChat(runCtx, chatInput, sink)
 	if runCtx.Err() != nil {
 		return runCtx.Err()
@@ -760,24 +495,14 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 
 	finalText := sink.FinalText()
 	continuedText := ""
-	streamOriginalText := ""
 	if sink.stopReason == "end_turn" && looksLikeIncompleteEndTurn(ParseSendProtocol(finalText, workspace.Path).VisibleText) {
 		beforeContinue := finalText
 		continueInput := chatInput
 		continueInput.Message = continueReplyPrompt
 		continueInput.Files = nil
 		continueInput.NewSession = false
-		log.Printf("wecom final appears incomplete, requesting continuation: conversationID=%s chars=%d tail=%q", conversationID, len([]rune(beforeContinue)), tailRunes(beforeContinue, 200))
-		continueErr := func() error {
-			previousTextUpdate := sink.textUpdate
-			if streamSender != nil {
-				sink.textUpdate = nil
-				defer func() {
-					sink.textUpdate = previousTextUpdate
-				}()
-			}
-			return s.runner.RunWeComChat(runCtx, continueInput, sink)
-		}()
+		log.Printf("wecom final appears incomplete, requesting continuation: traceID=%s conversationID=%s bytes=%d chars=%d", traceID, conversationID, len(beforeContinue), len([]rune(beforeContinue)))
+		continueErr := s.runner.RunWeComChat(runCtx, continueInput, sink)
 		if runCtx.Err() != nil {
 			return runCtx.Err()
 		}
@@ -791,10 +516,9 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 			continuedText = ""
 		} else {
 			finalText = afterContinue
-			streamOriginalText = beforeContinue
 		}
 	}
-	log.Printf("wecom final: conversationID=%s stopReason=%s bytes=%d chars=%d tail=%q", conversationID, sink.stopReason, len(finalText), len([]rune(finalText)), tailRunes(finalText, 200))
+	log.Printf("wecom final: traceID=%s conversationID=%s stopReason=%s bytes=%d chars=%d", traceID, conversationID, sink.stopReason, len(finalText), len([]rune(finalText)))
 	lengthLimitReached := sink.stopReason == "length" && finalText != ""
 	if lengthLimitReached {
 		finalText = appendLengthLimitNotice(finalText)
@@ -823,35 +547,11 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 	}
 	if streamSender != nil && !streamSender.Failed() {
 		streamFinalText := finalText
-		if continuedText != "" && streamOriginalText != "" {
-			streamFinalText = streamOriginalText
-		} else if continuedText != "" && strings.HasSuffix(finalText, continuedText) {
-			streamFinalText = strings.TrimSpace(finalText[:len(finalText)-len(continuedText)])
-		}
-		result := streamSender.Complete(ctx, streamFinalText)
+		streamSender.Complete(ctx, streamFinalText)
 		if _, fallback := streamSender.SendFallbackPreview(); !streamSender.Failed() && !fallback {
-			sent, err := s.sendTextSegmentAfterStream(ctx, sender, msg, workspace.Path, streamFinalText)
+			sent, err := s.sendTextSegmentAfterStreamWithLedger(ctx, sender, msg, workspace.Path, streamFinalText, streamSender)
 			if err != nil {
 				return err
-			}
-			if !result.FullDelivered && strings.TrimSpace(result.Remaining) != "" {
-				if err := sender.Send(ctx, msg.ReplyContext, "续上：\n\n"+result.Remaining); err != nil {
-					return err
-				}
-				if continuedText != "" {
-					_, err := s.sendTextSegmentViaSend(ctx, sender, msg, workspace.Path, continuedText)
-					return err
-				}
-				return nil
-			}
-			if continuedText != "" {
-				sentContinuation, err := s.sendTextSegmentViaSend(ctx, sender, msg, workspace.Path, continuedText)
-				if err != nil {
-					return err
-				}
-				if sentContinuation {
-					return nil
-				}
 			}
 			if sent {
 				return nil
@@ -861,7 +561,7 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 	}
 	if streamSender != nil {
 		if preview, fallback := streamSender.SendFallbackPreview(); fallback {
-			sent, err := s.sendTextSegmentAfterStreamFallback(ctx, sender, msg, workspace.Path, finalText, preview)
+			sent, err := s.sendTextSegmentAfterStreamFallbackWithLedgerAndTrace(ctx, sender, msg, workspace.Path, finalText, preview, streamSender.LedgerSnapshot(), streamSender.TraceID())
 			if err != nil {
 				return err
 			}
@@ -872,14 +572,9 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 		}
 	}
 	if streamSender != nil && streamSender.Failed() {
-		sent, err := s.sendTextSegmentViaSend(ctx, sender, msg, workspace.Path, finalText)
-		if err != nil {
-			return err
-		}
-		if sent {
-			return nil
-		}
-		return sender.Send(ctx, msg.ReplyContext, fallbackDoneText)
+		class, err := streamSender.Failure()
+		log.Printf("wecom advanced stream failed without ordinary answer fallback: traceID=%s reqID=%s chatID=%s class=%s err=%v", streamSender.TraceID(), msg.ReplyContext.ReqID, msg.ReplyContext.ChatID, class, err)
+		return nil
 	}
 	sent, err := s.sendTextSegment(ctx, sender, msg, workspace.Path, finalText)
 	if err != nil {
@@ -892,23 +587,42 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 }
 
 func (s *Service) sendTextSegmentAfterStream(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text string) (bool, error) {
+	return s.sendTextSegmentAfterStreamWithLedger(ctx, sender, msg, workspacePath, text, nil)
+}
+
+func (s *Service) sendTextSegmentAfterStreamWithLedger(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text string, streamSender *WeComStreamDispatcher) (bool, error) {
+	if streamSender != nil {
+		return false, nil
+	}
 	parsed := ParseSendProtocol(text, workspacePath)
 	if len(parsed.Actions) == 0 && len(parsed.Failures) == 0 {
 		return parsed.VisibleText != "", nil
 	}
 	sent := false
 	failures := append([]string(nil), parsed.Failures...)
-	for _, action := range parsed.Actions {
+	for i, action := range parsed.Actions {
 		if action.Caption != "" {
 			if err := sender.Reply(ctx, msg.ReplyContext, action.Caption); err != nil {
+				if streamSender != nil {
+					streamSender.MarkLedgerUnit("media-caption-"+strconv.Itoa(i+1), DeliveryStatusFailed, err)
+				}
 				failures = append(failures, failureText(action.Path, err.Error()))
 				continue
+			}
+			if streamSender != nil {
+				streamSender.MarkLedgerUnit("media-caption-"+strconv.Itoa(i+1), DeliveryStatusDelivered, nil)
 			}
 			sent = true
 		}
 		if err := sender.ReplyMedia(ctx, msg.ReplyContext, action); err != nil {
+			if streamSender != nil {
+				streamSender.MarkLedgerUnit("media-"+strconv.Itoa(i+1), DeliveryStatusFailed, err)
+			}
 			failures = append(failures, failureText(action.Path, err.Error()))
 			continue
+		}
+		if streamSender != nil {
+			streamSender.MarkLedgerUnit("media-"+strconv.Itoa(i+1), DeliveryStatusDelivered, nil)
 		}
 		sent = true
 	}
@@ -925,6 +639,24 @@ func (s *Service) sendTextSegmentAfterStream(ctx context.Context, sender wsMessa
 }
 
 func (s *Service) sendTextSegmentAfterStreamFallback(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text, preview string) (bool, error) {
+	return s.sendTextSegmentAfterStreamFallbackLegacy(ctx, sender, msg, workspacePath, text, preview)
+}
+
+func (s *Service) sendTextSegmentAfterStreamFallbackWithLedger(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text, preview string, units []DeliveredUnit) (bool, error) {
+	return s.sendTextSegmentAfterStreamFallbackWithLedgerAndTrace(ctx, sender, msg, workspacePath, text, preview, units, "")
+}
+
+func (s *Service) sendTextSegmentAfterStreamFallbackWithLedgerAndTrace(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text, preview string, units []DeliveredUnit, traceID string) (bool, error) {
+	ledger := &DeliveryLedger{units: units}
+	if ledger.Valid() {
+		log.Printf("wecom fallback reason=stream_delivery_ledger traceID=%s reqID=%s chatID=%s pendingUnits=%d", traceID, msg.ReplyContext.ReqID, msg.ReplyContext.ChatID, len(ledger.PendingOrFailedIndexes()))
+		return s.sendDeliveryUnitsViaSendWithTrace(ctx, sender, msg, ledger, traceID)
+	}
+	log.Printf("wecom fallback reason=ledger_invalid traceID=%s reqID=%s chatID=%s unitCount=%d", traceID, msg.ReplyContext.ReqID, msg.ReplyContext.ChatID, len(units))
+	return s.sendCompleteTextSegmentViaSend(ctx, sender, msg, workspacePath, text)
+}
+
+func (s *Service) sendTextSegmentAfterStreamFallbackLegacy(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text, preview string) (bool, error) {
 	parsed := ParseSendProtocol(text, workspacePath)
 	visibleText := normalizeWeComMarkdown(parsed.VisibleText)
 	fallbackText := ""
@@ -938,6 +670,100 @@ func (s *Service) sendTextSegmentAfterStreamFallback(ctx context.Context, sender
 		}
 	}
 	return s.sendParsedTextViaSend(ctx, sender, msg, parsed, fallbackText)
+}
+
+func (s *Service) sendCompleteTextSegmentViaSend(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text string) (bool, error) {
+	parsed := ParseSendProtocol(text, workspacePath)
+	rendered := renderWeComFinalMessage(parsed.VisibleText, workspacePath)
+	visibleText := rendered.Text()
+	if visibleText != "" {
+		visibleText = "完整回答：\n\n" + visibleText
+	}
+	sent, err := s.sendParsedTextViaSend(ctx, sender, msg, parsed, visibleText)
+	if err != nil {
+		return sent, err
+	}
+	sentRendered, err := s.sendRenderedActionsViaSend(ctx, sender, msg, rendered)
+	if err != nil {
+		return sent || sentRendered, err
+	}
+	return sent || sentRendered, nil
+}
+
+func (s *Service) sendDeliveryUnitsViaSend(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, ledger *DeliveryLedger) (bool, error) {
+	return s.sendDeliveryUnitsViaSendWithTrace(ctx, sender, msg, ledger, "")
+}
+
+func (s *Service) sendDeliveryUnitsViaSendWithMarker(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, ledger *DeliveryLedger, markExternal func(DeliveredUnit, DeliveryStatus, error)) (bool, error) {
+	return s.sendDeliveryUnitsViaSendWithTraceAndMarker(ctx, sender, msg, ledger, "", markExternal)
+}
+
+func (s *Service) sendDeliveryUnitsViaSendWithTrace(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, ledger *DeliveryLedger, traceID string) (bool, error) {
+	return s.sendDeliveryUnitsViaSendWithTraceAndMarker(ctx, sender, msg, ledger, traceID, nil)
+}
+
+func (s *Service) sendDeliveryUnitsViaSendWithTraceAndMarker(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, ledger *DeliveryLedger, traceID string, markExternal func(DeliveredUnit, DeliveryStatus, error)) (bool, error) {
+	sent := false
+	indexes := ledger.PendingOrFailedIndexes()
+	mark := func(index int, status DeliveryStatus, err error) {
+		unit := ledger.units[index]
+		ledger.Mark(index, status, err)
+		log.Printf("wecom delivery unit event=%s traceID=%s reqID=%s chatID=%s unitID=%s method=%s kind=%s status=%s err=%v", deliveryLogEvent(status), traceID, msg.ReplyContext.ReqID, msg.ReplyContext.ChatID, unit.ID, unit.DeliveryMethod, unit.RenderedKind, status, err)
+		if markExternal != nil {
+			markExternal(unit, status, err)
+		}
+	}
+	sendUnit := func(index int) error {
+		unit := ledger.units[index]
+		switch unit.DeliveryMethod {
+		case DeliveryMethodMedia:
+			if unit.Action == nil {
+				mark(index, DeliveryStatusSkipped, nil)
+				return nil
+			}
+			if err := sender.SendMedia(ctx, msg.ReplyContext, *unit.Action); err != nil {
+				mark(index, DeliveryStatusFailed, err)
+				return err
+			}
+			mark(index, DeliveryStatusDelivered, nil)
+			sent = true
+		case DeliveryMethodSend, DeliveryMethodStream:
+			text := strings.TrimSpace(unit.Text)
+			if text == "" {
+				mark(index, DeliveryStatusSkipped, nil)
+				return nil
+			}
+			if unit.ID == "text-remaining" {
+				text = "续上：\n\n" + text
+			}
+			if err := sender.Send(ctx, msg.ReplyContext, normalizeWeComMarkdown(text)); err != nil {
+				mark(index, DeliveryStatusFailed, err)
+				return err
+			}
+			mark(index, DeliveryStatusDelivered, nil)
+			sent = true
+		}
+		return nil
+	}
+	for _, index := range indexes {
+		if err := sendUnit(index); err != nil {
+			return sent, err
+		}
+	}
+	return sent, nil
+}
+
+func deliveryLogEvent(status DeliveryStatus) string {
+	switch status {
+	case DeliveryStatusDelivered:
+		return "delivered"
+	case DeliveryStatusFailed:
+		return "failed"
+	case DeliveryStatusSkipped:
+		return "skipped"
+	default:
+		return "updated"
+	}
 }
 
 func remainingWeComTextAfterStreamPreview(visibleText, preview string) (string, bool) {
@@ -977,7 +803,8 @@ func (s *Service) sendTextSegment(ctx context.Context, sender wsMessageSender, m
 		sentMedia = true
 	}
 
-	visibleText := parsed.VisibleText
+	rendered := renderWeComFinalMessage(parsed.VisibleText, workspacePath)
+	visibleText := rendered.Text()
 	if len(failures) > 0 {
 		failureTextBlock := strings.Join(failures, "\n")
 		if visibleText == "" {
@@ -987,21 +814,68 @@ func (s *Service) sendTextSegment(ctx context.Context, sender wsMessageSender, m
 		}
 	}
 	visibleText = normalizeWeComMarkdown(visibleText)
-	if visibleText == "" && !sentMedia {
-		return false, nil
-	}
 	if visibleText == "" {
-		return sentMedia, nil
+		if msg.ReplyContext.ChatID == "" {
+			sentRendered, err := s.sendRenderedActionsViaReply(ctx, sender, msg, rendered)
+			return sentMedia || sentRendered, err
+		}
+		sentRendered, err := s.sendRenderedActionsViaSend(ctx, sender, msg, rendered)
+		return sentMedia || sentRendered, err
 	}
 	if msg.ReplyContext.ChatID == "" {
-		return true, sender.Reply(ctx, msg.ReplyContext, visibleText)
+		if err := sender.Reply(ctx, msg.ReplyContext, visibleText); err != nil {
+			return true, err
+		}
+		_, err := s.sendRenderedActionsViaReply(ctx, sender, msg, rendered)
+		return true, err
 	}
-	return true, sender.Send(ctx, msg.ReplyContext, visibleText)
+	if err := sender.Send(ctx, msg.ReplyContext, visibleText); err != nil {
+		return true, err
+	}
+	_, err := s.sendRenderedActionsViaSend(ctx, sender, msg, rendered)
+	return true, err
 }
 
 func (s *Service) sendTextSegmentViaSend(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, workspacePath, text string) (bool, error) {
 	parsed := ParseSendProtocol(text, workspacePath)
-	return s.sendParsedTextViaSend(ctx, sender, msg, parsed, parsed.VisibleText)
+	rendered := renderWeComFinalMessage(parsed.VisibleText, workspacePath)
+	sent, err := s.sendParsedTextViaSend(ctx, sender, msg, parsed, rendered.Text())
+	if err != nil {
+		return sent, err
+	}
+	sentRendered, err := s.sendRenderedActionsViaSend(ctx, sender, msg, rendered)
+	if err != nil {
+		return sent || sentRendered, err
+	}
+	return sent || sentRendered, nil
+}
+
+func (s *Service) sendRenderedActionsViaSend(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, rendered RenderedMessage) (bool, error) {
+	sent := false
+	for _, unit := range rendered.Units {
+		if unit.Action == nil {
+			continue
+		}
+		if err := sender.SendMedia(ctx, msg.ReplyContext, *unit.Action); err != nil {
+			return sent, err
+		}
+		sent = true
+	}
+	return sent, nil
+}
+
+func (s *Service) sendRenderedActionsViaReply(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, rendered RenderedMessage) (bool, error) {
+	sent := false
+	for _, unit := range rendered.Units {
+		if unit.Action == nil {
+			continue
+		}
+		if err := sender.ReplyMedia(ctx, msg.ReplyContext, *unit.Action); err != nil {
+			return sent, err
+		}
+		sent = true
+	}
+	return sent, nil
 }
 
 func (s *Service) sendParsedTextViaSend(ctx context.Context, sender wsMessageSender, msg WeComInboundMessage, parsed ParsedSendProtocol, visibleText string) (bool, error) {

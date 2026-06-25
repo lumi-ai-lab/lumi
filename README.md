@@ -217,6 +217,12 @@ cd ../backend && go build -o lumi ./cmd/lumi
 
 `lumi wecom run` 不需要打开 Web 页面，但会启动本地 Lumi runtime，默认监听 `3000` 端口；如需避开端口冲突，可传 `--port` 或设置 `LUMI_PORT`。
 
+企业微信 `wecom run --stream` 使用无重复流式模式：live 阶段持续输出可见 raw text，final 阶段再用同一批未结束 stream 覆盖为最终 Markdown 文本。需要回退时，可关闭 `--stream` 使用普通消息发送。
+
+高级模式会隐藏 `[LUMI_WECOM_SEND]` 协议块；文本覆盖成功后再发送图片/文件动作。若 final ack 失败，高级模式不会再普通发送一份完整答案，以避免 raw + final 重复。
+
+高级模式上线前按 [企业微信高级流式回归手册](docs/wecom-advanced-stream-regression.md) 做真实客户端回归。
+
 IM CLI 的 sandbox 模式会自动按 IM 身份和 workspace 绝对路径派生实例 ID，例如 `cli-sandbox-wechat-<hash>` 或 `cli-sandbox-wecom-<hash>`；相同账号/机器人和相同目录会复用实例，不同身份或目录会自动隔离。需要强制创建独立实例时，可传 `--sandbox-id <id>` 或设置 `LUMI_SANDBOX_ID`，最终实例 ID 为 `cli-sandbox-<id>`。
 
 ### 5. Linux 上的 Claude ACP 运行注意事项

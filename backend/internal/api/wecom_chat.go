@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pengmide/lumi/internal/agent"
+	"github.com/pengmide/lumi/internal/agentmode"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/conversation"
 	lumicron "github.com/pengmide/lumi/internal/cron"
@@ -114,7 +115,7 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 	autoPermissionErr := ""
 
 	cleanupNotification := agentProc.OnNotification(func(msg *jsonrpc.Message) {
-		_ = r.handleWeComNotification(msg, sink, &streamItems, accumulator, toolCallMap)
+		_ = r.handleWeComNotification(msg, sink, &streamItems, accumulator, toolCallMap, input.AgentID)
 	})
 	defer cleanupNotification()
 
@@ -361,7 +362,7 @@ func (r *wecomChatRuntime) ensureAgentSession(input wecom.ChatRunInput, sink wec
 	if sessionID == "" {
 		return "", false, r.emitError(sink, "session/new response missing sessionId")
 	}
-	if input.SessionModeOverride != "" {
+	if r.shouldSetSessionMode(input.AgentID, input.SessionModeOverride) {
 		if _, err := r.agents.Request(input.AgentID, "session/set_mode", map[string]any{
 			"sessionId": sessionID,
 			"modeId":    input.SessionModeOverride,
@@ -383,6 +384,15 @@ func (r *wecomChatRuntime) ensureAgentSession(input wecom.ChatRunInput, sink wec
 	}
 	r.mu.Unlock()
 	return sessionID, true, nil
+}
+
+func (r *wecomChatRuntime) shouldSetSessionMode(agentID string, sessionMode string) bool {
+	agentConfig := r.config.FindAgent(agentID)
+	if agentConfig == nil {
+		return false
+	}
+	backend := agentmode.DetectBackend(agentConfig.ID, agentConfig.Command, agentConfig.Args)
+	return agentmode.ShouldSetACPMode(backend, sessionMode)
 }
 
 func (r *wecomChatRuntime) finalizeAssistantStream(convID, agentID string, streamItems []streamItem, accumulator *streamAccumulator) {
@@ -407,6 +417,7 @@ func (r *wecomChatRuntime) handleWeComNotification(
 	streamItems *[]streamItem,
 	accumulator *streamAccumulator,
 	toolCallMap map[string]int,
+	agentID string,
 ) error {
 	if msg.Method != "session/update" {
 		return nil
@@ -423,6 +434,10 @@ func (r *wecomChatRuntime) handleWeComNotification(
 	switch update.SessionUpdate {
 	case "agent_message_chunk":
 		if text := extractTextContent(update.Content); text != "" {
+			text = stripAgentStartupBanner(agentID, text)
+			if text == "" {
+				return nil
+			}
 			visibleText, _ := accumulator.AddMessageChunk(text, streamItems)
 			if visibleText == "" {
 				return nil

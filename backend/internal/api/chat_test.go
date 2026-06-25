@@ -318,7 +318,74 @@ func TestHandleNotificationSeparatesThinkingFromAssistantText(t *testing.T) {
 	}
 }
 
-func TestHandleNotificationStripsPiStartupVersionBanner(t *testing.T) {
+func TestStripAgentStartupBanner(t *testing.T) {
+	startup := testPiStartupInfo()
+	tests := []struct {
+		name    string
+		agentID string
+		text    string
+		want    string
+	}{
+		{
+			name:    "complete startup info",
+			agentID: "pi",
+			text:    startup,
+			want:    "",
+		},
+		{
+			name:    "startup info followed by english body",
+			agentID: "pi",
+			text:    startup + "\nHi! I'm here to help you with your data analysis and coding tasks.",
+			want:    "Hi! I'm here to help you with your data analysis and coding tasks.",
+		},
+		{
+			name:    "startup info followed by chinese body",
+			agentID: "pi",
+			text:    "New version available: v0.79.10 (installed v0.78.0). Run: `npm i -g @earendil-works/pi-coding-agent`\n我来帮您分析。",
+			want:    "我来帮您分析。",
+		},
+		{
+			name:    "skills and extensions sections",
+			agentID: "pi",
+			text:    "pi v0.78.0\n## Skills\n- /path/to/.pi/skills/foo\n## Extensions\n- npm:pi-provider-litellm\n  - index.ts\n",
+			want:    "",
+		},
+		{
+			name:    "bullet body after startup delimiter",
+			agentID: "pi",
+			text:    "pi v0.78.0\n## Skills\n- /path/to/.pi/skills/foo\n---\n- Real answer item\n",
+			want:    "- Real answer item\n",
+		},
+		{
+			name:    "non pi agent unchanged",
+			agentID: "claude",
+			text:    startup,
+			want:    startup,
+		},
+		{
+			name:    "ordinary upgrade suggestion unchanged",
+			agentID: "pi",
+			text:    "我建议运行 npm i -g @earendil-works/pi-coding-agent 升级 PI。",
+			want:    "我建议运行 npm i -g @earendil-works/pi-coding-agent 升级 PI。",
+		},
+		{
+			name:    "ordinary skills answer unchanged",
+			agentID: "pi",
+			text:    "## Skills\n- Go\n- SQL\n这些技能可以用于数据分析。",
+			want:    "## Skills\n- Go\n- SQL\n这些技能可以用于数据分析。",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripAgentStartupBanner(tt.agentID, tt.text); got != tt.want {
+				t.Fatalf("stripAgentStartupBanner() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleNotificationStripsPiStartupPreludeForWeb(t *testing.T) {
 	server := newTestAPIServer(t)
 	items := make([]streamItem, 0)
 	accumulator := &streamAccumulator{}
@@ -331,21 +398,185 @@ func TestHandleNotificationStripsPiStartupVersionBanner(t *testing.T) {
 		}
 	}
 
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pi v0.78.0\n---\n\n---\nNew version available: v0.78.1 (installed v0.78.0). Run: `+"`"+`npm i -g @earendil-works/pi-coding-agent`+"`"+`\n\n## Context\n- AGENTS.md\n"}}}`), send, &items, accumulator, toolMap, "pi")
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pi v0.78.0\n"}}}`), send, &items, accumulator, toolMap, "pi")
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"New version available: v0.78.1 (installed v0.78.0). Run: npm i -g @earendil-works/pi-coding-agent\n"}}}`), send, &items, accumulator, toolMap, "pi")
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pi v0.78.0\n"}}}`), send, &items, accumulator, toolMap, "claude")
-	server.handleNotification(testSessionUpdate(t, `{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"New version available: v0.78.1 (installed v0.78.0). Run: npm i -g @earendil-works/pi-coding-agent\n"}}}`), send, &items, accumulator, toolMap, "claude")
+	server.handleNotification(testTextSessionUpdate(t, testPiStartupInfo()), send, &items, accumulator, toolMap, "pi")
+	server.handleNotification(testTextSessionUpdate(t, testPiStartupInfo()+"\nHi! I'm here to help."), send, &items, accumulator, toolMap, "pi")
+	server.handleNotification(testTextSessionUpdate(t, "pi v0.78.0\n"), send, &items, accumulator, toolMap, "claude")
 
-	if len(events) != 3 {
-		t.Fatalf("len(events) = %d, want 3", len(events))
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
 	}
 	if len(items) != 0 {
 		t.Fatalf("items before finalize = %+v, want no flushed stream items", items)
 	}
 	accumulator.Finish(&items)
-	if len(items) != 1 || items[0].Text != "## Context\n- AGENTS.md\npi v0.78.0\nNew version available: v0.78.1 (installed v0.78.0). Run: npm i -g @earendil-works/pi-coding-agent\n" {
-		t.Fatalf("items = %+v, want pi banner stripped only for pi agent", items)
+	if len(items) != 1 || items[0].Text != "Hi! I'm here to help.pi v0.78.0\n" {
+		t.Fatalf("items = %+v, want startup stripped only for pi agent", items)
+	}
+}
+
+func TestHandleWeComNotificationStripsPiStartupBeforeAccumulator(t *testing.T) {
+	runtime := &wecomChatRuntime{}
+	sink := &recordingWeComSink{}
+	items := make([]streamItem, 0)
+	accumulator := &streamAccumulator{}
+	toolMap := make(map[string]int)
+
+	if err := runtime.handleWeComNotification(testTextSessionUpdate(t, testPiStartupInfo()), sink, &items, accumulator, toolMap, "pi"); err != nil {
+		t.Fatalf("handleWeComNotification() error = %v", err)
+	}
+	if len(sink.events) != 0 {
+		t.Fatalf("sink events = %+v, want no startup event", sink.events)
+	}
+	if accumulator.Text() != "" {
+		t.Fatalf("accumulator text = %q, want empty", accumulator.Text())
+	}
+	accumulator.Finish(&items)
+	if len(items) != 0 {
+		t.Fatalf("items = %+v, want startup excluded from stream items", items)
+	}
+}
+
+func TestHandleWeComNotificationKeepsPiBodyAndThoughts(t *testing.T) {
+	runtime := &wecomChatRuntime{}
+	sink := &recordingWeComSink{}
+	items := make([]streamItem, 0)
+	accumulator := &streamAccumulator{}
+	toolMap := make(map[string]int)
+
+	if err := runtime.handleWeComNotification(testTextSessionUpdate(t, testPiStartupInfo()+"\nHi! I'm here to help."), sink, &items, accumulator, toolMap, "pi"); err != nil {
+		t.Fatalf("handleWeComNotification() error = %v", err)
+	}
+	if !sink.hasUpdateText("Hi! I'm here to help.") {
+		t.Fatalf("sink events = %+v, want real assistant body", sink.events)
+	}
+	if sink.hasUpdateText("pi v0.78.0") || sink.hasUpdateText("## Skills") || sink.hasUpdateText("New version available") {
+		t.Fatalf("sink events = %+v, want startup banner stripped", sink.events)
+	}
+	if accumulator.Text() != "Hi! I'm here to help." {
+		t.Fatalf("accumulator text = %q, want real body only", accumulator.Text())
+	}
+
+	if err := runtime.handleWeComNotification(testTextSessionUpdateKind(t, "agent_thought_chunk", testPiStartupInfo()), sink, &items, accumulator, toolMap, "pi"); err != nil {
+		t.Fatalf("handleWeComNotification(thought) error = %v", err)
+	}
+	if !sink.hasUpdateText("pi v0.78.0") {
+		t.Fatalf("sink events = %+v, want thought chunks left unfiltered", sink.events)
+	}
+	if accumulator.Text() != "Hi! I'm here to help." {
+		t.Fatalf("accumulator text = %q, want thought chunk outside message accumulator", accumulator.Text())
+	}
+}
+
+func TestWeComPiStartupPreludeDoesNotPersistToConversationStore(t *testing.T) {
+	server := newTestAPIServer(t)
+	runtime := server.wecomChat
+	store := &memoryIMStore{}
+	conv := runtime.conversations.Create("conv-pi-startup", "pi", "default")
+	sink := &recordingWeComSink{}
+	items := make([]streamItem, 0)
+	accumulator := &streamAccumulator{}
+	toolMap := make(map[string]int)
+
+	if err := runtime.handleWeComNotification(testTextSessionUpdate(t, testPiStartupInfo()), sink, &items, accumulator, toolMap, "pi"); err != nil {
+		t.Fatalf("handleWeComNotification(startup) error = %v", err)
+	}
+	if err := runtime.handleWeComNotification(testTextSessionUpdate(t, testPiStartupInfo()+"\nHi! I'm here to help."), sink, &items, accumulator, toolMap, "pi"); err != nil {
+		t.Fatalf("handleWeComNotification(body) error = %v", err)
+	}
+
+	runtime.finalizeAssistantStream(conv.ID, "pi", items, accumulator)
+	if err := runtime.persistConversation(conv.ID, store); err != nil {
+		t.Fatalf("persistConversation() error = %v", err)
+	}
+	stored, err := store.Load(conv.ID)
+	if err != nil {
+		t.Fatalf("Load(%q) error = %v", conv.ID, err)
+	}
+	if len(stored.Messages) != 1 {
+		t.Fatalf("stored messages = %+v, want one assistant message", stored.Messages)
+	}
+	msg := stored.Messages[0]
+	if msg.Role != "assistant" || msg.Agent != "pi" || msg.Content != "Hi! I'm here to help." {
+		t.Fatalf("stored message = %+v, want pi assistant body only", msg)
+	}
+	for _, forbidden := range []string{"pi v0.78.0", "## Skills", "## Extensions", "New version available"} {
+		if strings.Contains(msg.Content, forbidden) {
+			t.Fatalf("stored message contains startup fragment %q: %q", forbidden, msg.Content)
+		}
+	}
+}
+
+func TestHandleWeChatNotificationStripsPiStartupBeforeAccumulator(t *testing.T) {
+	runtime := &wechatChatRuntime{}
+	sink := &recordingWeChatSink{}
+	items := make([]streamItem, 0)
+	accumulator := &streamAccumulator{}
+	toolMap := make(map[string]int)
+
+	if err := runtime.handleWeChatNotification(testTextSessionUpdate(t, testPiStartupInfo()), sink, &items, accumulator, toolMap, "pi"); err != nil {
+		t.Fatalf("handleWeChatNotification() error = %v", err)
+	}
+	if len(sink.events) != 0 {
+		t.Fatalf("sink events = %+v, want no startup event", sink.events)
+	}
+	if accumulator.Text() != "" {
+		t.Fatalf("accumulator text = %q, want empty", accumulator.Text())
+	}
+	accumulator.Finish(&items)
+	if len(items) != 0 {
+		t.Fatalf("items = %+v, want startup excluded from stream items", items)
+	}
+
+	if err := runtime.handleWeChatNotification(testTextSessionUpdate(t, testPiStartupInfo()+"\n我来帮您分析。"), sink, &items, accumulator, toolMap, "pi"); err != nil {
+		t.Fatalf("handleWeChatNotification(body) error = %v", err)
+	}
+	if !sink.hasUpdateText("我来帮您分析。") {
+		t.Fatalf("sink events = %+v, want real assistant body", sink.events)
+	}
+	if sink.hasUpdateText("pi v0.78.0") || sink.hasUpdateText("## Extensions") || sink.hasUpdateText("New version available") {
+		t.Fatalf("sink events = %+v, want startup banner stripped", sink.events)
+	}
+	if accumulator.Text() != "我来帮您分析。" {
+		t.Fatalf("accumulator text = %q, want real body only", accumulator.Text())
+	}
+}
+
+func TestWeChatPiStartupPreludeDoesNotPersistToConversationStore(t *testing.T) {
+	server := newTestAPIServer(t)
+	runtime := server.wechatChat
+	store := &memoryIMStore{}
+	conv := runtime.conversations.Create("wechat-pi-startup", "pi", "default")
+	sink := &recordingWeChatSink{}
+	items := make([]streamItem, 0)
+	accumulator := &streamAccumulator{}
+	toolMap := make(map[string]int)
+
+	if err := runtime.handleWeChatNotification(testTextSessionUpdate(t, testPiStartupInfo()), sink, &items, accumulator, toolMap, "pi"); err != nil {
+		t.Fatalf("handleWeChatNotification(startup) error = %v", err)
+	}
+	if err := runtime.handleWeChatNotification(testTextSessionUpdate(t, testPiStartupInfo()+"\n我来帮您分析。"), sink, &items, accumulator, toolMap, "pi"); err != nil {
+		t.Fatalf("handleWeChatNotification(body) error = %v", err)
+	}
+
+	runtime.finalizeAssistantStream(conv.ID, "pi", items, accumulator)
+	if err := runtime.persistConversation(conv.ID, store); err != nil {
+		t.Fatalf("persistConversation() error = %v", err)
+	}
+	stored, err := store.Load(conv.ID)
+	if err != nil {
+		t.Fatalf("Load(%q) error = %v", conv.ID, err)
+	}
+	if len(stored.Messages) != 1 {
+		t.Fatalf("stored messages = %+v, want one assistant message", stored.Messages)
+	}
+	msg := stored.Messages[0]
+	if msg.Role != "assistant" || msg.Agent != "pi" || msg.Content != "我来帮您分析。" {
+		t.Fatalf("stored message = %+v, want pi assistant body only", msg)
+	}
+	for _, forbidden := range []string{"pi v0.78.0", "## Skills", "## Extensions", "New version available"} {
+		if strings.Contains(msg.Content, forbidden) {
+			t.Fatalf("stored message contains startup fragment %q: %q", forbidden, msg.Content)
+		}
 	}
 }
 
@@ -439,6 +670,45 @@ func testSessionUpdate(t *testing.T, params string) *jsonrpc.Message {
 		Method:  "session/update",
 		Params:  json.RawMessage(params),
 	}
+}
+
+func testTextSessionUpdate(t *testing.T, text string) *jsonrpc.Message {
+	t.Helper()
+	return testTextSessionUpdateKind(t, "agent_message_chunk", text)
+}
+
+func testTextSessionUpdateKind(t *testing.T, kind, text string) *jsonrpc.Message {
+	t.Helper()
+	params := map[string]any{
+		"update": map[string]any{
+			"sessionUpdate": kind,
+			"content": map[string]any{
+				"type": "text",
+				"text": text,
+			},
+		},
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("Marshal session update: %v", err)
+	}
+	return testSessionUpdate(t, string(data))
+}
+
+func testPiStartupInfo() string {
+	return "pi v0.78.0\n" +
+		"---\n\n" +
+		"## Context\n" +
+		"- AGENTS.md\n\n" +
+		"## Skills\n" +
+		"- /path/to/.pi/skills/pdf-helper\n\n" +
+		"## Prompts\n" +
+		"- analyze\n\n" +
+		"## Extensions\n" +
+		"- npm:pi-provider-litellm\n" +
+		"  - index.ts\n\n" +
+		"---\n" +
+		"New version available: v0.79.10 (installed v0.78.0). Run: `npm i -g @earendil-works/pi-coding-agent`\n"
 }
 
 func writeAPITestSkill(t *testing.T, dir, name, description, body string) {

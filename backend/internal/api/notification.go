@@ -74,11 +74,9 @@ func (s *Server) handleNotification(
 	switch update.SessionUpdate {
 	case "agent_message_chunk":
 		if text := extractTextContent(update.Content); text != "" {
-			if strings.EqualFold(agentID, "pi") {
-				text = stripPiStartupBanner(text)
-				if text == "" {
-					return
-				}
+			text = stripAgentStartupBanner(agentID, text)
+			if text == "" {
+				return
 			}
 			visibleText, thinkingItems := accumulator.AddMessageChunk(text, streamItems)
 			for _, item := range thinkingItems {
@@ -251,38 +249,80 @@ func extractTextContent(content any) string {
 	return ""
 }
 
-func stripPiStartupBanner(text string) string {
+func stripAgentStartupBanner(agentID, text string) string {
+	if !strings.EqualFold(agentID, "pi") {
+		return text
+	}
+	return stripPiStartupPrelude(text)
+}
+
+func stripPiStartupPrelude(text string) string {
 	remaining := text
-	seenBanner := false
+	seenPrelude := false
+	inSection := false
 	for {
-		remaining = strings.TrimLeft(remaining, "\r\n")
-		line, rest := splitFirstLine(remaining)
+		candidate := strings.TrimLeft(remaining, "\r\n")
+		if candidate == "" {
+			if seenPrelude {
+				return ""
+			}
+			return text
+		}
+		line, rest := splitFirstLine(candidate)
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "---" {
+			if seenPrelude {
+				inSection = false
+			}
 			remaining = rest
 			continue
 		}
-		if !isPiStartupBannerLine(trimmed) {
-			if !seenBanner {
-				return text
-			}
-			remaining = strings.TrimLeft(remaining, "\r\n")
-			if strings.TrimSpace(remaining) == "" {
-				return ""
-			}
-			return remaining
+		if isPiStartupBannerLine(trimmed) {
+			seenPrelude = true
+			inSection = false
+			remaining = rest
+			continue
 		}
-
-		seenBanner = true
-		remaining = rest
-		if strings.TrimSpace(remaining) == "" {
-			return ""
+		if seenPrelude && isPiStartupSectionHeader(trimmed) {
+			inSection = true
+			remaining = rest
+			continue
 		}
+		if seenPrelude && inSection && isPiStartupSectionContent(line, trimmed) {
+			remaining = rest
+			continue
+		}
+		if !seenPrelude {
+			return text
+		}
+		return candidate
 	}
 }
 
 func isPiStartupBannerLine(line string) bool {
 	return piStartupVersionLine.MatchString(line) || piStartupUpdateLine.MatchString(line)
+}
+
+func isPiStartupSectionHeader(line string) bool {
+	if !strings.HasPrefix(line, "## ") {
+		return false
+	}
+	switch strings.TrimSpace(strings.TrimPrefix(line, "## ")) {
+	case "Context", "Skills", "Prompts", "Extensions":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPiStartupSectionContent(line, trimmed string) bool {
+	if trimmed == "" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "-\t") || trimmed == "-" {
+		return true
+	}
+	return strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")
 }
 
 func splitFirstLine(text string) (string, string) {

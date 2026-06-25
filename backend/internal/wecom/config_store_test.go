@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pengmide/lumi/internal/config"
 )
@@ -70,6 +71,39 @@ func TestConfigStoreDefaultsAndPermissions(t *testing.T) {
 		if info.Mode().Perm() != 0o600 {
 			t.Fatalf("config mode = %#o, want %#o", info.Mode().Perm(), os.FileMode(0o600))
 		}
+	}
+}
+
+func TestWeComRuntimeConfigEnvOverrides(t *testing.T) {
+	t.Setenv("LUMI_WECOM_STREAM_MAX_AGE", "3s")
+	t.Setenv("LUMI_WECOM_STREAM_MAX_BYTES", "1234")
+	t.Setenv("LUMI_WECOM_STREAM_MAX_UPDATES", "7")
+	t.Setenv("LUMI_WECOM_STREAM_MIN_UPDATE_GAP", "250ms")
+	t.Setenv("LUMI_WECOM_STREAM_COALESCE_GAP", "500")
+	t.Setenv("LUMI_WECOM_MARKDOWN_TABLE_MODE", "BULLETS")
+	t.Setenv("LUMI_WECOM_IR_RENDERER", "off")
+
+	cfg := loadWeComRuntimeConfigFromEnv()
+	if cfg.StreamPolicy.MaxAge != 3*time.Second {
+		t.Fatalf("MaxAge = %s, want 3s", cfg.StreamPolicy.MaxAge)
+	}
+	if cfg.StreamPolicy.MaxBytes != 1234 {
+		t.Fatalf("MaxBytes = %d, want 1234", cfg.StreamPolicy.MaxBytes)
+	}
+	if cfg.StreamPolicy.MaxUpdates != 7 {
+		t.Fatalf("MaxUpdates = %d, want 7", cfg.StreamPolicy.MaxUpdates)
+	}
+	if cfg.StreamPolicy.MinUpdateGap != 250*time.Millisecond {
+		t.Fatalf("MinUpdateGap = %s, want 250ms", cfg.StreamPolicy.MinUpdateGap)
+	}
+	if cfg.StreamPolicy.CoalesceGap != 500*time.Millisecond {
+		t.Fatalf("CoalesceGap = %s, want 500ms", cfg.StreamPolicy.CoalesceGap)
+	}
+	if cfg.MarkdownTableMode != "bullets" {
+		t.Fatalf("MarkdownTableMode = %q, want bullets", cfg.MarkdownTableMode)
+	}
+	if cfg.IRRendererEnabled {
+		t.Fatal("IRRendererEnabled = true, want false")
 	}
 }
 

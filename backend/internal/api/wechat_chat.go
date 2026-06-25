@@ -115,7 +115,7 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 	autoPermissionErr := ""
 
 	cleanupNotification := agentProc.OnNotification(func(msg *jsonrpc.Message) {
-		_ = r.handleWeChatNotification(msg, sink, &streamItems, accumulator, toolCallMap)
+		_ = r.handleWeChatNotification(msg, sink, &streamItems, accumulator, toolCallMap, input.AgentID)
 	})
 	defer cleanupNotification()
 
@@ -419,6 +419,7 @@ func (r *wechatChatRuntime) handleWeChatNotification(
 	streamItems *[]streamItem,
 	accumulator *streamAccumulator,
 	toolCallMap map[string]int,
+	agentID string,
 ) error {
 	if msg.Method != "session/update" {
 		return nil
@@ -435,6 +436,10 @@ func (r *wechatChatRuntime) handleWeChatNotification(
 	switch update.SessionUpdate {
 	case "agent_message_chunk":
 		if text := extractTextContent(update.Content); text != "" {
+			text = stripAgentStartupBanner(agentID, text)
+			if text == "" {
+				return nil
+			}
 			visibleText, _ := accumulator.AddMessageChunk(text, streamItems)
 			if visibleText == "" {
 				return nil

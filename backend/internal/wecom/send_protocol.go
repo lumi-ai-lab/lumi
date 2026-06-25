@@ -24,31 +24,61 @@ type ParsedSendProtocol struct {
 	VisibleText string
 	Actions     []SendAction
 	Failures    []string
+	Segments    []ParsedSendSegment
+}
+
+type ParsedSendSegment struct {
+	Text    string
+	Action  *SendAction
+	Failure string
 }
 
 func ParseSendProtocol(content, workspaceRoot string) ParsedSendProtocol {
 	actions := make([]SendAction, 0)
 	failures := make([]string, 0)
+	segments := make([]ParsedSendSegment, 0)
 
-	visibleText := normalizeVisibleText(wecomSendBlockRE.ReplaceAllStringFunc(content, func(block string) string {
-		match := wecomSendBlockRE.FindStringSubmatch(block)
-		if len(match) < 2 {
-			return ""
+	var visibleBuilder strings.Builder
+	last := 0
+	for _, loc := range wecomSendBlockRE.FindAllStringSubmatchIndex(content, -1) {
+		if len(loc) < 4 {
+			continue
 		}
-		action, failure := parseAndResolveSendAction(match[1], workspaceRoot)
+		text := normalizeVisibleText(content[last:loc[0]])
+		if text != "" {
+			if visibleBuilder.Len() > 0 {
+				visibleBuilder.WriteString("\n\n")
+			}
+			visibleBuilder.WriteString(text)
+			segments = append(segments, ParsedSendSegment{Text: text})
+		}
+
+		action, failure := parseAndResolveSendAction(content[loc[2]:loc[3]], workspaceRoot)
 		if failure != "" {
 			failures = append(failures, failure)
+			segments = append(segments, ParsedSendSegment{Failure: failure})
 		}
 		if action != nil {
 			actions = append(actions, *action)
+			actionCopy := *action
+			segments = append(segments, ParsedSendSegment{Action: &actionCopy})
 		}
-		return ""
-	}))
+		last = loc[1]
+	}
+	text := normalizeVisibleText(content[last:])
+	if text != "" {
+		if visibleBuilder.Len() > 0 {
+			visibleBuilder.WriteString("\n\n")
+		}
+		visibleBuilder.WriteString(text)
+		segments = append(segments, ParsedSendSegment{Text: text})
+	}
 
 	return ParsedSendProtocol{
-		VisibleText: visibleText,
+		VisibleText: normalizeVisibleText(visibleBuilder.String()),
 		Actions:     actions,
 		Failures:    failures,
+		Segments:    segments,
 	}
 }
 
