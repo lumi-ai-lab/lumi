@@ -44,6 +44,7 @@ func (s *Service) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID         string  `json:"workspaceId"`
 		AgentID             string  `json:"agentId"`
 		AllowFrom           string  `json:"allowFrom"`
+		RequesterConfigPath *string `json:"requesterConfigPath"`
 		Stream              bool    `json:"stream"`
 		ConnectTimeoutMs    int     `json:"connectTimeoutMs"`
 		HeartbeatIntervalMs int     `json:"heartbeatIntervalMs"`
@@ -67,6 +68,9 @@ func (s *Service) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	next.WorkspaceID = data.WorkspaceID
 	next.AgentID = data.AgentID
 	next.AllowFrom = data.AllowFrom
+	if data.RequesterConfigPath != nil {
+		next.RequesterConfigPath = *data.RequesterConfigPath
+	}
 	next.Stream = data.Stream
 	next.ConnectTimeoutMs = data.ConnectTimeoutMs
 	next.HeartbeatIntervalMs = data.HeartbeatIntervalMs

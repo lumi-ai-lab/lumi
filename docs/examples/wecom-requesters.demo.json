@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "botId": "bot-demo-001",
+  "users": [
+    {
+      "userId": "user-demo-001",
+      "displayName": "张三（模拟用户）",
+      "enabled": true,
+      "capabilities": [
+        "qdm.cas.token",
+        "qdm.cmr.query",
+        "qdm.indicators.query",
+        "qdm.sql.select"
+      ],
+      "scope": {
+        "manageAreaIds": ["CN18"],
+        "categoryLevel1Ids": ["12", "13"]
+      }
+    }
+  ]
+}

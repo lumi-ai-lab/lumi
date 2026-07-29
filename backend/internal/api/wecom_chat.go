@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/pengmide/lumi/internal/imdebug"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 	"github.com/pengmide/lumi/internal/mcpstore"
+	"github.com/pengmide/lumi/internal/requestercontext"
 	"github.com/pengmide/lumi/internal/storage"
 	"github.com/pengmide/lumi/internal/wecom"
 )
@@ -30,8 +32,14 @@ type wecomChatRuntime struct {
 	agentSessions              map[string]map[string]string
 	agentSessionPromptVersions map[string]map[string]int
 	initialized                map[string]bool
+	agentInitializations       map[string]*wecomAgentInitialization
 	cron                       *lumicron.Service
 	mu                         sync.Mutex
+}
+
+type wecomAgentInitialization struct {
+	done chan struct{}
+	err  error
 }
 
 func newWeComChatRuntime(cfg *config.Config, cronService *lumicron.Service, mcp *mcpstore.Store) *wecomChatRuntime {
@@ -43,6 +51,7 @@ func newWeComChatRuntime(cfg *config.Config, cronService *lumicron.Service, mcp 
 		agentSessions:              make(map[string]map[string]string),
 		agentSessionPromptVersions: make(map[string]map[string]int),
 		initialized:                make(map[string]bool),
+		agentInitializations:       make(map[string]*wecomAgentInitialization),
 		cron:                       cronService,
 	}
 }
@@ -149,10 +158,28 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 
 	promptText := input.Message
 
-	response, err := agentProc.Request("session/prompt", map[string]any{
+	promptParams := map[string]any{
 		"sessionId": sessionID,
 		"prompt":    []map[string]string{{"type": "text", "text": promptText}},
-	})
+	}
+	if input.RequesterContext != nil {
+		bridge, bridgeErr := localRequesterContextBridge(input.WorkspaceID, input.AgentID)
+		if bridgeErr != nil {
+			return r.emitError(sink, bridgeErr.Error())
+		}
+		path, cleanup, bridgeErr := bridge.Write(sessionID, *input.RequesterContext)
+		if bridgeErr != nil {
+			return r.emitError(sink, bridgeErr.Error())
+		}
+		defer func() {
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				log.Printf("failed to clean requester context file %s: %v", path, cleanupErr)
+			}
+		}()
+		promptParams["_meta"] = requestercontext.PromptMeta(*input.RequesterContext)
+	}
+
+	response, err := agentProc.Request("session/prompt", promptParams)
 	if err != nil {
 		if autoPermissionErr != "" {
 			return nil
@@ -287,10 +314,46 @@ func (r *wecomChatRuntime) snapshotAgentSessions(convID string) map[string]strin
 
 func (r *wecomChatRuntime) ensureInitialized(agentID string, workspaceID string, workspacePath string, sink wecom.ChatEventSink) error {
 	r.mu.Lock()
-	initialized := r.initialized[agentID]
-	r.mu.Unlock()
-	if initialized {
+	if r.initialized == nil {
+		r.initialized = make(map[string]bool)
+	}
+	if r.agentInitializations == nil {
+		r.agentInitializations = make(map[string]*wecomAgentInitialization)
+	}
+	if r.initialized[agentID] {
+		r.mu.Unlock()
 		return nil
+	}
+	if initialization := r.agentInitializations[agentID]; initialization != nil {
+		r.mu.Unlock()
+		<-initialization.done
+		if initialization.err != nil {
+			return r.emitError(sink, initialization.err.Error())
+		}
+		return nil
+	}
+	initialization := &wecomAgentInitialization{done: make(chan struct{})}
+	r.agentInitializations[agentID] = initialization
+	r.mu.Unlock()
+
+	initializeErr := r.initializeAgent(agentID, workspaceID, workspacePath, sink)
+	r.mu.Lock()
+	initialization.err = initializeErr
+	if initializeErr == nil {
+		r.initialized[agentID] = true
+	}
+	delete(r.agentInitializations, agentID)
+	close(initialization.done)
+	r.mu.Unlock()
+	if initializeErr != nil {
+		return r.emitError(sink, initializeErr.Error())
+	}
+	return nil
+}
+
+func (r *wecomChatRuntime) initializeAgent(agentID string, workspaceID string, workspacePath string, sink wecom.ChatEventSink) error {
+	if err := injectLocalRequesterContextEnv(r.config, workspaceID, agentID); err != nil {
+		return err
 	}
 
 	if err := sink.Emit(wecom.ChatEvent{
@@ -307,12 +370,8 @@ func (r *wecomChatRuntime) ensureInitialized(agentID string, workspaceID string,
 		},
 		"clientInfo": map[string]string{"name": "lumi-go-wecom", "version": "0.1.0"},
 	}); err != nil {
-		return r.emitError(sink, err.Error())
+		return err
 	}
-
-	r.mu.Lock()
-	r.initialized[agentID] = true
-	r.mu.Unlock()
 	return nil
 }
 

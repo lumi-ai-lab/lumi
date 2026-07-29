@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pengmide/lumi/internal/requestercontext"
 )
 
 const (
@@ -22,6 +24,8 @@ const (
 	wsMaxMissedPong   = 2
 	wsChunkSize       = 512 * 1024
 )
+
+const requesterUnauthorizedReplyText = "你暂未开通该机器人的使用权限，请联系管理员。"
 
 var wsEndpoint = defaultWSEndpoint
 var wsDialer = websocket.DefaultDialer
@@ -124,8 +128,9 @@ func (d *messageDedup) IsDuplicate(msgID string) bool {
 }
 
 type wsRuntime struct {
-	service *Service
-	cfg     Config
+	service         *Service
+	cfg             Config
+	requesterPolicy *RequesterPolicy
 
 	conn         *websocket.Conn
 	writeMu      sync.Mutex
@@ -140,11 +145,12 @@ type wsRuntime struct {
 	dedup       messageDedup
 }
 
-func newWebSocketRuntime(service *Service, cfg Config) *wsRuntime {
+func newWebSocketRuntime(service *Service, cfg Config, requesterPolicy *RequesterPolicy) *wsRuntime {
 	rt := &wsRuntime{
-		service:      service,
-		cfg:          cfg,
-		processedSet: make(map[string]struct{}),
+		service:         service,
+		cfg:             cfg,
+		requesterPolicy: requesterPolicy,
+		processedSet:    make(map[string]struct{}),
 	}
 	if state, err := service.runtimeStore.Load(); err == nil {
 		for _, id := range state.ProcessedMessageIDs {
@@ -166,7 +172,7 @@ func (rt *wsRuntime) TestConnection(ctx context.Context) error {
 	return conn.Close()
 }
 
-func (s *Service) runWebSocketLoop(ctx context.Context, cfg Config, done chan struct{}) {
+func (s *Service) runWebSocketLoop(ctx context.Context, cfg Config, requesterPolicy *RequesterPolicy, done chan struct{}) {
 	defer close(done)
 	defer func() {
 		_ = s.updateRuntime(func(state *RuntimeState) {
@@ -174,7 +180,7 @@ func (s *Service) runWebSocketLoop(ctx context.Context, cfg Config, done chan st
 		})
 	}()
 
-	rt := newWebSocketRuntime(s, cfg)
+	rt := newWebSocketRuntime(s, cfg, requesterPolicy)
 	s.setRuntime(rt)
 	defer s.setRuntime(nil)
 	backoff := time.Second
@@ -369,18 +375,34 @@ func (rt *wsRuntime) handleMsgCallback(ctx context.Context, frame wsFrame) {
 	if err := json.Unmarshal(frame.Body, &body); err != nil {
 		return
 	}
-	if rt.dedup.IsDuplicate(body.MsgID) {
+
+	msgID := strings.TrimSpace(body.MsgID)
+	userID := strings.TrimSpace(body.From.UserID)
+	aibotID := strings.TrimSpace(body.AibotID)
+	if rt.requesterPolicy != nil {
+		switch {
+		case msgID == "":
+			log.Printf("wecom requester callback rejected: missing msgid")
+			return
+		case userID == "":
+			log.Printf("wecom requester callback rejected: requestId=%s missing userid", msgID)
+			return
+		case aibotID == "":
+			log.Printf("wecom requester callback rejected: requestId=%s missing aibotid", msgID)
+			return
+		case aibotID != strings.TrimSpace(rt.cfg.BotID):
+			log.Printf("wecom requester callback rejected: requestId=%s aibotid mismatch", msgID)
+			return
+		}
+	}
+
+	if rt.dedup.IsDuplicate(msgID) {
 		return
 	}
-	if rt.hasProcessed(body.MsgID) {
+	if rt.hasProcessed(msgID) {
 		return
 	}
 	if body.CreateTime > 0 && isOldMessage(time.Unix(body.CreateTime, 0)) {
-		return
-	}
-
-	userID := strings.TrimSpace(body.From.UserID)
-	if !allowUser(rt.cfg.AllowFrom, userID) {
 		return
 	}
 
@@ -396,6 +418,21 @@ func (rt *wsRuntime) handleMsgCallback(ctx context.Context, frame wsFrame) {
 		UserID:   userID,
 	}
 
+	var resolvedRequesterContext *requestercontext.Context
+	if rt.requesterPolicy != nil {
+		var allowed bool
+		resolvedRequesterContext, allowed = rt.requesterPolicy.BuildContext(userID, msgID, chatID, body.ChatType)
+		if !allowed {
+			rt.replyRequesterUnauthorized(ctx, msgID, rctx)
+			return
+		}
+		userID = resolvedRequesterContext.Principal.CanonicalUserID
+		rctx.UserID = userID
+		sessionKey = fmt.Sprintf("wecom:%s:%s", chatID, userID)
+	} else if !allowUser(rt.cfg.AllowFrom, userID) {
+		return
+	}
+
 	texts, imgRefs, fileRefs := wsCollectInboundParts(&body)
 	if body.MsgType == "voice" {
 		vt := stripWeComAtMentions(wsVoiceText(body.Voice), rt.cfg.BotID, body.AibotID)
@@ -409,30 +446,42 @@ func (rt *wsRuntime) handleMsgCallback(ctx context.Context, frame wsFrame) {
 
 	go func() {
 		msg := WeComInboundMessage{
-			ConversationKey: sessionKey,
-			MessageID:       body.MsgID,
-			ChatID:          chatID,
-			UserID:          userID,
-			Text:            stripWeComAtMentions(strings.Join(texts, "\n"), rt.cfg.BotID, body.AibotID),
-			ReplyContext:    rctx,
-			ReceivedAt:      time.Now().UnixMilli(),
+			ConversationKey:  sessionKey,
+			MessageID:        body.MsgID,
+			ChatID:           chatID,
+			UserID:           userID,
+			Text:             stripWeComAtMentions(strings.Join(texts, "\n"), rt.cfg.BotID, body.AibotID),
+			ReplyContext:     rctx,
+			ReceivedAt:       time.Now().UnixMilli(),
+			RequesterContext: resolvedRequesterContext,
 		}
 		if len(imgRefs) > 0 || len(fileRefs) > 0 {
 			attachments := rt.downloadAttachments(context.Background(), imgRefs, fileRefs)
 			msg.Attachments = attachments
 		}
 		handleErr := rt.service.handleInboundMessage(ctx, rt.cfg, msg, rt)
-		rt.markProcessed(body.MsgID)
-		_ = rt.service.updateRuntime(func(state *RuntimeState) {
-			state.LastMessageAt = time.Now().UnixMilli()
-			state.ProcessedMessageIDs = append(state.ProcessedMessageIDs, body.MsgID)
-			if handleErr != nil {
-				state.LastError = handleErr.Error()
-			} else {
-				state.LastError = ""
-			}
-		})
+		rt.recordMessageResult(msgID, handleErr)
 	}()
+}
+
+func (rt *wsRuntime) replyRequesterUnauthorized(ctx context.Context, msgID string, rctx replyContext) {
+	go func() {
+		err := rt.Reply(ctx, rctx, requesterUnauthorizedReplyText)
+		rt.recordMessageResult(msgID, err)
+	}()
+}
+
+func (rt *wsRuntime) recordMessageResult(msgID string, resultErr error) {
+	rt.markProcessed(msgID)
+	_ = rt.service.updateRuntime(func(state *RuntimeState) {
+		state.LastMessageAt = time.Now().UnixMilli()
+		state.ProcessedMessageIDs = append(state.ProcessedMessageIDs, msgID)
+		if resultErr != nil {
+			state.LastError = resultErr.Error()
+		} else {
+			state.LastError = ""
+		}
+	})
 }
 
 func (rt *wsRuntime) downloadAttachments(parent context.Context, imgRefs, fileRefs []wsMediaRef) []WeComAttachment {

@@ -928,6 +928,7 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	agentIDs := fs.String("agents", envOrDefault("LUMI_AGENTS", ""), "Comma-separated agent IDs available to this IM workspace; defaults to all configured agents")
 	botID := fs.String("bot-id", envOrDefault("LUMI_BOT_ID", ""), "WeCom bot ID")
 	botSecret := fs.String("bot-secret", envOrDefault("LUMI_BOT_SECRET", ""), "WeCom bot secret")
+	requesterConfig := fs.String("requester-config", envOrDefault("LUMI_WECOM_REQUESTER_CONFIG", ""), "WeCom requester permission JSON file")
 	stream := fs.Bool("stream", envBoolOrDefault("LUMI_WECOM_STREAM", false), "Enable WeCom streaming replies")
 	port := fs.String("port", envOrDefault("LUMI_PORT", "3000"), "Server port")
 	idleTimeoutSec := fs.Int("idle-timeout-sec", 0, "Sandbox idle timeout in seconds for IM CLI runs; defaults to 10 years")
@@ -957,17 +958,18 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	}
 
 	cfg, workspacePath, err := lumicli.PrepareRun(state, lumicli.RunOptions{
-		ConfigPath:     *configPath,
-		Workspace:      *workspace,
-		Kind:           *kind,
-		AgentID:        *agentID,
-		AgentIDs:       parseAgentIDs(*agentIDs),
-		BotID:          *botID,
-		BotSecret:      *botSecret,
-		WeComStream:    *stream,
-		Port:           *port,
-		IdleTimeoutSec: *idleTimeoutSec,
-		SandboxID:      *sandboxID,
+		ConfigPath:          *configPath,
+		Workspace:           *workspace,
+		Kind:                *kind,
+		AgentID:             *agentID,
+		AgentIDs:            parseAgentIDs(*agentIDs),
+		BotID:               *botID,
+		BotSecret:           *botSecret,
+		RequesterConfigPath: *requesterConfig,
+		WeComStream:         *stream,
+		Port:                *port,
+		IdleTimeoutSec:      *idleTimeoutSec,
+		SandboxID:           *sandboxID,
 	})
 	if err != nil {
 		return err
@@ -992,6 +994,9 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	fmt.Fprintf(stdout, "Workspace agents: %s\n", strings.Join(workspaceAgentIDs(cfg), ", "))
 	fmt.Fprintf(stdout, "Server: http://localhost:%s\n", runtime.Port())
 	fmt.Fprintf(stdout, "WeCom: enabled for bot %s\n", *botID)
+	if strings.TrimSpace(*requesterConfig) != "" {
+		fmt.Fprintf(stdout, "WeCom requester config: %s\n", strings.TrimSpace(*requesterConfig))
+	}
 	fmt.Fprintf(stdout, "WeCom stream: %s\n", enabledDisabled(*stream))
 	fmt.Fprintln(stdout, "Agent credentials are inherited from the current shell environment or existing config env.")
 
@@ -1224,7 +1229,7 @@ func printCronUsage(stdout *os.File, programName string) {
 
 func printWeComUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
-	fmt.Fprintf(stdout, "  %s wecom run --workspace <path> --kind local|sandbox --agent <id> --bot-id <id> --bot-secret <secret> [--stream] [--sandbox-id <id>] [--idle-timeout-sec <seconds>] [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s wecom run --workspace <path> --kind local|sandbox --agent <id> --bot-id <id> --bot-secret <secret> [--requester-config <path>] [--stream] [--sandbox-id <id>] [--idle-timeout-sec <seconds>] [flags]\n", programName)
 }
 
 func printWeChatUsage(stdout *os.File, programName string) {

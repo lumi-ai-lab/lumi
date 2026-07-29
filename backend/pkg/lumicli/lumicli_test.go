@@ -12,6 +12,7 @@ import (
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/sandbox"
 	"github.com/pengmide/lumi/internal/wechat"
+	"github.com/pengmide/lumi/internal/wecom"
 )
 
 func TestEnsureConfigFileCreatesExampleConfig(t *testing.T) {
@@ -190,6 +191,103 @@ func TestPrepareRunUpsertsWorkspaceAndWecomConfig(t *testing.T) {
 	}
 	if !strings.Contains(text, `"stream": true`) {
 		t.Fatalf("wecom config missing stream=true: %s", text)
+	}
+}
+
+func TestPrepareRunValidatesAndSavesAbsoluteRequesterConfigPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll(workspace) error = %v", err)
+	}
+	state, err := ResolveConfigState("")
+	if err != nil {
+		t.Fatalf("ResolveConfigState() error = %v", err)
+	}
+	if err := EnsureConfigFile(state); err != nil {
+		t.Fatalf("EnsureConfigFile() error = %v", err)
+	}
+	state.Config.Agents = []config.AgentConfig{{ID: "claude", Name: "Claude", Command: "npx"}}
+	state.Config.DefaultAgent = "claude"
+	if err := saveConfig(state.Config, state.Path); err != nil {
+		t.Fatalf("saveConfig() error = %v", err)
+	}
+	state.HasAgents = true
+
+	policyPath := filepath.Join(t.TempDir(), "requesters.json")
+	policy := `{"version":1,"botId":"bot-123","users":[{"userId":"u1","displayName":"U1","enabled":true,"capabilities":["qdm.cmr.query"],"scope":{"manageAreaIds":["CN18"],"categoryLevel1Ids":["12"]}}]}`
+	if err := os.WriteFile(policyPath, []byte(policy), 0o600); err != nil {
+		t.Fatalf("WriteFile(policy) error = %v", err)
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	relativePolicyPath, err := filepath.Rel(workingDir, policyPath)
+	if err != nil {
+		t.Fatalf("Rel(policy) error = %v", err)
+	}
+
+	if _, _, err := PrepareRun(state, RunOptions{
+		Workspace:           workspace,
+		AgentID:             "claude",
+		BotID:               "bot-123",
+		BotSecret:           "secret-456",
+		RequesterConfigPath: relativePolicyPath,
+	}); err != nil {
+		t.Fatalf("PrepareRun() error = %v", err)
+	}
+	saved, err := wecom.NewConfigStore().Load()
+	if err != nil {
+		t.Fatalf("Load(wecom config) error = %v", err)
+	}
+	wantPath, err := filepath.Abs(relativePolicyPath)
+	if err != nil {
+		t.Fatalf("Abs(policy) error = %v", err)
+	}
+	if saved.RequesterConfigPath != filepath.Clean(wantPath) || !filepath.IsAbs(saved.RequesterConfigPath) {
+		t.Fatalf("RequesterConfigPath = %q, want absolute %q", saved.RequesterConfigPath, filepath.Clean(wantPath))
+	}
+}
+
+func TestPrepareRunRejectsRequesterConfigBeforeSavingWeComConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll(workspace) error = %v", err)
+	}
+	state, err := ResolveConfigState("")
+	if err != nil {
+		t.Fatalf("ResolveConfigState() error = %v", err)
+	}
+	if err := EnsureConfigFile(state); err != nil {
+		t.Fatalf("EnsureConfigFile() error = %v", err)
+	}
+	state.Config.Agents = []config.AgentConfig{{ID: "claude", Name: "Claude", Command: "npx"}}
+	state.Config.DefaultAgent = "claude"
+	if err := saveConfig(state.Config, state.Path); err != nil {
+		t.Fatalf("saveConfig() error = %v", err)
+	}
+	state.HasAgents = true
+
+	policyPath := filepath.Join(t.TempDir(), "requesters.json")
+	if err := os.WriteFile(policyPath, []byte(`{"version":1,"botId":"different-bot","users":[]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile(policy) error = %v", err)
+	}
+	_, _, err = PrepareRun(state, RunOptions{
+		Workspace:           workspace,
+		AgentID:             "claude",
+		BotID:               "bot-123",
+		BotSecret:           "secret-456",
+		RequesterConfigPath: policyPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("PrepareRun() error = %v, want bot mismatch", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, ".lumi", "wecom", "config.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("wecom config stat error = %v, want no saved config", statErr)
 	}
 }
 

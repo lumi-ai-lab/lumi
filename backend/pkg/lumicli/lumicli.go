@@ -26,17 +26,18 @@ const SandboxWorkspaceID = "cli-sandbox"
 const IMSandboxIdleTimeoutSec = 10 * 365 * 24 * 60 * 60
 
 type RunOptions struct {
-	ConfigPath     string
-	Workspace      string
-	Kind           string
-	AgentID        string
-	AgentIDs       []string
-	BotID          string
-	BotSecret      string
-	WeComStream    bool
-	Port           string
-	IdleTimeoutSec int
-	SandboxID      string
+	ConfigPath          string
+	Workspace           string
+	Kind                string
+	AgentID             string
+	AgentIDs            []string
+	BotID               string
+	BotSecret           string
+	RequesterConfigPath string
+	WeComStream         bool
+	Port                string
+	IdleTimeoutSec      int
+	SandboxID           string
 }
 
 type WeChatRunOptions struct {
@@ -184,6 +185,24 @@ func InstallSetup(status SetupStatus, progress func(SetupInstallEvent), logFn fu
 }
 
 func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, error) {
+	botID := strings.TrimSpace(opts.BotID)
+	if botID == "" {
+		return nil, "", errors.New("bot id is required")
+	}
+	botSecret := strings.TrimSpace(opts.BotSecret)
+	if botSecret == "" {
+		return nil, "", errors.New("bot secret is required")
+	}
+	requesterConfigPath, err := resolveRequesterConfigPath(opts.RequesterConfigPath)
+	if err != nil {
+		return nil, "", err
+	}
+	if requesterConfigPath != "" {
+		if _, err := wecom.LoadRequesterPolicy(requesterConfigPath, botID); err != nil {
+			return nil, "", err
+		}
+	}
+
 	cfg, workspacePath, workspaceID, agentID, err := prepareIMRunWorkspace(state, imRunWorkspaceOptions{
 		Workspace:      opts.Workspace,
 		Kind:           opts.Kind,
@@ -192,30 +211,30 @@ func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, er
 		Port:           opts.Port,
 		IdleTimeoutSec: opts.IdleTimeoutSec,
 		Channel:        "wecom",
-		Identity:       opts.BotID,
+		Identity:       botID,
 		SandboxID:      opts.SandboxID,
 	})
 	if err != nil {
 		return nil, "", err
 	}
+	if workspaceKind(opts.Kind) == "sandbox" {
+		if err := wecom.ValidateRequesterConfigOutsideWorkspace(requesterConfigPath, workspacePath); err != nil {
+			return nil, "", err
+		}
+	}
 
 	wecomCfg := wecom.Config{
 		Enabled:             true,
 		Mode:                "websocket",
-		BotID:               strings.TrimSpace(opts.BotID),
-		BotSecret:           strings.TrimSpace(opts.BotSecret),
+		BotID:               botID,
+		BotSecret:           botSecret,
 		WorkspaceID:         workspaceID,
 		AgentID:             agentID,
+		RequesterConfigPath: requesterConfigPath,
 		Stream:              opts.WeComStream,
 		ConnectTimeoutMs:    15000,
 		HeartbeatIntervalMs: 30000,
 		MessageAckTimeoutMs: 5000,
-	}
-	if strings.TrimSpace(wecomCfg.BotID) == "" {
-		return nil, "", errors.New("bot id is required")
-	}
-	if strings.TrimSpace(wecomCfg.BotSecret) == "" {
-		return nil, "", errors.New("bot secret is required")
 	}
 	store := wecom.NewConfigStore()
 	if workspaceKind(opts.Kind) == "sandbox" {
@@ -226,6 +245,18 @@ func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, er
 	}
 
 	return cfg, workspacePath, nil
+}
+
+func resolveRequesterConfigPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	resolved, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve requester config path: %w", err)
+	}
+	return filepath.Clean(resolved), nil
 }
 
 func PrepareWeChatRun(state *ConfigState, opts WeChatRunOptions) (*config.Config, string, error) {

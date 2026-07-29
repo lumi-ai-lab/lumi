@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/conversation"
 	"github.com/pengmide/lumi/internal/device"
+	"github.com/pengmide/lumi/internal/requestercontext"
 	"github.com/pengmide/lumi/internal/sandbox"
 	"github.com/pengmide/lumi/internal/storage"
 	"github.com/pengmide/lumi/internal/wechat"
@@ -72,6 +74,13 @@ func TestHandleDeviceChatBridgesSSEAndRoutesPermissionConfirm(t *testing.T) {
 	taskExecute := readEnvelope(t, ctx, conn)
 	if taskExecute.Type != device.MsgTaskExecute {
 		t.Fatalf("taskExecute.Type = %q, want %q", taskExecute.Type, device.MsgTaskExecute)
+	}
+	var taskPayload device.TaskExecutePayload
+	if err := json.Unmarshal(taskExecute.Payload, &taskPayload); err != nil {
+		t.Fatalf("Unmarshal(task.execute payload) error = %v", err)
+	}
+	if taskPayload.RequesterContext != nil {
+		t.Fatalf("RequesterContext = %#v, want nil for ordinary chat", taskPayload.RequesterContext)
 	}
 	if err := wsjson.Write(ctx, conn, device.AckEnvelope(taskExecute.ID)); err != nil {
 		t.Fatalf("wsjson.Write(task.execute ack) error = %v", err)
@@ -323,6 +332,33 @@ func TestHandleDeviceChatQueuesDifferentConversationsOnSameDevice(t *testing.T) 
 
 func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	server := newTestAPIServer(t)
+	requester := &requestercontext.Context{
+		Version:        requestercontext.CurrentVersion,
+		RequestID:      "wecom-msg-001",
+		PolicyRevision: "sha256:test-policy",
+		Principal: requestercontext.Principal{
+			Channel:         "wecom",
+			BotID:           "bot-demo-001",
+			CanonicalUserID: "user-demo-001",
+			DisplayName:     "张三（模拟用户）",
+		},
+		Audience: requestercontext.Audience{
+			ChatID:   "group-demo-001",
+			ChatType: "group",
+		},
+		Authorization: requestercontext.Authorization{
+			Capabilities: []string{
+				requestercontext.CapabilityCASToken,
+				requestercontext.CapabilityCMRQuery,
+				requestercontext.CapabilityIndicatorsQuery,
+				requestercontext.CapabilitySQLSelect,
+			},
+			Scope: requestercontext.Scope{
+				ManageAreaIDs:     []string{"CN18"},
+				CategoryLevel1IDs: []string{"12", "13"},
+			},
+		},
+	}
 	workspace := config.WorkspaceConfig{
 		ID:    "sandbox-ws",
 		Name:  "Sandbox",
@@ -374,6 +410,7 @@ func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 			AgentID:           "claude",
 			PromptPrefix:      "prefix",
 			ConversationStore: &memoryIMStore{},
+			RequesterContext:  requester,
 		}, sink)
 	}()
 
@@ -390,6 +427,9 @@ func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	}
 	if taskPayload.Prompt != "hello sandbox" {
 		t.Fatalf("Prompt = %q, want clean user message", taskPayload.Prompt)
+	}
+	if !reflect.DeepEqual(taskPayload.RequesterContext, requester) {
+		t.Fatalf("RequesterContext = %#v, want %#v", taskPayload.RequesterContext, requester)
 	}
 	for _, want := range []string{"prefix", "You are running inside Lumi.", "Current Lumi context:"} {
 		if !strings.Contains(taskPayload.SystemPromptAppend, want) {
