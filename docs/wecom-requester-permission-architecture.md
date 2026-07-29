@@ -2,7 +2,7 @@
 
 > 本阶段先用静态 JSON 管理固定用户，不建设独立权限服务。
 >
-> 当前假设企业微信回调中的 `body.from.userid` 是明文 UserID，因此它就是 canonical UserID；本阶段不做通讯录同步和加密 ID 转换。
+> 企业微信真实群聊联调已确认：机器人由企业超级管理员创建时，回调中的 `body.from.userid` 是明文 UserID，因此可直接作为 canonical UserID。非超级管理员创建的机器人返回企业主体下的密文 `open_userid`；本阶段不实现该密文到明文 UserID 的转换。
 
 ## 1. 目标与主流程
 
@@ -63,6 +63,18 @@ authorization key = (botId, canonicalUserId)
 displayName = 仅用于日志和展示
 ```
 
+运行时能否直接得到明文 UserID，取决于智能机器人的创建者：
+
+```text
+body.from.userid
+        |
+        +-- 超级管理员创建机器人 ----> 明文 UserID ----> 本阶段支持
+        |
+        +-- 非超级管理员创建机器人 --> 密文 open_userid -> 本阶段不转换
+```
+
+因此，第一阶段部署的明确前提是：使用企业超级管理员创建的智能机器人。BotID 本身不携带“超管机器人”类型信息，Lumi 也不能只根据 ID 的长度或格式判断身份类型。
+
 不需要让每位员工先使用一次 Lumi。上线前可由企业管理员批量导出：
 
 ```text
@@ -83,17 +95,27 @@ userid 清单 -> 生成配置模板 -> 业务负责人补充权限范围
 - Bot Secret 不能替代通讯录同步 Secret 或企业自建应用 Secret。
 - 管理员不需要反复手工获取 Token，受控脚本可缓存并刷新约 7,200 秒有效的 Access Token。
 - 静态配置阶段建议由管理员在受控环境执行一次导出；Lumi 不长期保存通讯录 Secret。
+- 企业微信 UserID 是管理端成员详情中的“账号”，不保证等于邮箱前缀；应以管理端或官方 API 返回值为准。
 
 参考企业微信官方文档：
 
 - [通讯录管理概述](https://developer.work.weixin.qq.com/document/path/90193)
 - [获取成员 ID 列表](https://developer.work.weixin.qq.com/document/path/96067)
 - [获取 Access Token](https://developer.work.weixin.qq.com/document/path/91039)
+- [智能机器人长连接](https://developer.work.weixin.qq.com/document/path/101463)
+- [自建应用与智能机器人的对接](https://developer.work.weixin.qq.com/document/path/101521)
 
-若以后发现回调返回的是加密身份值，再单独增加官方转换流程。本阶段固定采用：
+企业微信为非超级管理员创建的机器人提供了密文转换接口：
 
 ```text
-body.from.userid == canonicalUserId
+POST /cgi-bin/batch/openuserid_to_userid
+密文 open_userid -> 明文 UserID
+```
+
+该接口需要企业自建应用的 Access Token，并要求成员位于应用可见范围内。当前 Lumi 没有调用此接口；在“超级管理员创建机器人”的部署前提下，本阶段固定采用：
+
+```text
+trim(body.from.userid) == canonicalUserId
 ```
 
 ## 3. 严格 JSON 权限配置
@@ -249,7 +271,7 @@ UserID 是否已配置且 enabled？
 - 拒绝发生在附件下载、IM 命令处理和 `ChatRunner` 调用之前。
 - `body.msgid` 用作 `requestId`；`headers.req_id` 只用于企业微信回复关联。
 - 同一条消息的自动 continuation 复用该消息的权限快照；下一条消息重新查询启动时建立的不可变快照。
-- 不修改现有 conversation key；本阶段 raw UserID 与 canonical UserID 相同。
+- 不修改现有 conversation key；在超级管理员创建机器人的前提下，去除首尾空白后的 UserID 与 canonical UserID 相同。
 - 严格模式禁用 WeCom cron Agent 查询，避免通过合成 `target.UserID` 伪造提问人。
 
 ## 6. 三部分职责
@@ -264,7 +286,7 @@ UserID 是否已配置且 enabled？
 Lumi 本轮负责：
 
 - 加载并校验静态 JSON。
-- 识别明文 UserID，在附件下载前 fail closed。
+- 在超级管理员创建机器人的前提下识别明文 UserID，并在附件下载前 fail closed。
 - 为每条消息构造并通过 Local/Sandbox 传递 `RequesterContext`。
 - 管理逐 Session 兼容文件的写入、切换和清理。
 
@@ -309,6 +331,7 @@ Harness 后续负责：
 [x] Session 专属 JSON 内容一致，并在 prompt 返回后清理
 [x] 严格模式不回落 allowFrom，且禁用 WeCom cron Agent 查询
 [x] 未配置 requester config 时旧 allowFrom 行为不变
+[x] 真实群聊验证超管创建机器人回调直接返回明文 UserID
 ```
 
 以上是 Lumi 侧第一阶段验收状态。Harness 的 capability 校验、范围求交和 CLI 强制过滤不包含在这些勾选项内。

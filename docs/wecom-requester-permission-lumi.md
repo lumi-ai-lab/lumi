@@ -7,10 +7,17 @@
 ## 1. 本轮结果
 
 ```text
-企业微信回调
-  from.userid（明文 canonical UserID）
-             |
-             v
+企业微信回调 body.from.userid
+              |
+       +------+------+
+       |             |
+  超管创建机器人   非超管创建机器人
+       |             |
+       v             v
+明文 canonical    密文 open_userid
+    UserID            |
+       |              v
+       v         本轮停止：不转换
 +-----------------------------+
 | Lumi                        |
 | 严格配置校验                |
@@ -27,7 +34,21 @@
        Harness 后续读取并强制过滤
 ```
 
-Lumi 不把 UserID 转成用户名。鉴权键是明文 UserID，`displayName` 从 JSON 配置读取且只用于展示。
+企业微信真实群聊联调已验证，企业超级管理员创建的机器人会直接返回明文 UserID。本轮部署以此为前提：Lumi 不把 UserID 转成用户名，也不把密文 `open_userid` 转成明文 UserID。鉴权键是明文 UserID，`displayName` 从 JSON 配置读取且只用于展示。
+
+上述分支是部署前需要确认的企业微信行为，并非 Lumi 在运行时根据 BotID、UserID 长度或格式判断机器人创建者身份。
+
+```text
+超级管理员创建机器人
+          |
+          v
+body.from.userid = 明文 UserID
+          |
+          v
+严格权限配置 -> RequesterContext
+```
+
+非超级管理员创建的机器人需要调用企业微信官方 `POST /cgi-bin/batch/openuserid_to_userid` 接口；该能力不在本轮实现范围内。详见[企业微信提问人权限整体方案](./wecom-requester-permission-architecture.md#2-userid-从哪里来)。
 
 ## 2. 启动与配置加载
 
@@ -132,7 +153,7 @@ policyRevision           <- 权限配置内容摘要
 principal
   channel                = wecom
   botId                  = cfg.BotID
-  canonicalUserId        = trim(body.from.userid)
+  canonicalUserId        = trim(body.from.userid)  // 超管创建机器人时为明文
   displayName            = 权限配置
 audience
   chatId / chatType      = 企业微信回调
@@ -143,7 +164,7 @@ authorization
     categoryLevel1Ids
 ```
 
-每条新消息重新查询不可变配置快照并构造上下文。现有 conversation key 不修改，因为本阶段 raw UserID 就是 canonical UserID；同一消息的 continuation 复用该消息快照。
+每条新消息重新查询不可变配置快照并构造上下文。现有 conversation key 不修改；在超级管理员创建机器人的部署前提下，raw UserID 就是 canonical UserID。同一消息的 continuation 复用该消息快照。
 
 ## 5. Agent 双通道
 
@@ -237,6 +258,7 @@ WeCom 入口
   [x] 空 msgid/UserID/aibotid 和 Bot ID 不匹配不执行 Runner
   [x] legacy allowFrom 模式行为不变
   [x] 严格模式 WeCom cron Agent 查询被拒绝
+  [x] 真实群聊验证超管创建机器人返回明文 UserID
 
 传递层
   [x] Local prompt 的 _meta 与 Session JSON 使用同一 RequesterContext
@@ -252,7 +274,7 @@ WeCom 入口
 ## 8. 本轮不做
 
 - 不调用企业微信通讯录，也不获取 Access Token。
-- 不做加密 open_userid 到明文 UserID 的转换。
+- 不做非超级管理员创建机器人所返回的密文 `open_userid` 到明文 UserID 的转换。
 - 不建设权限服务、配置热加载或动态入离职同步。
 - 不修改 Harness，不在 Lumi 中生成 CMR/Indicators/SQL 的最终过滤参数。
 - 不把 unsigned Session JSON 当作安全凭证。
