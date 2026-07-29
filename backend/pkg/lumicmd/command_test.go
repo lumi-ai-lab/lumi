@@ -18,6 +18,7 @@ import (
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/sandbox"
 	"github.com/pengmide/lumi/internal/wechat"
+	"github.com/pengmide/lumi/internal/wecom"
 	"github.com/pengmide/lumi/pkg/lumicli"
 )
 
@@ -208,6 +209,59 @@ func TestWeComRunParsesIdleTimeoutFlag(t *testing.T) {
 	}, stdout, stderr)
 	if err == nil || !strings.Contains(err.Error(), "idle timeout sec must be non-negative") {
 		t.Fatalf("runWeComRun() error = %v, want idle timeout validation", err)
+	}
+}
+
+func TestWeComRunRequesterConfigFlagOverridesEnvironment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := createCLIConfigWithAgent(t, home)
+	writePolicy := func(name, userID string) string {
+		path := filepath.Join(home, name)
+		raw := fmt.Sprintf(`{"version":1,"botId":"bot-123","users":[{"userId":%q,"displayName":"User","enabled":true,"capabilities":["qdm.cmr.query"],"scope":{"manageAreaIds":["CN18"],"categoryLevel1Ids":["12"]}}]}`, userID)
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatalf("WriteFile(policy) error = %v", err)
+		}
+		return path
+	}
+	envPath := writePolicy("requesters-env.json", "env-user")
+	flagPath := writePolicy("requesters-flag.json", "flag-user")
+	t.Setenv("LUMI_WECOM_REQUESTER_CONFIG", envPath)
+
+	originalStartServer := startServer
+	defer func() { startServer = originalStartServer }()
+	startServer = func(cfg *config.Config, staticFS fs.FS, port string) (serverRuntime, error) {
+		return &fakeServerRuntime{port: port}, nil
+	}
+
+	stdout, stderr := tempStdoutStderr(t)
+	baseArgs := []string{
+		"--workspace", workspace,
+		"--agent", "claude",
+		"--bot-id", "bot-123",
+		"--bot-secret", "secret-456",
+	}
+	if err := runWeComRun(baseArgs, stdout, stderr); err != nil {
+		t.Fatalf("runWeComRun(env) error = %v", err)
+	}
+	saved, err := wecom.NewConfigStore().Load()
+	if err != nil {
+		t.Fatalf("Load(wecom env config) error = %v", err)
+	}
+	if saved.RequesterConfigPath != envPath {
+		t.Fatalf("RequesterConfigPath from env = %q, want %q", saved.RequesterConfigPath, envPath)
+	}
+
+	argsWithFlag := append(append([]string(nil), baseArgs...), "--requester-config", flagPath)
+	if err := runWeComRun(argsWithFlag, stdout, stderr); err != nil {
+		t.Fatalf("runWeComRun(flag) error = %v", err)
+	}
+	saved, err = wecom.NewConfigStore().Load()
+	if err != nil {
+		t.Fatalf("Load(wecom flag config) error = %v", err)
+	}
+	if saved.RequesterConfigPath != flagPath {
+		t.Fatalf("RequesterConfigPath from flag = %q, want %q", saved.RequesterConfigPath, flagPath)
 	}
 }
 

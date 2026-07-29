@@ -4,6 +4,7 @@ import (
 	"context"
 
 	lumicron "github.com/pengmide/lumi/internal/cron"
+	"github.com/pengmide/lumi/internal/requestercontext"
 	"github.com/pengmide/lumi/internal/storage"
 )
 
@@ -30,6 +31,7 @@ type ChatRunInput struct {
 	NewSession          bool
 	ConversationStore   HiddenConversationStore
 	CronTarget          lumicron.Target
+	RequesterContext    *requestercontext.Context
 }
 
 type ChatEvent struct {

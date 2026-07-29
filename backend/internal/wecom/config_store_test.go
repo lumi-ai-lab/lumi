@@ -37,6 +37,7 @@ func TestConfigStoreDefaultsAndPermissions(t *testing.T) {
 	cfg.BotSecret = "secret1234wxyz"
 	cfg.WorkspaceID = "default"
 	cfg.AgentID = "claude"
+	cfg.RequesterConfigPath = " /tmp/requesters.json "
 	cfg.Stream = true
 	if err := store.Save(cfg); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -52,12 +53,18 @@ func TestConfigStoreDefaultsAndPermissions(t *testing.T) {
 	if !loaded.Stream {
 		t.Fatal("Stream = false, want saved true")
 	}
+	if loaded.RequesterConfigPath != "/tmp/requesters.json" {
+		t.Fatalf("RequesterConfigPath = %q, want trimmed path", loaded.RequesterConfigPath)
+	}
 	sanitized := SanitizeConfig(loaded)
 	if !sanitized.Stream {
 		t.Fatal("Sanitized Stream = false, want true")
 	}
 	if !sanitized.HasSecret {
 		t.Fatal("HasSecret = false, want true")
+	}
+	if sanitized.RequesterConfigPath != "/tmp/requesters.json" {
+		t.Fatalf("Sanitized RequesterConfigPath = %q", sanitized.RequesterConfigPath)
 	}
 	if sanitized.MaskedSecret != "secr********wxyz" {
 		t.Fatalf("MaskedSecret = %q", sanitized.MaskedSecret)
@@ -192,6 +199,67 @@ func TestHandleSaveConfigKeepsAndClearsSecret(t *testing.T) {
 	}
 	if cfg.BotSecret != "" {
 		t.Fatalf("BotSecret after clear = %q, want empty", cfg.BotSecret)
+	}
+}
+
+func TestHandleSaveConfigKeepsAndClearsRequesterConfigPath(t *testing.T) {
+	service := newTestService(t, dummyRunner{})
+	policyPath := writeRequesterPolicyFile(t, enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"]`, `["12"]`))
+	if err := service.configStore.Save(Config{
+		Mode:                "websocket",
+		BotID:               "bot-1",
+		BotSecret:           "persisted-secret",
+		WorkspaceID:         "default",
+		AgentID:             "claude",
+		RequesterConfigPath: policyPath,
+		ConnectTimeoutMs:    defaultConnectTimeoutMs,
+		HeartbeatIntervalMs: defaultHeartbeatMs,
+		MessageAckTimeoutMs: defaultMessageAckTimeoutMs,
+	}); err != nil {
+		t.Fatalf("Save(seed) error = %v", err)
+	}
+
+	request := func(requesterConfigField string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		body := `{
+          "enabled": false,
+          "mode": "websocket",
+          "botId": "bot-1",
+          "workspaceId": "default",
+          "agentId": "claude",
+          "allowFrom": "",
+          "connectTimeoutMs": 15000,
+          "heartbeatIntervalMs": 30000,
+          "messageAckTimeoutMs": 5000` + requesterConfigField + `
+        }`
+		req := httptest.NewRequest(http.MethodPost, "/api/wecom/config", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		service.HandleHTTP(rec, req)
+		return rec
+	}
+
+	rec := request("")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status omit requester config = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	cfg, err := service.configStore.Load()
+	if err != nil {
+		t.Fatalf("Load(after omit) error = %v", err)
+	}
+	if cfg.RequesterConfigPath != policyPath {
+		t.Fatalf("RequesterConfigPath after omit = %q, want %q", cfg.RequesterConfigPath, policyPath)
+	}
+
+	rec = request(`, "requesterConfigPath": ""`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status clear requester config = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	cfg, err = service.configStore.Load()
+	if err != nil {
+		t.Fatalf("Load(after clear) error = %v", err)
+	}
+	if cfg.RequesterConfigPath != "" {
+		t.Fatalf("RequesterConfigPath after clear = %q, want empty", cfg.RequesterConfigPath)
 	}
 }
 

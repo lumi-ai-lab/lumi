@@ -26,6 +26,7 @@ type Config struct {
 	WorkspaceID         string `json:"workspaceId"`
 	AgentID             string `json:"agentId"`
 	AllowFrom           string `json:"allowFrom"`
+	RequesterConfigPath string `json:"requesterConfigPath"`
 	Stream              bool   `json:"stream"`
 	ConnectTimeoutMs    int    `json:"connectTimeoutMs"`
 	HeartbeatIntervalMs int    `json:"heartbeatIntervalMs"`
@@ -39,6 +40,7 @@ type SanitizedConfig struct {
 	WorkspaceID         string `json:"workspaceId"`
 	AgentID             string `json:"agentId"`
 	AllowFrom           string `json:"allowFrom"`
+	RequesterConfigPath string `json:"requesterConfigPath"`
 	Stream              bool   `json:"stream"`
 	ConnectTimeoutMs    int    `json:"connectTimeoutMs"`
 	HeartbeatIntervalMs int    `json:"heartbeatIntervalMs"`
@@ -116,6 +118,7 @@ func normalizeConfig(cfg Config) Config {
 		cfg.MessageAckTimeoutMs = defaultMessageAckTimeoutMs
 	}
 	cfg.AllowFrom = strings.TrimSpace(cfg.AllowFrom)
+	cfg.RequesterConfigPath = strings.TrimSpace(cfg.RequesterConfigPath)
 	return cfg
 }
 
@@ -128,6 +131,7 @@ func SanitizeConfig(cfg Config) SanitizedConfig {
 		WorkspaceID:         cfg.WorkspaceID,
 		AgentID:             cfg.AgentID,
 		AllowFrom:           cfg.AllowFrom,
+		RequesterConfigPath: cfg.RequesterConfigPath,
 		Stream:              cfg.Stream,
 		ConnectTimeoutMs:    cfg.ConnectTimeoutMs,
 		HeartbeatIntervalMs: cfg.HeartbeatIntervalMs,

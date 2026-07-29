@@ -3,6 +3,8 @@ package wecom
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -73,7 +75,12 @@ func (s *Service) Start() error {
 	if err != nil {
 		return err
 	}
+	cfg = normalizeConfig(cfg)
 	if err := s.validateConfigForRuntime(cfg); err != nil {
+		return err
+	}
+	requesterPolicy, err := loadRequesterPolicySnapshot(cfg)
+	if err != nil {
 		return err
 	}
 
@@ -101,7 +108,7 @@ func (s *Service) Start() error {
 		return err
 	}
 
-	go s.runWebSocketLoop(ctx, normalizeConfig(cfg), done)
+	go s.runWebSocketLoop(ctx, cfg, requesterPolicy, done)
 	return nil
 }
 
@@ -187,6 +194,10 @@ func (s *Service) RunCronJob(ctx context.Context, job lumicron.Job) (string, err
 		return job.ConversationID, err
 	}
 	cfg = normalizeConfig(cfg)
+	runtime := s.currentRuntime()
+	if cfg.RequesterConfigPath != "" || (runtime != nil && runtime.requesterPolicy != nil) {
+		return job.ConversationID, errors.New("wecom cron jobs are disabled while requester permissions are enabled")
+	}
 	workspace := s.config.FindWorkspace(job.WorkspaceID)
 	if workspace == nil {
 		return job.ConversationID, errors.New("workspace not found")
@@ -197,7 +208,7 @@ func (s *Service) RunCronJob(ctx context.Context, job lumicron.Job) (string, err
 	if s.config.FindAgent(job.AgentID) == nil {
 		return job.ConversationID, errors.New("agent not found")
 	}
-	sender := s.currentRuntime()
+	sender := runtime
 	if sender == nil {
 		return job.ConversationID, errors.New("wecom websocket is not connected")
 	}
@@ -268,10 +279,15 @@ func (s *Service) TestConnection(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	cfg = normalizeConfig(cfg)
 	if err := s.validateConfigForRuntime(cfg); err != nil {
 		return err
 	}
-	runtime := newWebSocketRuntime(s, normalizeConfig(cfg))
+	requesterPolicy, err := loadRequesterPolicySnapshot(cfg)
+	if err != nil {
+		return err
+	}
+	runtime := newWebSocketRuntime(s, cfg, requesterPolicy)
 	return runtime.TestConnection(ctx)
 }
 
@@ -348,7 +364,88 @@ func (s *Service) validateConfigForSave(cfg Config) error {
 	if cfg.MessageAckTimeoutMs < 1000 {
 		return errors.New("messageAckTimeoutMs must be at least 1000")
 	}
+	if err := validateRequesterPolicyConfig(cfg); err != nil {
+		return err
+	}
+	if workspace.Kind == "sandbox" {
+		if err := ValidateRequesterConfigOutsideWorkspace(cfg.RequesterConfigPath, workspace.Path); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func validateRequesterPolicyConfig(cfg Config) error {
+	_, err := loadRequesterPolicySnapshot(cfg)
+	return err
+}
+
+func loadRequesterPolicySnapshot(cfg Config) (*RequesterPolicy, error) {
+	if strings.TrimSpace(cfg.RequesterConfigPath) == "" {
+		return nil, nil
+	}
+	if strings.TrimSpace(cfg.BotID) == "" {
+		return nil, errors.New("botId is required when requesterConfigPath is set")
+	}
+	return LoadRequesterPolicy(cfg.RequesterConfigPath, cfg.BotID)
+}
+
+// ValidateRequesterConfigOutsideWorkspace prevents a sandboxed Harness process
+// from modifying the policy source that Lumi will trust after a restart.
+func ValidateRequesterConfigOutsideWorkspace(requesterConfigPath, workspacePath string) error {
+	if strings.TrimSpace(requesterConfigPath) == "" {
+		return nil
+	}
+	inside, err := pathWithinDirectory(requesterConfigPath, workspacePath)
+	if err != nil {
+		return fmt.Errorf("validate requester config location: %w", err)
+	}
+	if inside {
+		return errors.New("requester config must be outside the sandbox workspace")
+	}
+	return nil
+}
+
+func pathWithinDirectory(path, directory string) (bool, error) {
+	inside, err := cleanPathWithinDirectory(path, directory)
+	if err != nil || inside {
+		return inside, err
+	}
+
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, fmt.Errorf("resolve requester config path: %w", err)
+	}
+	resolvedDirectory, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		return false, fmt.Errorf("resolve sandbox workspace path: %w", err)
+	}
+	return cleanPathWithinDirectory(resolvedPath, resolvedDirectory)
+}
+
+func cleanPathWithinDirectory(path, directory string) (bool, error) {
+	path = strings.TrimSpace(path)
+	directory = strings.TrimSpace(directory)
+	if path == "" {
+		return false, errors.New("requester config path is required")
+	}
+	if directory == "" {
+		return false, errors.New("sandbox workspace path is required")
+	}
+
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return false, fmt.Errorf("resolve requester config path: %w", err)
+	}
+	absoluteDirectory, err := filepath.Abs(directory)
+	if err != nil {
+		return false, fmt.Errorf("resolve sandbox workspace path: %w", err)
+	}
+	relative, err := filepath.Rel(filepath.Clean(absoluteDirectory), filepath.Clean(absolutePath))
+	if err != nil {
+		return false, fmt.Errorf("compare requester config and sandbox workspace paths: %w", err)
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)), nil
 }
 
 func isSupportedWorkspaceKind(kind string) bool {

@@ -159,6 +159,7 @@ export interface WeComConfig {
   workspaceId: string;
   agentId: string;
   allowFrom: string;
+  requesterConfigPath: string;
   connectTimeoutMs: number;
   heartbeatIntervalMs: number;
   messageAckTimeoutMs: number;

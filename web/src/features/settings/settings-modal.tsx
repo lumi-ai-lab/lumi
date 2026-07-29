@@ -330,6 +330,7 @@ export function SettingsModal({
       workspaceId: wecomConfig.workspaceId,
       agentId: wecomConfig.agentId,
       allowFrom: wecomConfig.allowFrom,
+      requesterConfigPath: wecomConfig.requesterConfigPath,
       connectTimeoutMs: wecomConfig.connectTimeoutMs,
       heartbeatIntervalMs: wecomConfig.heartbeatIntervalMs,
       messageAckTimeoutMs: wecomConfig.messageAckTimeoutMs,

@@ -55,7 +55,7 @@ func mergeAgentEnv(agentCfg *config.AgentConfig, runtimeEnv map[string]string) *
 
 func isLumiRuntimeEnvKey(key string) bool {
 	switch key {
-	case "LUMI_API_BASE", "LUMI_WORKSPACE_ID", "LUMI_WORKSPACE_PATH", "LUMI_CLI":
+	case "LUMI_API_BASE", "LUMI_WORKSPACE_ID", "LUMI_WORKSPACE_PATH", "LUMI_CLI", "LUMI_REQUESTER_CONTEXT_DIR":
 		return true
 	default:
 		return false

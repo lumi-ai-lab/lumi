@@ -217,6 +217,40 @@ cd ../backend && go build -o lumi ./cmd/lumi
 
 `lumi wecom run` 不需要打开 Web 页面，但会启动本地 Lumi runtime，默认监听 `3000` 端口；如需避开端口冲突，可传 `--port` 或设置 `LUMI_PORT`。
 
+#### 企业微信提问人 UserID
+
+Lumi 从智能机器人消息回调的 `body.from.userid` 识别提问人。该字段是否为企业通讯录中的明文 UserID，取决于机器人的创建者身份，而不是 BotID 的格式：
+
+```text
+智能机器人创建者
+        |
+        +-- 企业超级管理员
+        |       |
+        |       v
+        |  body.from.userid = 明文 UserID
+        |                       例如 zhangsan
+        |       |
+        |       v
+        |  Lumi 直接按 UserID 查询 requester 配置
+        |
+        +-- 非企业超级管理员
+                |
+                v
+         body.from.userid = 企业主体下的密文 open_userid
+                |
+                v
+         当前 Lumi 不会自动转换为明文 UserID
+```
+
+企业微信真实群聊联调已验证：由企业超级管理员创建的机器人会在回调中直接提供明文 UserID。因此，如果需要在 `--requester-config` 中提前按企业通讯录 UserID 配置权限，当前版本应使用企业超级管理员创建的机器人，并以实际回调值的大小写填写 `users[].userId`。Lumi 当前只清理 UserID 首尾空白，随后进行大小写敏感的精确匹配。
+
+非超级管理员创建的机器人所返回的密文必须作为不透明的 `open_userid` 处理，不能根据长度或格式猜测，也不能本地解密。它不是邮箱前缀。企业微信提供 `POST /cgi-bin/batch/openuserid_to_userid` 将密文 `open_userid` 转为明文 UserID，但该接口需要企业自建应用的 Access Token，且成员必须位于应用可见范围内；机器人的 BotID 和 Bot Secret 不能替代该凭证。这个转换尚未集成到 Lumi。
+
+官方依据：
+
+- [智能机器人长连接：`body.from.userid` 明文与密文规则](https://developer.work.weixin.qq.com/document/path/101463)
+- [自建应用与智能机器人的对接：`open_userid` 转明文 UserID](https://developer.work.weixin.qq.com/document/path/101521)
+
 企业微信 `wecom run --stream` 使用无重复流式模式：live 阶段持续输出可见 raw text，final 阶段再用同一批未结束 stream 覆盖为最终 Markdown 文本。需要回退时，可关闭 `--stream` 使用普通消息发送。
 
 高级模式会隐藏 `[LUMI_WECOM_SEND]` 协议块；文本覆盖成功后再发送图片/文件动作。若 final ack 失败，高级模式不会再普通发送一份完整答案，以避免 raw + final 重复。
