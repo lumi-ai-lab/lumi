@@ -355,6 +355,7 @@ func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 			},
 			Scope: requestercontext.Scope{
 				ManageAreaIDs:     []string{"CN18"},
+				DCManageAreaIDs:   []string{"CN18"},
 				CategoryLevel1IDs: []string{"12", "13"},
 			},
 		},

@@ -224,6 +224,12 @@ func TestShouldSetACPMode(t *testing.T) {
 			mode:    QwenModeYolo,
 			want:    true,
 		},
+		{
+			name:    "codex no sandbox is sent to ACP",
+			backend: BackendCodex,
+			mode:    CodexModeYoloNoSandbox,
+			want:    true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -235,6 +241,25 @@ func TestShouldSetACPMode(t *testing.T) {
 				t.Fatalf("ShouldSetACPMode() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestACPModeIDMapsCodexModes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		mode string
+		want string
+	}{
+		{mode: ModeDefault, want: ""},
+		{mode: CodexModeYolo, want: "agent"},
+		{mode: CodexModeYoloNoSandbox, want: "agent-full-access"},
+		{mode: "auto", want: "agent"},
+	}
+	for _, test := range tests {
+		if got := ACPModeID(BackendCodex, test.mode); got != test.want {
+			t.Errorf("ACPModeID(BackendCodex, %q) = %q, want %q", test.mode, got, test.want)
+		}
 	}
 }
 

@@ -437,7 +437,17 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 	s.applyPreparedAgentSwitch(ctx.Prepared)
 	if !s.initialized[ctx.Prepared.AgentID] {
 		ctx.SendEvent("status", map[string]string{"message": fmt.Sprintf("Initializing %s...", ctx.Prepared.AgentID)})
-		injectLumiAgentEnv(s.config, ctx.Prepared.AgentID, s.apiBaseForWorkspace(ctx.Prepared.WorkspaceID), ctx.Prepared.WorkspaceID, ctx.Prepared.WorkspacePath)
+		if err := injectLocalAgentRuntimeEnv(
+			s.config,
+			ctx.Prepared.WorkspaceID,
+			ctx.Prepared.AgentID,
+			s.apiBaseForWorkspace(ctx.Prepared.WorkspaceID),
+			ctx.Prepared.WorkspacePath,
+		); err != nil {
+			ctx.setError(err)
+			ctx.SendEvent("error", map[string]string{"message": err.Error()})
+			return
+		}
 		if err := s.initializeAgent(ctx.Prepared.AgentID); err != nil {
 			ctx.setError(err)
 			ctx.SendEvent("error", map[string]string{"message": err.Error()})
@@ -1016,12 +1026,12 @@ func (s *Server) createAgentSession(agentID, cwd string) (string, error) {
 		return "", fmt.Errorf("no sessionId in response")
 	}
 
-	if agentmode.ShouldSetACPMode(backend, sessionMode) {
+	if modeID := agentmode.ACPModeID(backend, sessionMode); modeID != "" {
 		if _, err := s.agents.Request(agentID, "session/set_mode", map[string]any{
 			"sessionId": sessionID,
-			"modeId":    sessionMode,
+			"modeId":    modeID,
 		}); err != nil {
-			return "", fmt.Errorf("failed to set %s mode for %s session %s: %w", sessionMode, agentID, sessionID, err)
+			return "", fmt.Errorf("failed to set %s mode for %s session %s: %w", modeID, agentID, sessionID, err)
 		}
 	}
 

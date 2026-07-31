@@ -120,6 +120,8 @@ type gatewayEventSink struct {
 	debug                storage.IMDebugSettings
 	finalTextBuilder     strings.Builder
 	finalTextAccumulated string
+	endTurnTextBuilder   strings.Builder
+	endTurnAccumulated   string
 	stopReason           string
 }
 
@@ -161,6 +163,7 @@ func (s *gatewayEventSink) Emit(event ChatEvent) error {
 				}
 			}
 		case "tool_call", "tool_call_update":
+			s.resetEndTurnText()
 			s.buffer.AddTool(update)
 			if err := s.flushReadySegments(); err != nil {
 				return err
@@ -175,6 +178,7 @@ func (s *gatewayEventSink) Emit(event ChatEvent) error {
 			return err
 		}
 	case "tool_call", "tool_call_update":
+		s.resetEndTurnText()
 		s.buffer.AddTool(event.Data)
 		if err := s.flushReadySegments(); err != nil {
 			return err
@@ -200,6 +204,13 @@ func (s *gatewayEventSink) FinalText() string {
 		return ""
 	}
 	return s.buffer.Text()
+}
+
+func (s *gatewayEventSink) EndTurnText() string {
+	if text := strings.TrimSpace(s.endTurnTextBuilder.String()); text != "" {
+		return text
+	}
+	return s.FinalText()
 }
 
 func eventStopReason(data any) string {
@@ -305,11 +316,21 @@ func tailRunes(text string, maxRunes int) string {
 
 func (s *gatewayEventSink) addFinalMessageChunk(text string) {
 	delta := deltaAgainstText(s.finalTextAccumulated, text)
-	if delta == "" {
-		return
+	if delta != "" {
+		s.finalTextBuilder.WriteString(delta)
+		s.finalTextAccumulated += delta
 	}
-	s.finalTextBuilder.WriteString(delta)
-	s.finalTextAccumulated += delta
+
+	endTurnDelta := deltaAgainstText(s.endTurnAccumulated, text)
+	if endTurnDelta != "" {
+		s.endTurnTextBuilder.WriteString(endTurnDelta)
+		s.endTurnAccumulated += endTurnDelta
+	}
+}
+
+func (s *gatewayEventSink) resetEndTurnText() {
+	s.endTurnTextBuilder.Reset()
+	s.endTurnAccumulated = ""
 }
 
 func deltaAgainstText(accumulated, chunk string) string {
@@ -498,7 +519,7 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 
 	finalText := sink.FinalText()
 	continuedText := ""
-	if sink.stopReason == "end_turn" && looksLikeIncompleteEndTurn(ParseSendProtocol(finalText, workspace.Path).VisibleText) {
+	if sink.stopReason == "end_turn" && looksLikeIncompleteEndTurn(ParseSendProtocol(sink.EndTurnText(), workspace.Path).VisibleText) {
 		beforeContinue := finalText
 		continueInput := chatInput
 		continueInput.Message = continueReplyPrompt

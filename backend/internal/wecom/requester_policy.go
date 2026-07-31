@@ -31,6 +31,7 @@ type requesterPolicyUser struct {
 
 type requesterPolicyScope struct {
 	ManageAreaIDs     []string `json:"manageAreaIds"`
+	DCManageAreaIDs   []string `json:"dcManageAreaIds"`
 	CategoryLevel1IDs []string `json:"categoryLevel1Ids"`
 }
 
@@ -126,6 +127,11 @@ func normalizeAndValidateRequesterPolicy(document *requesterPolicyDocument, expe
 			return err
 		}
 		user.Scope.ManageAreaIDs = manageAreaIDs
+		dcManageAreaIDs, err := normalizeScopeValues(user.Scope.DCManageAreaIDs, i, "dcManageAreaIds")
+		if err != nil {
+			return err
+		}
+		user.Scope.DCManageAreaIDs = dcManageAreaIDs
 		categoryLevel1IDs, err := normalizeScopeValues(user.Scope.CategoryLevel1IDs, i, "categoryLevel1Ids")
 		if err != nil {
 			return err
@@ -136,8 +142,8 @@ func normalizeAndValidateRequesterPolicy(document *requesterPolicyDocument, expe
 			if len(user.Capabilities) == 0 {
 				return fmt.Errorf("requester config enabled user %q must have at least one capability", user.UserID)
 			}
-			if len(user.Scope.ManageAreaIDs) == 0 {
-				return fmt.Errorf("requester config enabled user %q must have at least one manageAreaId", user.UserID)
+			if len(user.Scope.ManageAreaIDs) == 0 && len(user.Scope.DCManageAreaIDs) == 0 {
+				return fmt.Errorf("requester config enabled user %q must have at least one manageAreaId or dcManageAreaId", user.UserID)
 			}
 			if len(user.Scope.CategoryLevel1IDs) == 0 {
 				return fmt.Errorf("requester config enabled user %q must have at least one categoryLevel1Id", user.UserID)
@@ -152,6 +158,7 @@ func normalizeCapabilities(values []string, userIndex int) ([]string, error) {
 		requestercontext.CapabilityCASToken:        {},
 		requestercontext.CapabilityCMRQuery:        {},
 		requestercontext.CapabilityIndicatorsQuery: {},
+		requestercontext.CapabilityMetricQuery:     {},
 		requestercontext.CapabilitySQLSelect:       {},
 	}
 	result := make([]string, len(values))
@@ -190,6 +197,7 @@ func normalizeScopeValues(values []string, userIndex int, field string) ([]strin
 func cloneRequesterPolicyUser(user requesterPolicyUser) requesterPolicyUser {
 	user.Capabilities = append([]string(nil), user.Capabilities...)
 	user.Scope.ManageAreaIDs = append([]string(nil), user.Scope.ManageAreaIDs...)
+	user.Scope.DCManageAreaIDs = append([]string(nil), user.Scope.DCManageAreaIDs...)
 	user.Scope.CategoryLevel1IDs = append([]string(nil), user.Scope.CategoryLevel1IDs...)
 	return user
 }
@@ -222,6 +230,7 @@ func (p *RequesterPolicy) BuildContext(userID, requestID, chatID, chatType strin
 			Capabilities: append([]string(nil), user.Capabilities...),
 			Scope: requestercontext.Scope{
 				ManageAreaIDs:     append([]string(nil), user.Scope.ManageAreaIDs...),
+				DCManageAreaIDs:   append([]string(nil), user.Scope.DCManageAreaIDs...),
 				CategoryLevel1IDs: append([]string(nil), user.Scope.CategoryLevel1IDs...),
 			},
 		},

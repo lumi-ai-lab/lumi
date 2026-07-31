@@ -166,19 +166,41 @@ func LegacyPermissionMode(backend Backend, sessionMode string) string {
 }
 
 func SupportsACPSetMode(backend Backend) bool {
-	return backend == BackendClaude || backend == BackendQwen
+	return backend == BackendClaude || backend == BackendCodex || backend == BackendQwen
+}
+
+func ACPModeID(backend Backend, sessionMode string) string {
+	mode := strings.TrimSpace(sessionMode)
+	if mode == "" || mode == ModeDefault || !SupportsACPSetMode(backend) {
+		return ""
+	}
+
+	switch backend {
+	case BackendClaude:
+		// Claude's bypassPermissions mode requires the underlying Claude session
+		// to be launched with --dangerously-skip-permissions.
+		if mode == ClaudeModeBypassPermissions {
+			return ""
+		}
+		return mode
+	case BackendCodex:
+		switch mode {
+		case CodexModeYoloNoSandbox:
+			return "agent-full-access"
+		case CodexModeYolo, "auto":
+			return "agent"
+		default:
+			return ""
+		}
+	case BackendQwen:
+		return mode
+	default:
+		return ""
+	}
 }
 
 func ShouldSetACPMode(backend Backend, sessionMode string) bool {
-	mode := strings.TrimSpace(sessionMode)
-	if mode == "" || mode == ModeDefault || !SupportsACPSetMode(backend) {
-		return false
-	}
-
-	// Claude's bypassPermissions mode requires the underlying Claude session to
-	// be launched with --dangerously-skip-permissions. Lumi keeps this as a
-	// client-side auto-approval mode instead of sending session/set_mode.
-	return !(backend == BackendClaude && mode == ClaudeModeBypassPermissions)
+	return ACPModeID(backend, sessionMode) != ""
 }
 
 func IsAutoApproveMode(backend Backend, sessionMode string) bool {

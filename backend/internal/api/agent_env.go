@@ -5,18 +5,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/pengmide/lumi/internal/agentmode"
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/lumipaths"
+	"github.com/pengmide/lumi/internal/workspacecli"
 )
 
-func injectLumiAgentEnv(cfg *config.Config, agentID string, apiBase string, workspaceID string, workspacePath string) {
+func injectLumiAgentEnv(cfg *config.Config, agentID string, apiBase string, workspaceID string, workspacePath string) error {
 	if cfg == nil {
-		return
+		return nil
 	}
 	agent := cfg.FindAgent(agentID)
 	if agent == nil {
-		return
+		return nil
 	}
 	if agent.Env == nil {
 		agent.Env = make(map[string]string)
@@ -27,8 +31,30 @@ func injectLumiAgentEnv(cfg *config.Config, agentID string, apiBase string, work
 	if strings.TrimSpace(workspaceID) != "" {
 		agent.Env["LUMI_WORKSPACE_ID"] = strings.TrimSpace(workspaceID)
 	}
-	if strings.TrimSpace(workspacePath) != "" {
-		agent.Env["LUMI_WORKSPACE_PATH"] = strings.TrimSpace(workspacePath)
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath != "" {
+		agent.Env["LUMI_WORKSPACE_PATH"] = workspacePath
+	}
+	if previousMetricCLI := strings.TrimSpace(agent.Env[workspacecli.MetricCLIEnv]); previousMetricCLI != "" {
+		agent.Env["PATH"] = workspacecli.RemovePath(agent.Env["PATH"], filepath.Dir(previousMetricCLI))
+		delete(agent.Env, workspacecli.MetricCLIEnv)
+	}
+	metricCLI, metricCLIAvailable := workspacecli.MetricCLIPath(workspacePath)
+	metricBin := ""
+	if metricCLIAvailable {
+		agent.Env[workspacecli.MetricCLIEnv] = metricCLI
+		metricBin = filepath.Dir(metricCLI)
+		prependAgentPath(agent.Env, metricBin)
+	}
+	shell := strings.TrimSpace(agent.Env["SHELL"])
+	if shell == "" {
+		shell = os.Getenv("SHELL")
+	}
+	bridgeRoot := lumipaths.Path("runtime", "shell-env", strconv.Itoa(os.Getpid()))
+	if err := workspacecli.ConfigureZshStartupEnv(agent.Env, bridgeRoot, shell, metricBin); err != nil {
+		delete(agent.Env, workspacecli.MetricCLIEnv)
+		agent.Env["PATH"] = workspacecli.RemovePath(agent.Env["PATH"], metricBin)
+		return err
 	}
 	if strings.TrimSpace(agent.Env["LUMI_CLI"]) == "" {
 		if cliPath := resolveLumiCLIPath(); cliPath != "" {
@@ -42,6 +68,26 @@ func injectLumiAgentEnv(cfg *config.Config, agentID string, apiBase string, work
 			prependAgentPath(agent.Env, filepath.Dir(piPath))
 		}
 	}
+	return nil
+}
+
+func localAgentACPModeID(cfg *config.Config, agentID, requestedMode string) string {
+	if cfg == nil {
+		return ""
+	}
+	agent := cfg.FindAgent(agentID)
+	if agent == nil {
+		return ""
+	}
+	backend := agentmode.DetectBackend(agent.ID, agent.Command, agent.Args)
+	mode := strings.TrimSpace(requestedMode)
+	if backend == agentmode.BackendCodex {
+		configured := agentmode.ResolveSessionMode(backend, agent.SessionMode, agent.PermissionMode)
+		if configured != agentmode.ModeDefault {
+			mode = configured
+		}
+	}
+	return agentmode.ACPModeID(backend, mode)
 }
 
 func lumiAPIBaseForConfig(cfg *config.Config) string {

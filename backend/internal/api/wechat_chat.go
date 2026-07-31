@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/pengmide/lumi/internal/agent"
-	"github.com/pengmide/lumi/internal/agentmode"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/conversation"
 	lumicron "github.com/pengmide/lumi/internal/cron"
@@ -299,7 +298,15 @@ func (r *wechatChatRuntime) ensureInitialized(agentID string, workspaceID string
 	}); err != nil {
 		return err
 	}
-	injectLumiAgentEnv(r.config, agentID, lumiAPIBaseForWorkspace(r.config, workspaceID), workspaceID, workspacePath)
+	if err := injectLocalAgentRuntimeEnv(
+		r.config,
+		workspaceID,
+		agentID,
+		lumiAPIBaseForWorkspace(r.config, workspaceID),
+		workspacePath,
+	); err != nil {
+		return r.emitError(sink, err.Error())
+	}
 	if _, err := r.agents.Request(agentID, "initialize", map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{
@@ -362,10 +369,10 @@ func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, sink w
 	if sessionID == "" {
 		return "", false, r.emitError(sink, "session/new response missing sessionId")
 	}
-	if r.shouldSetSessionMode(input.AgentID, input.SessionModeOverride) {
+	if modeID := localAgentACPModeID(r.config, input.AgentID, input.SessionModeOverride); modeID != "" {
 		if _, err := r.agents.Request(input.AgentID, "session/set_mode", map[string]any{
 			"sessionId": sessionID,
-			"modeId":    input.SessionModeOverride,
+			"modeId":    modeID,
 		}); err != nil {
 			return "", false, r.emitError(sink, err.Error())
 		}
@@ -384,15 +391,6 @@ func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, sink w
 	}
 	r.mu.Unlock()
 	return sessionID, true, nil
-}
-
-func (r *wechatChatRuntime) shouldSetSessionMode(agentID string, sessionMode string) bool {
-	agentConfig := r.config.FindAgent(agentID)
-	if agentConfig == nil {
-		return false
-	}
-	backend := agentmode.DetectBackend(agentConfig.ID, agentConfig.Command, agentConfig.Args)
-	return agentmode.ShouldSetACPMode(backend, sessionMode)
 }
 
 func (r *wechatChatRuntime) finalizeAssistantStream(convID, agentID string, streamItems []streamItem, accumulator *streamAccumulator) {

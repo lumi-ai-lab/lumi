@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/pengmide/lumi/internal/agent"
@@ -122,12 +123,28 @@ func TestBuildLumiRuntimeEnv(t *testing.T) {
 	if err := os.WriteFile(cliPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	binDir := filepath.Join(workspace, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metricName := "qdm-metric-cli"
+	if runtime.GOOS == "windows" {
+		metricName += ".exe"
+	}
+	metricCLI := filepath.Join(binDir, metricName)
+	if err := os.WriteFile(metricCLI, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("LUMI_CLI", "")
+	t.Setenv("PATH", "/usr/bin:/bin")
 
-	env := buildLumiRuntimeEnv("http://host.docker.internal:3000", &ExecutorConfig{
+	env, err := buildLumiRuntimeEnv("http://host.docker.internal:3000", &ExecutorConfig{
 		WorkspaceID: "cli-sandbox-wecom-d9c429b4",
 		Workspace:   workspace,
-	})
+	}, map[string]string{"SHELL": "/bin/zsh", "ZDOTDIR": "/custom/zsh"})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if env["LUMI_API_BASE"] != "http://host.docker.internal:3000/api" {
 		t.Fatalf("LUMI_API_BASE = %q", env["LUMI_API_BASE"])
@@ -140,6 +157,19 @@ func TestBuildLumiRuntimeEnv(t *testing.T) {
 	}
 	if env["LUMI_CLI"] != cliPath {
 		t.Fatalf("LUMI_CLI = %q, want %q", env["LUMI_CLI"], cliPath)
+	}
+	if env["QDM_METRIC_CLI"] != metricCLI {
+		t.Fatalf("QDM_METRIC_CLI = %q, want %q", env["QDM_METRIC_CLI"], metricCLI)
+	}
+	parts := filepath.SplitList(env["PATH"])
+	if len(parts) == 0 || parts[0] != binDir {
+		t.Fatalf("PATH = %q, want first entry %q", env["PATH"], binDir)
+	}
+	if env["ZDOTDIR"] == "" || env["ZDOTDIR"] == "/custom/zsh" {
+		t.Fatalf("ZDOTDIR = %q, want managed bridge", env["ZDOTDIR"])
+	}
+	if env["LUMI_ORIGINAL_ZDOTDIR"] != "/custom/zsh" {
+		t.Fatalf("LUMI_ORIGINAL_ZDOTDIR = %q", env["LUMI_ORIGINAL_ZDOTDIR"])
 	}
 }
 
@@ -182,17 +212,27 @@ func TestMergeAgentEnvRuntimeOverridesLumiValues(t *testing.T) {
 		ID:      "claude",
 		Command: "codex",
 		Env: map[string]string{
-			"KEEP_ME":             "yes",
-			"LUMI_API_BASE":       "http://stale.test/api",
-			"LUMI_WORKSPACE_ID":   "stale",
-			"LUMI_WORKSPACE_PATH": "/host/workspace",
-			"LUMI_CLI":            "/host/lumi",
+			"KEEP_ME":               "yes",
+			"LUMI_API_BASE":         "http://stale.test/api",
+			"LUMI_WORKSPACE_ID":     "stale",
+			"LUMI_WORKSPACE_PATH":   "/host/workspace",
+			"LUMI_CLI":              "/host/lumi",
+			"QDM_METRIC_CLI":        "/host/workspace/bin/qdm-metric-cli",
+			"PATH":                  "/host/workspace/bin:/usr/bin",
+			"ZDOTDIR":               "/host/lumi-zdotdir",
+			"LUMI_MANAGED_ZDOTDIR":  "/host/lumi-zdotdir",
+			"LUMI_ORIGINAL_ZDOTDIR": "/host/custom-zsh",
 		},
 	}
 	merged := mergeAgentEnv(agentCfg, map[string]string{
-		"LUMI_API_BASE":       "http://host.docker.internal:3000/api",
-		"LUMI_WORKSPACE_ID":   "cli-sandbox-wecom-d9c429b4",
-		"LUMI_WORKSPACE_PATH": "/workspace",
+		"LUMI_API_BASE":         "http://host.docker.internal:3000/api",
+		"LUMI_WORKSPACE_ID":     "cli-sandbox-wecom-d9c429b4",
+		"LUMI_WORKSPACE_PATH":   "/workspace",
+		"QDM_METRIC_CLI":        "/workspace/bin/qdm-metric-cli",
+		"PATH":                  "/workspace/bin:/usr/bin",
+		"ZDOTDIR":               "/runtime/lumi-zdotdir",
+		"LUMI_MANAGED_ZDOTDIR":  "/runtime/lumi-zdotdir",
+		"LUMI_ORIGINAL_ZDOTDIR": "/runtime/custom-zsh",
 	})
 
 	if merged == agentCfg {
@@ -210,10 +250,45 @@ func TestMergeAgentEnvRuntimeOverridesLumiValues(t *testing.T) {
 	if merged.Env["LUMI_WORKSPACE_PATH"] != "/workspace" {
 		t.Fatalf("LUMI_WORKSPACE_PATH = %q", merged.Env["LUMI_WORKSPACE_PATH"])
 	}
+	if merged.Env["QDM_METRIC_CLI"] != "/workspace/bin/qdm-metric-cli" {
+		t.Fatalf("QDM_METRIC_CLI = %q", merged.Env["QDM_METRIC_CLI"])
+	}
+	if merged.Env["PATH"] != "/workspace/bin:/usr/bin" {
+		t.Fatalf("PATH = %q", merged.Env["PATH"])
+	}
+	if merged.Env["ZDOTDIR"] != "/runtime/lumi-zdotdir" {
+		t.Fatalf("ZDOTDIR = %q", merged.Env["ZDOTDIR"])
+	}
+	if merged.Env["LUMI_ORIGINAL_ZDOTDIR"] != "/runtime/custom-zsh" {
+		t.Fatalf("LUMI_ORIGINAL_ZDOTDIR = %q", merged.Env["LUMI_ORIGINAL_ZDOTDIR"])
+	}
 	if _, ok := merged.Env["LUMI_CLI"]; ok {
 		t.Fatalf("LUMI_CLI = %q, want stale value removed when runtime does not set it", merged.Env["LUMI_CLI"])
 	}
 	if agentCfg.Env["LUMI_WORKSPACE_PATH"] != "/host/workspace" {
+		t.Fatalf("original agent env mutated: %#v", agentCfg.Env)
+	}
+}
+
+func TestMergeAgentEnvRemovesStaleManagedZDOTDir(t *testing.T) {
+	agentCfg := &config.AgentConfig{Env: map[string]string{
+		"KEEP_ME":               "yes",
+		"ZDOTDIR":               "/host/lumi-zdotdir",
+		"LUMI_MANAGED_ZDOTDIR":  "/host/lumi-zdotdir",
+		"LUMI_ORIGINAL_ZDOTDIR": "",
+	}}
+
+	merged := mergeAgentEnv(agentCfg, map[string]string{"LUMI_WORKSPACE_ID": "workspace-1"})
+	if _, ok := merged.Env["ZDOTDIR"]; ok {
+		t.Fatalf("ZDOTDIR = %q, want stale managed value removed", merged.Env["ZDOTDIR"])
+	}
+	if _, ok := merged.Env["LUMI_MANAGED_ZDOTDIR"]; ok {
+		t.Fatal("LUMI_MANAGED_ZDOTDIR remains")
+	}
+	if merged.Env["KEEP_ME"] != "yes" {
+		t.Fatalf("KEEP_ME = %q", merged.Env["KEEP_ME"])
+	}
+	if agentCfg.Env["ZDOTDIR"] != "/host/lumi-zdotdir" {
 		t.Fatalf("original agent env mutated: %#v", agentCfg.Env)
 	}
 }

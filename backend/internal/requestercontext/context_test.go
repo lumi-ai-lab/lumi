@@ -26,10 +26,12 @@ func testContext() Context {
 				CapabilityCASToken,
 				CapabilityCMRQuery,
 				CapabilityIndicatorsQuery,
+				CapabilityMetricQuery,
 				CapabilitySQLSelect,
 			},
 			Scope: Scope{
 				ManageAreaIDs:     []string{"CN18"},
+				DCManageAreaIDs:   []string{"CN18"},
 				CategoryLevel1IDs: []string{"12", "13"},
 			},
 		},
@@ -60,7 +62,7 @@ func TestContextJSONContract(t *testing.T) {
 	}
 	authorization := got["authorization"].(map[string]any)
 	scope := authorization["scope"].(map[string]any)
-	for _, key := range []string{"manageAreaIds", "categoryLevel1Ids"} {
+	for _, key := range []string{"manageAreaIds", "dcManageAreaIds", "categoryLevel1Ids"} {
 		if _, ok := scope[key]; !ok {
 			t.Errorf("scope JSON missing %q", key)
 		}
@@ -68,8 +70,8 @@ func TestContextJSONContract(t *testing.T) {
 }
 
 func TestCapabilityValues(t *testing.T) {
-	got := []string{CapabilityCASToken, CapabilityCMRQuery, CapabilityIndicatorsQuery, CapabilitySQLSelect}
-	want := []string{"qdm.cas.token", "qdm.cmr.query", "qdm.indicators.query", "qdm.sql.select"}
+	got := []string{CapabilityCASToken, CapabilityCMRQuery, CapabilityIndicatorsQuery, CapabilityMetricQuery, CapabilitySQLSelect}
+	want := []string{"qdm.cas.token", "qdm.cmr.query", "qdm.indicators.query", "qdm.metric.query", "qdm.sql.select"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("capabilities = %#v, want %#v", got, want)
 	}

@@ -139,6 +139,7 @@ trim(body.from.userid) == canonicalUserId
       ],
       "scope": {
         "manageAreaIds": ["CN18"],
+        "dcManageAreaIds": ["CN18"],
         "categoryLevel1Ids": ["12", "13"]
       }
     }
@@ -172,7 +173,7 @@ LUMI_WECOM_REQUESTER_CONFIG=/absolute/path/wecom-requesters.json
 - 严格模式不回落到 `allowFrom`。
 - JSON 拒绝未知字段、错误版本、空或重复 UserID、未知 capability。
 - UserID 只做首尾空白清理，保留大小写并精确匹配。
-- 启用用户必须至少有一个 capability，且区域和一级品类范围都不能为空。
+- 启用用户必须至少有一个 capability，`manageAreaIds` 或 `dcManageAreaIds` 至少一个非空，并且 `categoryLevel1Ids` 非空。
 - 配置在 `Service.Start()` 建立 WebSocket 前加载为不可变快照；修改后必须重启，不做热加载。
 - 配置文件应位于 Harness workspace 外，且不会整体传入 Sandbox。
 
@@ -204,6 +205,7 @@ LUMI_WECOM_REQUESTER_CONFIG=/absolute/path/wecom-requesters.json
     ],
     "scope": {
       "manageAreaIds": ["CN18"],
+      "dcManageAreaIds": ["CN18"],
       "categoryLevel1Ids": ["12", "13"]
     }
   }

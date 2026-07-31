@@ -76,7 +76,7 @@ qdm.sql.select
 ```
 
 - UserID 首尾去空白后大小写敏感匹配；拒绝空值和重复值。
-- 启用用户必须至少有一个 capability，并配置非空 `manageAreaIds` 与 `categoryLevel1Ids`。
+- 启用用户必须至少有一个 capability，至少配置一个 `manageAreaIds` 或 `dcManageAreaIds`，并配置非空 `categoryLevel1Ids`。
 - 运行时授权快照只在 `Service.Start()` 加载；保存配置、状态检查和连接测试会单独校验文件，但不会热更新正在运行的快照。修改后重启生效。
 - 权限文件应位于 Harness workspace 外；Sandbox 只接收本轮上下文，不接收完整配置。
 
@@ -161,6 +161,7 @@ authorization
   capabilities           = 权限配置
   scope
     manageAreaIds
+    dcManageAreaIds
     categoryLevel1Ids
 ```
 

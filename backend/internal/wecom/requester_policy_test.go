@@ -21,9 +21,10 @@ func TestLoadRequesterPolicyBuildsImmutableContexts(t *testing.T) {
       "userId": " user-demo-001 ",
       "displayName": " 张三 ",
       "enabled": true,
-      "capabilities": [" qdm.cmr.query ", "qdm.sql.select"],
+      "capabilities": [" qdm.cmr.query ", "qdm.metric.query", "qdm.sql.select"],
       "scope": {
         "manageAreaIds": [" CN18 "],
+        "dcManageAreaIds": [" CN18 ", "CN20"],
         "categoryLevel1Ids": [" 12 ", "13"]
       }
     },
@@ -32,7 +33,7 @@ func TestLoadRequesterPolicyBuildsImmutableContexts(t *testing.T) {
       "displayName": "Disabled",
       "enabled": false,
       "capabilities": [],
-      "scope": {"manageAreaIds": [], "categoryLevel1Ids": []}
+      "scope": {"manageAreaIds": [], "dcManageAreaIds": [], "categoryLevel1Ids": []}
     }
   ]
 }`
@@ -67,16 +68,17 @@ func TestLoadRequesterPolicyBuildsImmutableContexts(t *testing.T) {
 	if ctx.Audience.ChatID != "chat-1" || ctx.Audience.ChatType != "group" {
 		t.Fatalf("context audience = %+v", ctx.Audience)
 	}
-	if strings.Join(ctx.Authorization.Capabilities, ",") != "qdm.cmr.query,qdm.sql.select" ||
+	if strings.Join(ctx.Authorization.Capabilities, ",") != "qdm.cmr.query,qdm.metric.query,qdm.sql.select" ||
 		strings.Join(ctx.Authorization.Scope.ManageAreaIDs, ",") != "CN18" ||
+		strings.Join(ctx.Authorization.Scope.DCManageAreaIDs, ",") != "CN18,CN20" ||
 		strings.Join(ctx.Authorization.Scope.CategoryLevel1IDs, ",") != "12,13" {
 		t.Fatalf("context authorization = %+v", ctx.Authorization)
 	}
 
 	ctx.Authorization.Capabilities[0] = "mutated"
-	ctx.Authorization.Scope.ManageAreaIDs[0] = "mutated"
+	ctx.Authorization.Scope.DCManageAreaIDs[0] = "mutated"
 	again, ok := policy.BuildContext("user-demo-001", "msg-2", "chat-1", "group")
-	if !ok || again.Authorization.Capabilities[0] != "qdm.cmr.query" || again.Authorization.Scope.ManageAreaIDs[0] != "CN18" {
+	if !ok || again.Authorization.Capabilities[0] != "qdm.cmr.query" || again.Authorization.Scope.DCManageAreaIDs[0] != "CN18" {
 		t.Fatalf("policy snapshot was mutated: %+v", again)
 	}
 	if _, ok := policy.BuildContext("USER-DEMO-001", "", "", ""); ok {
@@ -95,20 +97,20 @@ func TestLoadRequesterPolicyRejectsInvalidDocuments(t *testing.T) {
 		want string
 	}{
 		{name: "unknown top-level field", raw: `{"version":1,"botId":"bot-1","users":[],"extra":true}`, bot: "bot-1", want: "unknown field"},
-		{name: "unknown nested field", raw: `{"version":1,"botId":"bot-1","users":[{"userId":"u1","displayName":"U","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"categoryLevel1Ids":[],"extra":true}}]}`, bot: "bot-1", want: "unknown field"},
+		{name: "unknown nested field", raw: `{"version":1,"botId":"bot-1","users":[{"userId":"u1","displayName":"U","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"dcManageAreaIds":[],"categoryLevel1Ids":[],"extra":true}}]}`, bot: "bot-1", want: "unknown field"},
 		{name: "multiple values", raw: `{"version":1,"botId":"bot-1","users":[]} {}`, bot: "bot-1", want: "multiple JSON values"},
 		{name: "wrong version", raw: `{"version":2,"botId":"bot-1","users":[]}`, bot: "bot-1", want: "version must be 1"},
 		{name: "empty bot", raw: `{"version":1,"botId":" ","users":[]}`, want: "botId is required"},
 		{name: "bot mismatch", raw: `{"version":1,"botId":"bot-2","users":[]}`, bot: "bot-1", want: "does not match"},
-		{name: "empty user", raw: `{"version":1,"botId":"bot-1","users":[{"userId":" ","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"categoryLevel1Ids":[]}}]}`, bot: "bot-1", want: "userId is required"},
-		{name: "duplicate user after trim", raw: `{"version":1,"botId":"bot-1","users":[{"userId":"u1","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"categoryLevel1Ids":[]}},{"userId":" u1 ","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"categoryLevel1Ids":[]}}]}`, bot: "bot-1", want: "duplicate userId"},
-		{name: "unknown capability", raw: enabledRequesterPolicyJSON(`["qdm.unknown"]`, `["CN18"]`, `["12"]`), bot: "bot-1", want: "unknown capability"},
-		{name: "duplicate capability after trim", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"," qdm.cmr.query "]`, `["CN18"]`, `["12"]`), bot: "bot-1", want: "duplicate capability"},
-		{name: "enabled without capabilities", raw: enabledRequesterPolicyJSON(`[]`, `["CN18"]`, `["12"]`), bot: "bot-1", want: "at least one capability"},
-		{name: "enabled without manage areas", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `[]`, `["12"]`), bot: "bot-1", want: "at least one manageAreaId"},
-		{name: "enabled without categories", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"]`, `[]`), bot: "bot-1", want: "at least one categoryLevel1Id"},
-		{name: "empty scope value", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `[" "]`, `["12"]`), bot: "bot-1", want: "must not be empty"},
-		{name: "duplicate scope value after trim", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"," CN18 "]`, `["12"]`), bot: "bot-1", want: "duplicate value"},
+		{name: "empty user", raw: `{"version":1,"botId":"bot-1","users":[{"userId":" ","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"dcManageAreaIds":[],"categoryLevel1Ids":[]}}]}`, bot: "bot-1", want: "userId is required"},
+		{name: "duplicate user after trim", raw: `{"version":1,"botId":"bot-1","users":[{"userId":"u1","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"dcManageAreaIds":[],"categoryLevel1Ids":[]}},{"userId":" u1 ","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"dcManageAreaIds":[],"categoryLevel1Ids":[]}}]}`, bot: "bot-1", want: "duplicate userId"},
+		{name: "unknown capability", raw: enabledRequesterPolicyJSON(`["qdm.unknown"]`, `["CN18"]`, `[]`, `["12"]`), bot: "bot-1", want: "unknown capability"},
+		{name: "duplicate capability after trim", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"," qdm.cmr.query "]`, `["CN18"]`, `[]`, `["12"]`), bot: "bot-1", want: "duplicate capability"},
+		{name: "enabled without capabilities", raw: enabledRequesterPolicyJSON(`[]`, `["CN18"]`, `[]`, `["12"]`), bot: "bot-1", want: "at least one capability"},
+		{name: "enabled without manage areas", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `[]`, `[]`, `["12"]`), bot: "bot-1", want: "at least one manageAreaId or dcManageAreaId"},
+		{name: "enabled without categories", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"]`, `[]`, `[]`), bot: "bot-1", want: "at least one categoryLevel1Id"},
+		{name: "empty scope value", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `[" "]`, `[]`, `["12"]`), bot: "bot-1", want: "must not be empty"},
+		{name: "duplicate scope value after trim", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"," CN18 "]`, `[]`, `["12"]`), bot: "bot-1", want: "duplicate value"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -122,7 +124,7 @@ func TestLoadRequesterPolicyRejectsInvalidDocuments(t *testing.T) {
 
 func TestServiceValidatesRequesterPolicyForSaveAndRuntime(t *testing.T) {
 	service := newTestService(t, dummyRunner{})
-	validPath := writeRequesterPolicyFile(t, enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"]`, `["12"]`))
+	validPath := writeRequesterPolicyFile(t, enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"]`, `[]`, `["12"]`))
 	cfg := Config{
 		Mode:                "websocket",
 		BotID:               "bot-1",
@@ -152,8 +154,8 @@ func TestServiceValidatesRequesterPolicyForSaveAndRuntime(t *testing.T) {
 	}
 }
 
-func enabledRequesterPolicyJSON(capabilities, manageAreas, categories string) string {
-	return `{"version":1,"botId":"bot-1","users":[{"userId":"u1","displayName":"U1","enabled":true,"capabilities":` + capabilities + `,"scope":{"manageAreaIds":` + manageAreas + `,"categoryLevel1Ids":` + categories + `}}]}`
+func enabledRequesterPolicyJSON(capabilities, manageAreas, dcManageAreas, categories string) string {
+	return `{"version":1,"botId":"bot-1","users":[{"userId":"u1","displayName":"U1","enabled":true,"capabilities":` + capabilities + `,"scope":{"manageAreaIds":` + manageAreas + `,"dcManageAreaIds":` + dcManageAreas + `,"categoryLevel1Ids":` + categories + `}}]}`
 }
 
 func writeRequesterPolicyFile(t *testing.T, raw string) string {

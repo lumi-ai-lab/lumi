@@ -216,7 +216,7 @@ func TestPrepareRunValidatesAndSavesAbsoluteRequesterConfigPath(t *testing.T) {
 	state.HasAgents = true
 
 	policyPath := filepath.Join(t.TempDir(), "requesters.json")
-	policy := `{"version":1,"botId":"bot-123","users":[{"userId":"u1","displayName":"U1","enabled":true,"capabilities":["qdm.cmr.query"],"scope":{"manageAreaIds":["CN18"],"categoryLevel1Ids":["12"]}}]}`
+	policy := `{"version":1,"botId":"bot-123","users":[{"userId":"u1","displayName":"U1","enabled":true,"capabilities":["qdm.cmr.query"],"scope":{"manageAreaIds":["CN18"],"dcManageAreaIds":["CN18"],"categoryLevel1Ids":["12"]}}]}`
 	if err := os.WriteFile(policyPath, []byte(policy), 0o600); err != nil {
 		t.Fatalf("WriteFile(policy) error = %v", err)
 	}

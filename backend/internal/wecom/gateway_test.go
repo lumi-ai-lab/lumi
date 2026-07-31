@@ -597,6 +597,138 @@ func TestGatewayEndTurnCompleteReplyDoesNotContinue(t *testing.T) {
 	}
 }
 
+func TestGatewayEndTurnCompleteReplyAfterToolDoesNotContinueForEarlierIncompleteMarkdown(t *testing.T) {
+	const completeReply = `## 查询结果
+
+**粤西区在 2026 年 7 月 30 日的销售额为：` + "`13,228,167.07`" + `。**
+
+查询口径：
+
+- 指标：销售额（` + "`saleAmt`" + `）
+- 日期：` + "`2026-07-30`" + `
+- 聚合维度：业务日期（` + "`bizDate`" + `）
+- 统计口径：系统默认口径，即汇总（` + "`SUMMARY`" + `）
+- 过滤条件：管理区域（` + "`manageAreaId`" + `）=` + "`CN01`" + `
+- 区域名称：“粤西区”
+- 未进行估算、求和、转换或基于其他数据推算
+
+## CLI 执行证据
+
+### 1. 确认“粤西区”的维度值
+
+实际执行的命令：
+
+` + "```bash" + `
+qdm-metric-cli dim values --code manageAreaId --keyword '粤西区'
+` + "```" + `
+
+标准输出：
+
+` + "```json" + `
+[
+  {
+    "dimFieldId": "CN01",
+    "dimFieldValue": "粤西区"
+  }
+]
+` + "```" + `
+
+标准错误：
+
+` + "```text" + `
+（空）
+` + "```" + `
+
+退出状态：
+
+` + "```text" + `
+0
+` + "```" + `
+
+### 2. 查询销售额
+
+实际执行的命令：
+
+` + "```bash" + `
+qdm-metric-cli analysis execute --start-date 2026-07-30 --end-date 2026-07-30 --metric saleAmt --agg-dim bizDate --statistic-policy SUMMARY --filter manageAreaId=CN01
+` + "```" + `
+
+标准输出：
+
+` + "```json" + `
+[
+  {
+    "bizDate": "2026-07-30",
+    "saleAmt": 13228167.07
+  }
+]
+` + "```" + `
+
+标准错误：
+
+` + "```text" + `
+（空）
+` + "```" + `
+
+退出状态：
+
+` + "```text" + `
+0
+` + "```" + `
+
+以上指标数值直接来自公开的 ` + "`qdm-metric-cli`" + `。未使用 ` + "`qdm-cmr-cli`" + `、` + "`qdm-sql-cli`" + `、` + "`cas-cli`" + ` 或私有 Metric CLI。`
+
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if input.Message == continueReplyPrompt {
+				t.Fatalf("unexpected continuation run")
+			}
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "正在准备证据：**"},
+				},
+			}}); err != nil {
+				return err
+			}
+			if err := sink.Emit(ChatEvent{Name: "tool_call", Data: map[string]any{
+				"toolName": "Bash",
+				"status":   "completed",
+			}}); err != nil {
+				return err
+			}
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": completeReply},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-end-turn-complete-after-tool-no-continue",
+		ReplyContext:    replyContext{ReqID: "req-end-turn", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 1 {
+		t.Fatalf("runner inputs = %d, want one", len(runner.inputs))
+	}
+	if !strings.Contains(strings.Join(sender.replies, "\n"), "13,228,167.07") {
+		t.Fatalf("replies missing business result: %v", sender.replies)
+	}
+}
+
 func TestGatewayIncompleteContinuationFailureAddsNotice(t *testing.T) {
 	runner := &scriptedRunner{
 		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {

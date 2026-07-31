@@ -204,7 +204,7 @@ func TestHandleSaveConfigKeepsAndClearsSecret(t *testing.T) {
 
 func TestHandleSaveConfigKeepsAndClearsRequesterConfigPath(t *testing.T) {
 	service := newTestService(t, dummyRunner{})
-	policyPath := writeRequesterPolicyFile(t, enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"]`, `["12"]`))
+	policyPath := writeRequesterPolicyFile(t, enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"]`, `[]`, `["12"]`))
 	if err := service.configStore.Save(Config{
 		Mode:                "websocket",
 		BotID:               "bot-1",

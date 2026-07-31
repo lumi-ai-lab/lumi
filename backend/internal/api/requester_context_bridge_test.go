@@ -4,9 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/pengmide/lumi/internal/agentmode"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/requestercontext"
 	"github.com/pengmide/lumi/internal/wecom"
@@ -38,7 +39,7 @@ func TestLocalRequesterContextBridgeDirMatchesInjectedAgentEnv(t *testing.T) {
 	if got != bridge.Dir() {
 		t.Fatalf("agent %s = %q, bridge.Dir() = %q", requestercontext.EnvRequesterContextDir, got, bridge.Dir())
 	}
-	want := filepath.Join(lumiHome, "runtime", "requester-context", strconv.Itoa(os.Getpid()), localRequesterContextDirectoryScope, "claude")
+	want := filepath.Join(lumiHome, "runtime", "requester-context", localRequesterContextDirectoryScope, "claude")
 	if bridge.Dir() != want {
 		t.Fatalf("bridge.Dir() = %q, want %q", bridge.Dir(), want)
 	}
@@ -86,6 +87,49 @@ func TestInjectLocalRequesterContextEnvInitializesEnvAndRejectsInvalidTargets(t 
 				t.Fatal("injectLocalRequesterContextEnv() error = nil")
 			}
 		})
+	}
+}
+
+func TestInjectLocalAgentRuntimeEnvIncludesRequesterAndLumiContext(t *testing.T) {
+	t.Setenv("LUMI_HOME", t.TempDir())
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	cfg := &config.Config{Agents: []config.AgentConfig{{
+		ID:          "codex",
+		Command:     "npx",
+		Args:        []string{"-y", "@agentclientprotocol/codex-acp@1.1.7"},
+		SessionMode: agentmode.CodexModeYoloNoSandbox,
+	}}}
+	if err := injectLocalAgentRuntimeEnv(
+		cfg,
+		"workspace-1",
+		"codex",
+		"http://example.test/api",
+		"/workspace",
+	); err != nil {
+		t.Fatalf("injectLocalAgentRuntimeEnv() error = %v", err)
+	}
+
+	agent := cfg.FindAgent("codex")
+	if got := agent.Env[requestercontext.EnvRequesterContextDir]; got == "" {
+		t.Fatalf("%s was not initialized", requestercontext.EnvRequesterContextDir)
+	}
+	if got := agent.Env["LUMI_API_BASE"]; got != "http://example.test/api" {
+		t.Fatalf("LUMI_API_BASE = %q", got)
+	}
+	if got := agent.Env["LUMI_WORKSPACE_ID"]; got != "workspace-1" {
+		t.Fatalf("LUMI_WORKSPACE_ID = %q", got)
+	}
+	if got := agent.Env["LUMI_WORKSPACE_PATH"]; got != "/workspace" {
+		t.Fatalf("LUMI_WORKSPACE_PATH = %q", got)
+	}
+	codexConfig, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("ReadFile(Codex config) error = %v", err)
+	}
+	if !strings.Contains(string(codexConfig), `sandbox_mode = "danger-full-access"`) {
+		t.Fatalf("Codex config did not prepare no-sandbox mode: %q", codexConfig)
 	}
 }
 

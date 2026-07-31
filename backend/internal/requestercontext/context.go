@@ -13,6 +13,7 @@ const (
 	CapabilityCASToken        = "qdm.cas.token"
 	CapabilityCMRQuery        = "qdm.cmr.query"
 	CapabilityIndicatorsQuery = "qdm.indicators.query"
+	CapabilityMetricQuery     = "qdm.metric.query"
 	CapabilitySQLSelect       = "qdm.sql.select"
 )
 
@@ -50,6 +51,7 @@ type Authorization struct {
 // Scope contains the business-data dimensions allowed for the requester.
 type Scope struct {
 	ManageAreaIDs     []string `json:"manageAreaIds"`
+	DCManageAreaIDs   []string `json:"dcManageAreaIds"`
 	CategoryLevel1IDs []string `json:"categoryLevel1Ids"`
 }
 

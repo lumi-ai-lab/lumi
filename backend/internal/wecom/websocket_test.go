@@ -200,6 +200,7 @@ func TestHandleMsgCallbackAuthorizedRequesterPropagatesContext(t *testing.T) {
 	}
 	if strings.Join(requester.Authorization.Capabilities, ",") != "qdm.cmr.query,qdm.sql.select" ||
 		strings.Join(requester.Authorization.Scope.ManageAreaIDs, ",") != "CN18" ||
+		strings.Join(requester.Authorization.Scope.DCManageAreaIDs, ",") != "CN18" ||
 		strings.Join(requester.Authorization.Scope.CategoryLevel1IDs, ",") != "12,13" {
 		t.Fatalf("requester authorization = %+v", requester.Authorization)
 	}
@@ -238,10 +239,10 @@ func TestHandleMsgCallbackKeepsRequesterScopesSeparateAcrossUsers(t *testing.T) 
 	if u1 == nil || u2 == nil {
 		t.Fatalf("captured requester users = %v, want u1 and u2", byUser)
 	}
-	if u1.RequestID != "msg-u1" || strings.Join(u1.Authorization.Scope.ManageAreaIDs, ",") != "CN18" {
+	if u1.RequestID != "msg-u1" || strings.Join(u1.Authorization.Scope.ManageAreaIDs, ",") != "CN18" || strings.Join(u1.Authorization.Scope.DCManageAreaIDs, ",") != "CN18" {
 		t.Fatalf("u1 requester context = %+v", u1)
 	}
-	if u2.RequestID != "msg-u2" || strings.Join(u2.Authorization.Scope.ManageAreaIDs, ",") != "CN99" {
+	if u2.RequestID != "msg-u2" || strings.Join(u2.Authorization.Scope.ManageAreaIDs, ",") != "CN99" || strings.Join(u2.Authorization.Scope.DCManageAreaIDs, ",") != "CN99" {
 		t.Fatalf("u2 requester context = %+v", u2)
 	}
 	if byUser["u1"].ConversationID == byUser["u2"].ConversationID {
@@ -742,21 +743,21 @@ func loadWebSocketRequesterPolicyForTest(t *testing.T) *RequesterPolicy {
       "displayName": "U1",
       "enabled": true,
       "capabilities": ["qdm.cmr.query", "qdm.sql.select"],
-      "scope": {"manageAreaIds": ["CN18"], "categoryLevel1Ids": ["12", "13"]}
+      "scope": {"manageAreaIds":["CN18"],"dcManageAreaIds":["CN18"],"categoryLevel1Ids":["12", "13"]}
     },
     {
       "userId": "disabled-user",
       "displayName": "Disabled",
       "enabled": false,
       "capabilities": [],
-      "scope": {"manageAreaIds": [], "categoryLevel1Ids": []}
+      "scope": {"manageAreaIds":[],"dcManageAreaIds":[],"categoryLevel1Ids":[]}
     },
     {
       "userId": "u2",
       "displayName": "U2",
       "enabled": true,
       "capabilities": ["qdm.indicators.query"],
-      "scope": {"manageAreaIds": ["CN99"], "categoryLevel1Ids": ["88"]}
+      "scope": {"manageAreaIds":["CN99"],"dcManageAreaIds":["CN99"],"categoryLevel1Ids":["88"]}
     }
   ]
 }`

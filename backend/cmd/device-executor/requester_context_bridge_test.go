@@ -190,6 +190,7 @@ func bridgeTestRequesterContext() requestercontext.Context {
 			Capabilities: []string{requestercontext.CapabilityCMRQuery},
 			Scope: requestercontext.Scope{
 				ManageAreaIDs:     []string{"CN18"},
+				DCManageAreaIDs:   []string{"CN18"},
 				CategoryLevel1IDs: []string{"12"},
 			},
 		},
