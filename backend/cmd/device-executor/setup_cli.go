@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pengmide/lumi/internal/acppatch"
+	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/setupcheck"
 )
 
 const bootstrapManifestPath = "/lumi/runtime/bootstrap.json"
-const bootstrapManifestVersion = 1
+const bootstrapManifestVersion = 2
 
 var bootstrapManifestFile = bootstrapManifestPath
 
@@ -25,7 +25,7 @@ var agentNpmPackages = map[string]string{
 	"claude": "@anthropic-ai/claude-code",
 	"codex":  "@openai/codex",
 	"qwen":   "@qwen-code/qwen-code",
-	"pi":     "@earendil-works/pi-coding-agent@0.78.0",
+	"pi":     config.PiCodingAgentPackageSpec,
 }
 
 type bootstrapManifest struct {
@@ -111,14 +111,6 @@ func installSetupDependencies(status setupcheck.SetupStatus) error {
 		}
 		seen[item.Package] = struct{}{}
 		fmt.Printf("Installing ACP dependency: %s (package: %s)\n", firstNonEmpty(item.Name, item.Package), item.Package)
-		if acppatch.IsTargetPiACP(item.Package) {
-			if _, err := acppatch.InstallAndPatch(acppatch.RuntimeOptions{Log: func(message string) {
-				fmt.Printf("  %s\n", message)
-			}}); err != nil {
-				return err
-			}
-			continue
-		}
 		if err := npmInstallGlobal(item.Package); err != nil {
 			return err
 		}
@@ -167,11 +159,7 @@ func setupSignature(status setupcheck.SetupStatus) string {
 		values = append(values, "agent:"+item.Name+":"+item.Command+":"+item.Package)
 	}
 	for _, item := range status.ACPPackages {
-		patchID := ""
-		if acppatch.IsTargetPiACP(item.Package) {
-			patchID = acppatch.PiACPMultiSessionID
-		}
-		values = append(values, "acp:"+item.Name+":"+item.Command+":"+item.Package+":"+patchID)
+		values = append(values, "acp:"+item.Name+":"+item.Command+":"+item.Package)
 	}
 	sum := sha256.Sum256([]byte(strings.Join(values, "\n")))
 	return hex.EncodeToString(sum[:])

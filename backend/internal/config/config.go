@@ -7,12 +7,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
 //go:embed lumi.config.example.json
 var exampleConfigData []byte
+
+const (
+	PiACPPackageSpec            = "pi-acp@0.0.33"
+	PiCodingAgentPackageSpec    = "@earendil-works/pi-coding-agent@0.83.0"
+	PiCodingAgentMinimumVersion = "0.80.4"
+	LegacyPiACPPackageSpec      = "pi-acp@0.0.27"
+)
 
 // WorkspaceConfig defines a workspace
 type WorkspaceConfig struct {
@@ -56,6 +64,7 @@ type Config struct {
 	DefaultWorkspace string            `json:"defaultWorkspace,omitempty"`
 
 	builtInDefaultsChanged bool
+	legacyPiACPMigrated    bool
 }
 
 // rawConfig supports legacy field names
@@ -193,7 +202,7 @@ func DefaultConfig() *Config {
 				ID:      "pi",
 				Name:    "PI",
 				Command: "npx",
-				Args:    []string{"-y", "pi-acp@0.0.27"},
+				Args:    []string{"-y", PiACPPackageSpec},
 			},
 		},
 		DefaultAgent: "claude",
@@ -219,8 +228,11 @@ func (c *Config) EnsureBuiltInDefaults() bool {
 		c.Agents = append(c.Agents, defaultQwenAgent())
 		changed = true
 	}
-	if c.FindAgent("pi") == nil {
+	if pi := c.FindAgent("pi"); pi == nil {
 		c.Agents = append(c.Agents, defaultPiAgent())
+		changed = true
+	} else if MigrateLegacyBuiltInPiAgent(pi) {
+		c.legacyPiACPMigrated = true
 		changed = true
 	}
 	if c.Routing == nil {
@@ -242,6 +254,14 @@ func (c *Config) EnsureBuiltInDefaults() bool {
 	return changed
 }
 
+// LegacyPiACPConfigMigrated reports whether loading the config replaced the
+// exact legacy built-in pi-acp package spec. It is intentionally narrower than
+// BuiltInDefaultsChanged so callers persist only this required version
+// migration, not unrelated in-memory default additions.
+func (c *Config) LegacyPiACPConfigMigrated() bool {
+	return c != nil && c.legacyPiACPMigrated
+}
+
 func defaultQwenAgent() AgentConfig {
 	return AgentConfig{
 		ID:          "qwen",
@@ -257,9 +277,23 @@ func defaultPiAgent() AgentConfig {
 		ID:          "pi",
 		Name:        "PI",
 		Command:     "npx",
-		Args:        []string{"-y", "pi-acp@0.0.27"},
+		Args:        []string{"-y", PiACPPackageSpec},
 		SessionMode: "default",
 	}
+}
+
+// MigrateLegacyBuiltInPiAgent upgrades only the exact PI command that Lumi
+// previously generated. Custom commands, arguments, registries, and versions
+// are left untouched.
+func MigrateLegacyBuiltInPiAgent(agent *AgentConfig) bool {
+	if agent == nil || agent.ID != "pi" || agent.Command != "npx" {
+		return false
+	}
+	if !slices.Equal(agent.Args, []string{"-y", LegacyPiACPPackageSpec}) {
+		return false
+	}
+	agent.Args = []string{"-y", PiACPPackageSpec}
+	return true
 }
 
 // Validate validates the configuration

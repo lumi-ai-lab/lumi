@@ -1,6 +1,9 @@
 package setupcheck
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/pengmide/lumi/internal/config"
@@ -43,15 +46,15 @@ func TestInitialStatusIncludesPiACPAndCLI(t *testing.T) {
 			ID:      "pi",
 			Name:    "PI",
 			Command: "npx",
-			Args:    []string{"-y", "pi-acp@0.0.27"},
+			Args:    []string{"-y", config.PiACPPackageSpec},
 		},
 	})
 
 	if len(status.ACPPackages) != 1 {
 		t.Fatalf("len(ACPPackages) = %d, want 1", len(status.ACPPackages))
 	}
-	if got := status.ACPPackages[0].Package; got != "pi-acp@0.0.27" {
-		t.Fatalf("PI ACP package = %q, want pi-acp@0.0.27", got)
+	if got := status.ACPPackages[0].Package; got != config.PiACPPackageSpec {
+		t.Fatalf("PI ACP package = %q, want %s", got, config.PiACPPackageSpec)
 	}
 	if len(status.Agents) != 1 {
 		t.Fatalf("len(Agents) = %d, want 1", len(status.Agents))
@@ -59,8 +62,48 @@ func TestInitialStatusIncludesPiACPAndCLI(t *testing.T) {
 	if got := status.Agents[0].Command; got != "pi" {
 		t.Fatalf("PI command = %q, want pi", got)
 	}
-	if got := installInstructions["pi"]; got != "npm install -g @earendil-works/pi-coding-agent@0.78.0" {
+	if got := status.Agents[0].Package; got != config.PiCodingAgentPackageSpec {
+		t.Fatalf("PI package = %q, want %s", got, config.PiCodingAgentPackageSpec)
+	}
+	if got := installInstructions["pi"]; got != "npm install -g "+config.PiCodingAgentPackageSpec {
 		t.Fatalf("pi install instruction = %q", got)
+	}
+}
+
+func TestCommandSatisfiesSemver(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX test executable")
+	}
+
+	binDir := t.TempDir()
+	command := filepath.Join(binDir, "fake-version")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\necho 'pi 0.80.3'\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if commandSatisfiesSemver(command, config.PiCodingAgentMinimumVersion) {
+		t.Fatal("0.80.3 unexpectedly satisfied PI minimum")
+	}
+	if err := os.WriteFile(command, []byte("#!/bin/sh\necho 'pi 0.83.0'\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if !commandSatisfiesSemver(command, config.PiCodingAgentMinimumVersion) {
+		t.Fatal("0.83.0 did not satisfy PI minimum")
+	}
+}
+
+func TestPinnedPackageCacheRequiresExactVersion(t *testing.T) {
+	t.Parallel()
+
+	oldListing := []byte(`{"dependencies":{"pi-acp":{"version":"0.0.27"}}}`)
+	newListing := []byte(`{"dependencies":{"pi-acp":{"version":"0.0.33"}}}`)
+	if installedPackageVersion(oldListing, "pi-acp", "0.0.33") {
+		t.Fatal("old pi-acp version matched pinned cache requirement")
+	}
+	if !installedPackageVersion(newListing, "pi-acp", "0.0.33") {
+		t.Fatal("current pi-acp version did not match pinned cache requirement")
+	}
+	if got := exactPackageVersion("@scope/agent@1.2.3"); got != "1.2.3" {
+		t.Fatalf("exactPackageVersion(scoped) = %q, want 1.2.3", got)
 	}
 }
 

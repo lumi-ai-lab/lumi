@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pengmide/lumi/internal/acppatch"
+	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/sysutil"
 )
 
@@ -35,7 +35,7 @@ var agentNpmPackages = map[string]string{
 	"claude": "@anthropic-ai/claude-code",
 	"codex":  "@openai/codex",
 	"qwen":   "@qwen-code/qwen-code",
-	"pi":     "@earendil-works/pi-coding-agent@0.78.0",
+	"pi":     config.PiCodingAgentPackageSpec,
 }
 
 var npmRegistries = []struct {
@@ -152,10 +152,6 @@ func environmentReady(items []DependencyItem) bool {
 }
 
 func installPackageWithProgress(packageName string, logFn InstallLogger) error {
-	if acppatch.IsTargetPiACP(packageName) {
-		return installPiACPWithPatch(logFn)
-	}
-
 	registry := selectFastestRegistry()
 
 	cmdStr := fmt.Sprintf("npx -y --registry=%s %s --help", registry, packageName)
@@ -188,29 +184,6 @@ func installPackageWithProgress(packageName string, logFn InstallLogger) error {
 
 	log.Printf("[Setup] Successfully installed %s", packageName)
 	logFn("Installation completed")
-	return nil
-}
-
-func installPiACPWithPatch(logFn InstallLogger) error {
-	registry := selectFastestRegistry()
-	log.Printf("[Setup] Installing patched Lumi runtime package: %s", acppatch.PiACPPackageSpec)
-	status, err := acppatch.InstallAndPatch(acppatch.RuntimeOptions{
-		Registry: registry,
-		Log: func(message string) {
-			log.Printf("[Setup]   %s", message)
-			if logFn != nil {
-				logFn(message)
-			}
-		},
-	})
-	if err != nil {
-		log.Printf("[Setup] Failed to install patched %s: %v", acppatch.PiACPPackageSpec, err)
-		return err
-	}
-	log.Printf("[Setup] %s", status.Message)
-	if logFn != nil {
-		logFn(status.Message)
-	}
 	return nil
 }
 

@@ -37,10 +37,20 @@ func (c *Config) Save(configPath string) error {
 	// Merge agents
 	mergedAgents := c.mergeAgents(existing)
 
-	output := map[string]any{
-		"agents":       mergedAgents,
-		"defaultAgent": c.DefaultAgent,
+	// Preserve extension fields that Lumi does not understand while replacing
+	// all known (including legacy alias) fields with the normalized values.
+	output := make(map[string]any, len(existing)+2)
+	for key, value := range existing {
+		output[key] = value
 	}
+	for _, key := range []string{
+		"agents", "backends", "defaultAgent", "defaultBackend",
+		"publicServerURL", "routing", "workspaces", "defaultWorkspace",
+	} {
+		delete(output, key)
+	}
+	output["agents"] = mergedAgents
+	output["defaultAgent"] = c.DefaultAgent
 	if c.PublicServerURL != "" {
 		output["publicServerURL"] = c.PublicServerURL
 	}

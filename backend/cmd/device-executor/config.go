@@ -119,6 +119,9 @@ func normalizeConfig(cfg *ExecutorConfig) (bool, error) {
 	}
 
 	for i := range cfg.Agents {
+		if config.MigrateLegacyBuiltInPiAgent(&cfg.Agents[i]) {
+			changed = true
+		}
 		if cfg.Agents[i].Name == "" {
 			cfg.Agents[i].Name = cfg.Agents[i].ID
 			changed = true

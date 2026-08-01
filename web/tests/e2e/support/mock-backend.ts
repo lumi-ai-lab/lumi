@@ -418,7 +418,7 @@ export const DEFAULT_AGENTS: MockAgent[] = [
     permissionMode: 'default',
     sessionMode: 'default',
     command: 'npx',
-    args: ['-y', 'pi-acp@0.0.27'],
+    args: ['-y', 'pi-acp@0.0.33'],
     env: {},
     availableModes: [],
     commands: [],
@@ -1436,7 +1436,7 @@ function createMockBackendState(options: MockBackendOptions): MockBackendState {
             },
             {
               name: 'PI',
-              package: 'pi-acp@0.0.27',
+              package: 'pi-acp@0.0.33',
               status: 'ready',
               message: 'Cached',
             },
