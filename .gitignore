@@ -1,6 +1,8 @@
 third
 node_modules
 dist
+!backend/internal/piacpbridge/fork/dist
+!backend/internal/piacpbridge/fork/dist/index.js
 backend/cmd/lumi/web
 backend/lumi.config.json
 backend/lumi

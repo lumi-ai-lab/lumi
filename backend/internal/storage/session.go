@@ -15,18 +15,20 @@ const defaultWorkspace = "_default"
 
 // StoredSession represents a persisted session
 type StoredSession struct {
-	ID                  string                       `json:"id"`
-	Title               string                       `json:"title"`
-	Messages            []conversation.Message       `json:"messages"`
-	ActiveAgent         string                       `json:"activeAgent"`
-	WorkspaceID         string                       `json:"workspaceId,omitempty"`
-	AgentSessions       map[string]string            `json:"agentSessions,omitempty"`
-	RemoteAgentSessions map[string]map[string]string `json:"remoteAgentSessions,omitempty"`
-	IMDebug             IMDebugSettings              `json:"imDebug,omitempty"`
-	IMNewSessionPending bool                         `json:"imNewSessionPending,omitempty"`
-	CreatedAt           int64                        `json:"createdAt"`
-	UpdatedAt           int64                        `json:"updatedAt"`
-	PendingPermission   any                          `json:"pendingPermission,omitempty"`
+	ID                               string                       `json:"id"`
+	Title                            string                       `json:"title"`
+	Messages                         []conversation.Message       `json:"messages"`
+	ActiveAgent                      string                       `json:"activeAgent"`
+	WorkspaceID                      string                       `json:"workspaceId,omitempty"`
+	AgentSessions                    map[string]string            `json:"agentSessions,omitempty"`
+	AgentSessionProfileDigests       map[string]string            `json:"agentSessionProfileDigests,omitempty"`
+	RemoteAgentSessions              map[string]map[string]string `json:"remoteAgentSessions,omitempty"`
+	RemoteAgentSessionProfileDigests map[string]map[string]string `json:"remoteAgentSessionProfileDigests,omitempty"`
+	IMDebug                          IMDebugSettings              `json:"imDebug,omitempty"`
+	IMNewSessionPending              bool                         `json:"imNewSessionPending,omitempty"`
+	CreatedAt                        int64                        `json:"createdAt"`
+	UpdatedAt                        int64                        `json:"updatedAt"`
+	PendingPermission                any                          `json:"pendingPermission,omitempty"`
 }
 
 type IMDebugSettings struct {

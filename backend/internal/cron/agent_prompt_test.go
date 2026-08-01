@@ -30,3 +30,25 @@ func TestWithAgentToolInstructionsForContextKeepsCompatibility(t *testing.T) {
 		t.Fatalf("prompt missing compatible user wrapper: %q", prompt)
 	}
 }
+
+func TestAgentToolInstructionsDoNotExposeRuntimeOrIMReplySecrets(t *testing.T) {
+	instructions := AgentToolInstructionsForContext(ToolContext{
+		APIBase: "https://private.example.invalid/api", Channel: ChannelWeCom,
+		ConversationID: "conversation-1", AgentID: "agent-1",
+		WorkspaceID: "workspace-1", WorkspacePath: "/private/workspace/path",
+		Target: Target{WeCom: &WeComTarget{ReqID: "private-request", ChatID: "private-chat", UserID: "private-user"}},
+	})
+	for _, secret := range []string{"private.example", "/private/workspace/path", "private-request", "private-chat", "private-user"} {
+		if strings.Contains(instructions, secret) {
+			t.Fatalf("instructions contain %q: %s", secret, instructions)
+		}
+	}
+	for _, want := range []string{`--channel "wecom"`, `--conversation-id "conversation-1"`, `--agent-id "agent-1"`, `--workspace-id "workspace-1"`} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("instructions missing stable routing flag %q: %s", want, instructions)
+		}
+	}
+	if !strings.Contains(instructions, "server resolves the current IM reply target") {
+		t.Fatalf("instructions missing server-side target guidance: %s", instructions)
+	}
+}

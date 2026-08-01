@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/piacpbridge"
 	"github.com/pengmide/lumi/internal/setupcheck"
 )
 
@@ -154,7 +155,8 @@ func firstNonEmpty(values ...string) string {
 }
 
 func setupSignature(status setupcheck.SetupStatus) string {
-	values := make([]string, 0, len(status.Agents)+len(status.ACPPackages))
+	values := make([]string, 0, len(status.Agents)+len(status.ACPPackages)+1)
+	values = append(values, "embedded-pi-acp-bridge:"+piacpbridge.Signature())
 	for _, item := range status.Agents {
 		values = append(values, "agent:"+item.Name+":"+item.Command+":"+item.Package)
 	}

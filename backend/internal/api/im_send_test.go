@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/pengmide/lumi/internal/config"
+	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/wecom"
 )
 
@@ -182,5 +183,25 @@ func TestHandleIMSendRejectsMissingWeComTarget(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleIMSendResolvesCurrentWeComTargetByConversation(t *testing.T) {
+	sender := &fakeIMSender{}
+	server := &Server{wecomIMSender: sender}
+	server.rememberIMTarget(lumicron.ChannelWeCom, "conversation-1", lumicron.Target{WeCom: &lumicron.WeComTarget{
+		ReqID: "current-request", ChatID: "current-chat", ChatType: "group", UserID: "current-user",
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/api/im/send", strings.NewReader(`{
+		"channel":"wecom","type":"text","text":"hello","conversationId":"conversation-1"
+	}`))
+	rec := httptest.NewRecorder()
+	server.handleIMSend(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(sender.requests) != 1 || sender.requests[0].ChatID != "current-chat" || sender.requests[0].ReqID != "current-request" {
+		t.Fatalf("requests = %+v", sender.requests)
 	}
 }

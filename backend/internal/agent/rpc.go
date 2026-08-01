@@ -41,6 +41,9 @@ func (p *Process) Request(method string, params any) (*jsonrpc.Message, error) {
 	if msg.Error != nil {
 		return nil, msg.Error
 	}
+	if method == "initialize" {
+		p.captureInitializeResult(msg.Result)
+	}
 
 	return msg, nil
 }

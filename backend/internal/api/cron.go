@@ -90,6 +90,11 @@ func (s *Server) handleCronJobs(w http.ResponseWriter, r *http.Request) {
 			TimeoutMins:    req.TimeoutMins,
 			Target:         req.Target,
 		}
+		if !hasIMTarget(job.Channel, job.Target) {
+			if target, ok := s.currentIMTarget(job.Channel, job.ConversationID); ok {
+				job.Target = target
+			}
+		}
 		created, err := s.cron.Create(job)
 		if err != nil {
 			writeError(w, err.Error(), http.StatusBadRequest)
@@ -296,8 +301,14 @@ func (s *Server) RunCronJob(job lumicron.Job) (string, error) {
 	}
 	switch job.Channel {
 	case lumicron.ChannelWeChat:
+		if target, ok := s.currentIMTarget(job.Channel, job.ConversationID); ok {
+			job.Target = target
+		}
 		return s.wechat.RunCronJob(context.Background(), job)
 	case lumicron.ChannelWeCom:
+		if target, ok := s.currentIMTarget(job.Channel, job.ConversationID); ok {
+			job.Target = target
+		}
 		return s.wecom.RunCronJob(context.Background(), job)
 	}
 	convID := job.ConversationID
