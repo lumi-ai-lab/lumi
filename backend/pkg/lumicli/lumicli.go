@@ -122,6 +122,11 @@ func ResolveConfigState(configPath string) (*ConfigState, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.LegacyPiACPConfigMigrated() {
+		if err := cfg.Save(targetPath); err != nil {
+			return nil, err
+		}
+	}
 	return &ConfigState{
 		Config:    cfg,
 		Path:      targetPath,

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -92,14 +93,85 @@ func TestLoadAddsBuiltInAgentDefaultsToExistingConfig(t *testing.T) {
 	if pi == nil {
 		t.Fatal("FindAgent(pi) = nil, want built-in PI")
 	}
-	if pi.Command != "npx" || strings.Join(pi.Args, " ") != "-y pi-acp@0.0.27" {
-		t.Fatalf("pi config = %+v, want npx pi-acp@0.0.27", pi)
+	if pi.Command != "npx" || strings.Join(pi.Args, " ") != "-y "+PiACPPackageSpec {
+		t.Fatalf("pi config = %+v, want npx %s", pi, PiACPPackageSpec)
 	}
 	if cfg.Routing == nil || cfg.Routing.Keywords["@pi"] != "pi" {
 		t.Fatalf("routing keywords = %+v, want @pi route", cfg.Routing)
 	}
 	if !cfg.BuiltInDefaultsChanged() {
 		t.Fatal("BuiltInDefaultsChanged() = false, want true")
+	}
+	if cfg.LegacyPiACPConfigMigrated() {
+		t.Fatal("LegacyPiACPConfigMigrated() = true, want false")
+	}
+}
+
+func TestLoadMigratesOnlyLegacyBuiltInPiAgent(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "lumi.config.json")
+	original := `{
+  "agents": [
+    {"id":"claude","name":"Claude Code","command":"echo"},
+    {"id":"pi","name":"PI","command":"npx","args":["-y","` + LegacyPiACPPackageSpec + `"],"env":{"KEEP":"1"},"sessionMode":"bypass"}
+  ],
+  "defaultAgent":"claude",
+  "routing":{"keywords":{"@qwen":"qwen","@pi":"pi"},"meta":true}
+}`
+	if err := os.WriteFile(configPath, []byte(original), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	pi := cfg.FindAgent("pi")
+	if pi == nil || !slices.Equal(pi.Args, []string{"-y", PiACPPackageSpec}) {
+		t.Fatalf("migrated PI config = %+v, want %s", pi, PiACPPackageSpec)
+	}
+	if pi.Env["KEEP"] != "1" || pi.SessionMode != "bypass" {
+		t.Fatalf("migration overwrote custom PI fields: %+v", pi)
+	}
+	if !cfg.BuiltInDefaultsChanged() {
+		t.Fatal("BuiltInDefaultsChanged() = false, want true")
+	}
+	if !cfg.LegacyPiACPConfigMigrated() {
+		t.Fatal("LegacyPiACPConfigMigrated() = false, want true")
+	}
+
+	if err := cfg.Save(configPath); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if strings.Contains(string(data), LegacyPiACPPackageSpec) || !strings.Contains(string(data), PiACPPackageSpec) {
+		t.Fatalf("saved config did not persist migration:\n%s", data)
+	}
+}
+
+func TestMigrateLegacyBuiltInPiAgentPreservesCustomCommandsAndArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []AgentConfig{
+		{ID: "pi", Command: "pi-acp", Args: []string{"--trace"}},
+		{ID: "pi", Command: "npx", Args: []string{"--registry=https://registry.example", "-y", LegacyPiACPPackageSpec}},
+		{ID: "pi", Command: "npx", Args: []string{"-y", LegacyPiACPPackageSpec, "--trace"}},
+		{ID: "pi", Command: "npx", Args: []string{"-y", "pi-acp@0.0.32"}},
+		{ID: "custom-pi", Command: "npx", Args: []string{"-y", LegacyPiACPPackageSpec}},
+	}
+	for _, original := range tests {
+		agent := original
+		agent.Args = append([]string(nil), original.Args...)
+		if MigrateLegacyBuiltInPiAgent(&agent) {
+			t.Fatalf("custom config was migrated: before=%+v after=%+v", original, agent)
+		}
+		if !slices.Equal(agent.Args, original.Args) || agent.Command != original.Command {
+			t.Fatalf("custom config changed: before=%+v after=%+v", original, agent)
+		}
 	}
 }
 
@@ -136,6 +208,9 @@ func TestLoadPreservesCustomQwenConfig(t *testing.T) {
 	if !cfg.BuiltInDefaultsChanged() {
 		t.Fatal("BuiltInDefaultsChanged() = false, want true because @qwen route was added")
 	}
+	if cfg.LegacyPiACPConfigMigrated() {
+		t.Fatal("LegacyPiACPConfigMigrated() = true, want false")
+	}
 }
 
 func TestSavePersistsBuiltInQwenDefaultsAndPreservesExistingFields(t *testing.T) {
@@ -143,6 +218,7 @@ func TestSavePersistsBuiltInQwenDefaultsAndPreservesExistingFields(t *testing.T)
 
 	configPath := filepath.Join(t.TempDir(), "lumi.config.json")
 	original := `{
+  "customTopLevel": {"keep": true},
   "publicServerURL": "https://chat.example.com/lumi",
   "agents": [
     {"id": "claude", "name": "Claude Code", "command": "npx", "custom": "keep"}
@@ -167,6 +243,8 @@ func TestSavePersistsBuiltInQwenDefaultsAndPreservesExistingFields(t *testing.T)
 	}
 	text := string(data)
 	for _, want := range []string{
+		`"customTopLevel": {`,
+		`"keep": true`,
 		`"publicServerURL": "https://chat.example.com/lumi"`,
 		`"custom": "keep"`,
 		`"id": "qwen"`,

@@ -312,6 +312,11 @@ func startServer() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	if config.LoadedConfigPath != "" && cfg.LegacyPiACPConfigMigrated() {
+		if err := cfg.Save(config.LoadedConfigPath); err != nil {
+			return fmt.Errorf("save PI ACP config migration: %w", err)
+		}
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validate config: %w", err)

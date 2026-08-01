@@ -35,7 +35,7 @@
     {
       "args": [
         "-y",
-        "pi-acp@0.0.27"
+        "pi-acp@0.0.33"
       ],
       "command": "npx",
       "id": "pi",

@@ -331,7 +331,7 @@ export CLAUDE_CODE_EXECUTABLE=/opt/nodejs/bin/claude
     {
       "args": [
         "-y",
-        "pi-acp@0.0.27"
+        "pi-acp@0.0.33"
       ],
       "command": "npx",
       "id": "pi",
@@ -356,7 +356,7 @@ export CLAUDE_CODE_EXECUTABLE=/opt/nodejs/bin/claude
 
 - `claude` / `codex` / `qwen` / `pi` 这类 agent 默认会继承当前 shell 环境变量；sample 配置里不再内置这些 agent 的占位鉴权信息。
 - 高级用户也可以把 Qwen 改为全局 CLI 启动：`"command": "qwen", "args": ["--acp"]`。若本机缺少 `qwen`，setup 会提示执行 `npm install -g @qwen-code/qwen-code`。
-- PI 通过 `pi-acp@0.0.27` 接入，并需要本机或远程设备可运行 `pi` CLI。若缺少 `pi`，setup 会提示执行 `npm install -g @earendil-works/pi-coding-agent`。sandbox 镜像使用 Node 22.22.2，满足当前 PI 的 Node `>=22.19.0` 要求；sandbox 会把宿主 `~/.pi` 复制为可写 runtime 目录并挂载到容器 `/root/.pi`。
+- PI 通过上游原版 `pi-acp@0.0.33` 接入，并需要本机或远程设备可运行 PI `>=0.80.4`。setup 固定安装 `@earendil-works/pi-coding-agent@0.83.0`；新版 adapter 会在切回已关闭的逻辑 Session 时按需恢复历史，不再需要 Lumi 修改第三方 `dist/index.js`。sandbox 镜像使用 Node 22.22.2，满足当前 PI 的 Node `>=22.19.0` 要求；sandbox 会把宿主 `~/.pi` 复制为可写 runtime 目录并挂载到容器 `/root/.pi`。
 - 当前 `pi-acp` 会接收 ACP `mcpServers` 但不会把它们接入 PI，因此 Lumi MCP SSOT 暂不对 PI 生效；PI skills 会通过 `~/.pi/agent/skills`、`<workspace>/.pi/skills` 生效。
 - 如果在 Linux 服务器上使用 `@agentclientprotocol/claude-agent-acp@0.30.0`，并且系统的 `glibc` 版本不足以运行 SDK 自带的 native `claude` binary，需要在启动前设置 `CLAUDE_CODE_EXECUTABLE` 指向系统中可用的 `claude` 可执行文件。
 
