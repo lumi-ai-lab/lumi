@@ -17,17 +17,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/piacpbridge"
+	"github.com/pengmide/lumi/internal/sessioninstruction"
 )
 
 const fakePIHelperEnv = "LUMI_PI_ACP_FAKE_HELPER"
 
 func TestPiACPLogicalSessionsRestore(t *testing.T) {
 	if testing.Short() {
-		t.Skip("downloads the pinned pi-acp package")
-	}
-	if _, err := exec.LookPath("npx"); err != nil {
-		t.Skip("npx is required")
+		t.Skip("starts the embedded PI ACP bridge and fake PI subprocesses")
 	}
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is required")
@@ -37,7 +35,9 @@ func TestPiACPLogicalSessionsRestore(t *testing.T) {
 	home := filepath.Join(root, "home")
 	stateDir := filepath.Join(root, "fake-pi-sessions")
 	binDir := filepath.Join(root, "bin")
-	for _, dir := range []string{home, stateDir, binDir} {
+	observationDir := filepath.Join(stateDir, "observations")
+	t.Setenv("LUMI_HOME", filepath.Join(root, "lumi-home"))
+	for _, dir := range []string{home, stateDir, binDir, observationDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
 		}
@@ -53,33 +53,48 @@ func TestPiACPLogicalSessionsRestore(t *testing.T) {
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
 
+	profileA := sessioninstruction.NewProfile("PRIVATE-SYSTEM-INSTRUCTION-V1", "group A context")
+	profileB := sessioninstruction.NewProfile("PRIVATE-SYSTEM-INSTRUCTION-V1", "group B context")
+	profileAChanged := sessioninstruction.NewProfile("PRIVATE-SYSTEM-INSTRUCTION-V2", "group A context")
+
 	adapter := startAdapter(t, env)
-	sessionA := adapter.newSession(t, root)
-	if got := adapter.prompt(t, sessionA, "A1"); got != "A1" {
+	sessionA := adapter.newSession(t, root, profileA)
+	if got := adapter.prompt(t, sessionA, "A1", profileA); got != "A1" {
 		t.Fatalf("A1 history = %q, want A1", got)
 	}
 
-	sessionB := adapter.newSession(t, root)
-	if got := adapter.prompt(t, sessionB, "B1"); got != "B1" {
+	sessionB := adapter.newSession(t, root, profileB)
+	if got := adapter.prompt(t, sessionB, "B1", profileB); got != "B1" {
 		t.Fatalf("B1 history = %q, want B1", got)
 	}
 	if sessionA == sessionB {
 		t.Fatalf("session IDs are equal: %s", sessionA)
 	}
 
-	if got := adapter.prompt(t, sessionA, "A2"); got != "A1|A2" {
+	if got := adapter.prompt(t, sessionA, "A2", profileA); got != "A1|A2" {
 		t.Fatalf("restored A history = %q, want A1|A2", got)
 	}
-	if got := adapter.prompt(t, sessionB, "B2"); got != "B1|B2" {
+	if got := adapter.prompt(t, sessionB, "B2", profileB); got != "B1|B2" {
 		t.Fatalf("restored B history = %q, want B1|B2", got)
+	}
+
+	adapter.loadSession(t, sessionA, root, profileA)
+	if got := adapter.prompt(t, sessionA, "A3", profileA); got != "A1|A2|A3" {
+		t.Fatalf("explicitly loaded A history = %q, want A1|A2|A3", got)
+	}
+	if got := adapter.prompt(t, sessionA, "A4", profileAChanged); got != "A1|A2|A3|A4" {
+		t.Fatalf("digest-changed A history = %q, want A1|A2|A3|A4", got)
 	}
 	adapter.close(t)
 
 	adapter = startAdapter(t, env)
 	defer adapter.close(t)
-	if got := adapter.prompt(t, sessionA, "A3"); got != "A1|A2|A3" {
-		t.Fatalf("adapter-restart A history = %q, want A1|A2|A3", got)
+	if got := adapter.prompt(t, sessionB, "B3", profileB); got != "B1|B2|B3" {
+		t.Fatalf("adapter-restart B history = %q, want B1|B2|B3", got)
 	}
+
+	assertInstructionTransport(t, observationDir, []sessioninstruction.Profile{profileA, profileB, profileAChanged})
+	assertSessionStoreContainsDigestsOnly(t, home, []sessioninstruction.Profile{profileAChanged, profileB})
 }
 
 // TestPiACPHelperProcess is launched through the fake pi wrapper. It implements
@@ -113,7 +128,11 @@ type acpAdapter struct {
 
 func startAdapter(t *testing.T, env []string) *acpAdapter {
 	t.Helper()
-	cmd := exec.Command("npx", "-y", config.PiACPPackageSpec)
+	entrypoint, err := piacpbridge.Materialize()
+	if err != nil {
+		t.Fatalf("materialize embedded PI ACP bridge: %v", err)
+	}
+	cmd := exec.Command("node", entrypoint)
 	cmd.Env = env
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -131,22 +150,30 @@ func startAdapter(t *testing.T, env []string) *acpAdapter {
 	}
 	cmd.Stderr = &adapter.stderr
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("start %s error = %v", config.PiACPPackageSpec, err)
+		t.Fatalf("start embedded PI ACP bridge error = %v", err)
 	}
 	go adapter.read(stdout)
 	go func() { adapter.done <- cmd.Wait() }()
 
-	adapter.request(t, "initialize", map[string]any{
+	result, _ := adapter.request(t, "initialize", map[string]any{
 		"protocolVersion":    1,
 		"clientCapabilities": map[string]any{},
 		"clientInfo":         map[string]string{"name": "lumi-integration-test", "version": "1"},
 	})
+	meta, _ := result["_meta"].(map[string]any)
+	lumi, _ := meta["lumi"].(map[string]any)
+	capability, _ := lumi["sessionInstructions"].(map[string]any)
+	if capability["systemPromptAppend"] != true || capability["rehydrateOnRestore"] != true || capability["transportVersion"] != float64(1) {
+		t.Fatalf("initialize capability = %#v", capability)
+	}
 	return adapter
 }
 
-func (a *acpAdapter) newSession(t *testing.T, cwd string) string {
+func (a *acpAdapter) newSession(t *testing.T, cwd string, profile sessioninstruction.Profile) string {
 	t.Helper()
-	result, _ := a.request(t, "session/new", map[string]any{"cwd": cwd, "mcpServers": []any{}})
+	params := map[string]any{"cwd": cwd, "mcpServers": []any{}}
+	applyProfile(t, params, profile, sessioninstruction.PhaseNew)
+	result, _ := a.request(t, "session/new", params)
 	sessionID, _ := result["sessionId"].(string)
 	if sessionID == "" {
 		t.Fatalf("session/new returned no sessionId: %#v", result)
@@ -154,12 +181,21 @@ func (a *acpAdapter) newSession(t *testing.T, cwd string) string {
 	return sessionID
 }
 
-func (a *acpAdapter) prompt(t *testing.T, sessionID, message string) string {
+func (a *acpAdapter) loadSession(t *testing.T, sessionID, cwd string, profile sessioninstruction.Profile) {
 	t.Helper()
-	_, texts := a.request(t, "session/prompt", map[string]any{
+	params := map[string]any{"sessionId": sessionID, "cwd": cwd, "mcpServers": []any{}}
+	applyProfile(t, params, profile, sessioninstruction.PhaseLoad)
+	a.request(t, "session/load", params)
+}
+
+func (a *acpAdapter) prompt(t *testing.T, sessionID, message string, profile sessioninstruction.Profile) string {
+	t.Helper()
+	params := map[string]any{
 		"sessionId": sessionID,
 		"prompt":    []map[string]string{{"type": "text", "text": message}},
-	})
+	}
+	applyProfile(t, params, profile, sessioninstruction.PhasePrompt)
+	_, texts := a.request(t, "session/prompt", params)
 	for i := len(texts) - 1; i >= 0; i-- {
 		if strings.Contains(texts[i], message) && !strings.HasPrefix(texts[i], "pi v") {
 			return texts[i]
@@ -167,6 +203,20 @@ func (a *acpAdapter) prompt(t *testing.T, sessionID, message string) string {
 	}
 	t.Fatalf("session/prompt produced no fake history for %q; text updates=%q", message, texts)
 	return ""
+}
+
+func applyProfile(t *testing.T, params map[string]any, profile sessioninstruction.Profile, phase sessioninstruction.Phase) {
+	t.Helper()
+	if err := sessioninstruction.ApplyProfile(params, sessioninstruction.Support{
+		Transport: sessioninstruction.TransportLumiV1,
+		Capability: sessioninstruction.Capability{
+			TransportVersion:   sessioninstruction.TransportVersion,
+			SystemPromptAppend: true,
+			RehydrateOnRestore: true,
+		},
+	}, profile, phase); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (a *acpAdapter) request(t *testing.T, method string, params any) (map[string]any, []string) {
@@ -280,6 +330,9 @@ func runFakePI(args []string, stdin io.Reader, stdout io.Writer) error {
 	if stateDir == "" {
 		return errors.New("missing fake PI state directory")
 	}
+	if err := recordInstructionObservation(stateDir, args); err != nil {
+		return err
+	}
 	sessionFile := argumentValue(args, "--session")
 	sessionID := ""
 	if sessionFile != "" {
@@ -341,6 +394,40 @@ func runFakePI(args []string, stdin io.Reader, stdout io.Writer) error {
 	return scanner.Err()
 }
 
+type instructionObservation struct {
+	InstructionPath string   `json:"instructionPath"`
+	Mode            uint32   `json:"mode"`
+	Argv            []string `json:"argv"`
+	Body            string   `json:"body"`
+}
+
+func recordInstructionObservation(stateDir string, args []string) error {
+	instructionPath := argumentValue(args, "--append-system-prompt")
+	if instructionPath == "" {
+		return errors.New("fake PI started without --append-system-prompt")
+	}
+	info, err := os.Stat(instructionPath)
+	if err != nil {
+		return fmt.Errorf("stat system instruction file: %w", err)
+	}
+	body, err := os.ReadFile(instructionPath)
+	if err != nil {
+		return fmt.Errorf("read system instruction file: %w", err)
+	}
+	observation := instructionObservation{
+		InstructionPath: instructionPath,
+		Mode:            uint32(info.Mode().Perm()),
+		Argv:            append([]string(nil), args...),
+		Body:            string(body),
+	}
+	encoded, err := json.Marshal(observation)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(stateDir, "observations", fmt.Sprintf("%d.json", os.Getpid()))
+	return os.WriteFile(path, encoded, 0600)
+}
+
 func appendFakeHistory(path, message string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -383,4 +470,72 @@ func argumentValue(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func assertInstructionTransport(t *testing.T, observationDir string, profiles []sessioninstruction.Profile) {
+	t.Helper()
+	entries, err := os.ReadDir(observationDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) < 7 {
+		t.Fatalf("PI spawn observations = %d, want at least 7", len(entries))
+	}
+	wantedBodies := make(map[string]string, len(profiles))
+	observedBodies := make(map[string]bool, len(profiles))
+	for _, profile := range profiles {
+		wantedBodies[profile.Text()] = profile.ProfileDigest
+	}
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(observationDir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var observation instructionObservation
+		if err := json.Unmarshal(data, &observation); err != nil {
+			t.Fatalf("decode %s: %v", entry.Name(), err)
+		}
+		if observation.Mode != 0600 {
+			t.Fatalf("system instruction mode = %o, want 600", observation.Mode)
+		}
+		if _, ok := wantedBodies[observation.Body]; !ok {
+			t.Fatalf("PI received unexpected system instruction body")
+		}
+		observedBodies[observation.Body] = true
+		for _, arg := range observation.Argv {
+			if strings.Contains(arg, "PRIVATE-SYSTEM-INSTRUCTION") || strings.Contains(arg, "group A context") || strings.Contains(arg, "group B context") {
+				t.Fatalf("PI argv contains instruction text")
+			}
+		}
+		if _, err := os.Stat(observation.InstructionPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("temporary instruction file still exists: %v", err)
+		}
+		if _, err := os.Stat(filepath.Dir(observation.InstructionPath)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("temporary instruction directory still exists: %v", err)
+		}
+	}
+	for body, digest := range wantedBodies {
+		if !observedBodies[body] {
+			t.Fatalf("PI never received expected instruction profile with digest %s", digest[:12])
+		}
+	}
+}
+
+func assertSessionStoreContainsDigestsOnly(t *testing.T, home string, profiles []sessioninstruction.Profile) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, ".pi", "pi-acp", "session-map.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized := string(data)
+	for _, secret := range []string{"PRIVATE-SYSTEM-INSTRUCTION", "group A context", "group B context"} {
+		if strings.Contains(serialized, secret) {
+			t.Fatalf("SessionStore persisted instruction text")
+		}
+	}
+	for _, profile := range profiles {
+		if !strings.Contains(serialized, profile.ProfileDigest) {
+			t.Fatalf("SessionStore missing profile digest %s", profile.ProfileDigest[:12])
+		}
+	}
 }

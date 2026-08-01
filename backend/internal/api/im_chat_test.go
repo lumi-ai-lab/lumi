@@ -55,19 +55,35 @@ func TestShouldInjectIMAgentContext(t *testing.T) {
 	}
 }
 
-func TestBuildIMSystemPromptAppendKeepsUserPromptClean(t *testing.T) {
-	appendText := buildIMSystemPromptAppend("source instruction", lumicron.ToolContext{
+func TestBuildIMSessionInstructionProfileSeparatesStableContextAndSecrets(t *testing.T) {
+	profile := buildIMSessionInstructionProfile("source instruction", lumicron.ToolContext{
+		APIBase:        "https://private.example.invalid/api",
 		Channel:        lumicron.ChannelWeCom,
 		ConversationID: "conv-1",
-		AgentID:        "claude",
+		AgentID:        "pi",
+		WorkspaceID:    "workspace-1",
+		WorkspacePath:  "/private/workspace/path",
+		Target: lumicron.Target{WeCom: &lumicron.WeComTarget{
+			ReqID: "private-request", ChatID: "private-chat", UserID: "private-user",
+		}},
 	})
 
 	for _, want := range []string{"source instruction", "You are running inside Lumi.", "$LUMI_CLI\" im run"} {
-		if !strings.Contains(appendText, want) {
-			t.Fatalf("system prompt append missing %q:\n%s", want, appendText)
+		if !strings.Contains(profile.BaseInstructions, want) {
+			t.Fatalf("base instructions missing %q:\n%s", want, profile.BaseInstructions)
 		}
 	}
-	if strings.Contains(appendText, "User:") {
-		t.Fatalf("system prompt append should not contain user marker:\n%s", appendText)
+	for _, want := range []string{"Channel: wecom", "Conversation ID: conv-1", "Workspace ID: workspace-1", "Agent ID: pi"} {
+		if !strings.Contains(profile.SessionContext, want) {
+			t.Fatalf("Session context missing %q:\n%s", want, profile.SessionContext)
+		}
+	}
+	for _, secret := range []string{"private.example", "/private/workspace/path", "private-request", "private-chat", "private-user"} {
+		if strings.Contains(profile.Text(), secret) {
+			t.Fatalf("Session instruction profile contains %q", secret)
+		}
+	}
+	if err := profile.Validate(); err != nil {
+		t.Fatalf("profile validation failed: %v", err)
 	}
 }

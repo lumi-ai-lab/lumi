@@ -66,6 +66,34 @@ func TestCronAPIRejectsInvalidCron(t *testing.T) {
 	}
 }
 
+func TestCronAPIFillsCurrentIMTargetWithoutClientSecrets(t *testing.T) {
+	server := newTestAPIServer(t)
+	server.rememberIMTarget(lumicron.ChannelWeCom, "wecom-chat-1", lumicron.Target{WeCom: &lumicron.WeComTarget{
+		ReqID: "current-request", ChatID: "current-chat", ChatType: "group", UserID: "current-user",
+	}})
+	body := bytes.NewBufferString(`{
+		"name":"Greeting","prompt":"hello","agentId":"claude","workspaceId":"default",
+		"conversationId":"wecom-chat-1","channel":"wecom",
+		"schedule":{"type":"cron","cronExpr":"*/30 * * * *"}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cron/jobs", body)
+	rec := httptest.NewRecorder()
+	server.handleCronJobs(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Job lumicron.Job `json:"job"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Job.Target.WeCom == nil || result.Job.Target.WeCom.ChatID != "current-chat" || result.Job.Target.WeCom.ReqID != "current-request" {
+		t.Fatalf("target = %+v", result.Job.Target)
+	}
+}
+
 func TestCronAPIUpdateRequiresScopedConversationAndPausesWithEnabled(t *testing.T) {
 	server := newTestAPIServer(t)
 	created, err := server.cron.Create(lumicron.Job{

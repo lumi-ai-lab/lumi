@@ -62,6 +62,8 @@ type Server struct {
 	cronSubsMu     sync.RWMutex
 	cronRuns       map[string]struct{}
 	cronRunsMu     sync.Mutex
+	imTargets      map[string]map[string]lumicron.Target
+	imTargetsMu    sync.RWMutex
 
 	// Per-conversation agent sessions: convID -> agentID -> sessionID
 	agentSessions map[string]map[string]string
@@ -72,7 +74,7 @@ type Server struct {
 
 	// conversationID -> deviceID -> agentID -> remote sessionID
 	remoteAgentSessions              map[string]map[string]map[string]string
-	remoteAgentSessionPromptVersions map[string]map[string]map[string]int
+	remoteAgentSessionProfileDigests map[string]map[string]map[string]string
 	remoteSessionsMu                 sync.RWMutex
 
 	// Cached commands per agent
@@ -135,11 +137,12 @@ func NewServer(cfg *config.Config, staticFS fs.FS) *Server {
 		initialized:                      make(map[string]bool),
 		pendingPermissions:               make(map[string]pendingPermissionState),
 		remoteAgentSessions:              make(map[string]map[string]map[string]string),
-		remoteAgentSessionPromptVersions: make(map[string]map[string]map[string]int),
+		remoteAgentSessionProfileDigests: make(map[string]map[string]map[string]string),
 		agentCommands:                    make(map[string][]SlashCommand),
 		setupSubs:                        make(map[chan setupcheck.SetupStatus]struct{}),
 		cronSubs:                         make(map[chan lumicron.Event]struct{}),
 		cronRuns:                         make(map[string]struct{}),
+		imTargets:                        make(map[string]map[string]lumicron.Target),
 	}
 	s.cron = lumicron.NewService(lumicron.NewStore(""), s, s.broadcastCronEvent)
 	s.wechatChat = newWeChatChatRuntime(cfg, s.cron, s.mcpStore)

@@ -15,15 +15,16 @@ If LUMI_CLI is set, use "$LUMI_CLI" instead of "lumi":
 
   "$LUMI_CLI" cron add --cron "<min> <hour> <day> <month> <weekday>" --prompt "<task description>" --desc "<short label>"
 
-Environment variables are already set:
+The Lumi runtime preconfigures these values when available:
 
   LUMI_API_BASE
-  LUMI_CHANNEL
-  LUMI_CONVERSATION_ID
-  LUMI_AGENT_ID
   LUMI_WORKSPACE_ID
   LUMI_WORKSPACE_PATH
   LUMI_CLI
+
+Session-specific channel, conversation, and agent routing values are supplied
+separately in the current Lumi Session context. Use the routing flags shown
+there for commands that must remain scoped to this conversation.
 
 Examples:
 
@@ -55,6 +56,17 @@ Prefer the command's own file output flag when it has one, for example a QR or i
 Do not directly run QR-login commands that wait for user interaction, because their output may not reach the IM user until the command exits.
 Use this for QR codes, screenshots, reports, and other intermediate files that must be delivered while the command is still running.`
 
+// AgentBaseInstructionsForChannel returns stable instructions only. Runtime
+// addresses, workspace paths, requester identities, reply handles, and tokens
+// are deliberately excluded.
+func AgentBaseInstructionsForChannel(channel string) string {
+	instructions := AgentToolInstructions
+	if channel == ChannelWeCom {
+		instructions += "\n\n" + IMRunToolInstructions
+	}
+	return instructions
+}
+
 func WithAgentToolInstructions(prompt string) string {
 	return WithAgentToolInstructionsForContext(prompt, ToolContext{})
 }
@@ -70,57 +82,44 @@ type ToolContext struct {
 }
 
 func AgentToolInstructionsForContext(ctx ToolContext) string {
-	instructions := AgentToolInstructions
-	if ctx.Channel == ChannelWeCom {
-		instructions += "\n\n" + IMRunToolInstructions
-	}
-	if ctx.APIBase != "" || ctx.Channel != "" || ctx.ConversationID != "" || ctx.AgentID != "" || ctx.WorkspaceID != "" || ctx.WorkspacePath != "" {
-		instructions += fmt.Sprintf(`
-
-Current Lumi context:
-
-  LUMI_API_BASE=%s
-  LUMI_CHANNEL=%s
-  LUMI_CONVERSATION_ID=%s
-  LUMI_AGENT_ID=%s
-  LUMI_WORKSPACE_ID=%s
-  LUMI_WORKSPACE_PATH=%s`, ctx.APIBase, ctx.Channel, ctx.ConversationID, ctx.AgentID, ctx.WorkspaceID, ctx.WorkspacePath)
-		if ctx.Target.WeChat != nil {
-			instructions += fmt.Sprintf(`
-  LUMI_WECHAT_CONVERSATION_KEY=%s
-  LUMI_WECHAT_CONTEXT_TOKEN=%s`, ctx.Target.WeChat.ConversationKey, ctx.Target.WeChat.ContextToken)
-		}
-		if ctx.Target.WeCom != nil {
-			instructions += fmt.Sprintf(`
-  LUMI_WECOM_REQ_ID=%s
-  LUMI_WECOM_CHAT_ID=%s
-  LUMI_WECOM_CHAT_TYPE=%s
-  LUMI_WECOM_USER_ID=%s`, ctx.Target.WeCom.ReqID, ctx.Target.WeCom.ChatID, ctx.Target.WeCom.ChatType, ctx.Target.WeCom.UserID)
-		}
-		instructions += `
-
-If your shell does not have these environment variables, pass the same values with CLI flags such as --channel, --conversation-id, --agent-id, and --workspace-id.`
-		command := `lumi`
-		if ctx.APIBase != "" || ctx.Channel != "" || ctx.ConversationID != "" || ctx.AgentID != "" || ctx.WorkspaceID != "" {
-			command = fmt.Sprintf(`lumi cron add --api-base %q --channel %q --conversation-id %q --agent-id %q --workspace-id %q --cron "<min> <hour> <day> <month> <weekday>" --prompt "<task description>" --desc "<short label>"`,
-				ctx.APIBase, ctx.Channel, ctx.ConversationID, ctx.AgentID, ctx.WorkspaceID)
-			if ctx.WorkspacePath != "" {
-				command = strings.Replace(command, ` --cron `, fmt.Sprintf(` --work-dir %q --cron `, ctx.WorkspacePath), 1)
-			}
-			if ctx.Target.WeChat != nil {
-				command = strings.Replace(command, ` --cron `, fmt.Sprintf(` --wechat-conversation-key %q --wechat-context-token %q --cron `, ctx.Target.WeChat.ConversationKey, ctx.Target.WeChat.ContextToken), 1)
-			}
-			if ctx.Target.WeCom != nil {
-				command = strings.Replace(command, ` --cron `, fmt.Sprintf(` --wecom-req-id %q --wecom-chat-id %q --wecom-chat-type %q --wecom-user-id %q --cron `, ctx.Target.WeCom.ReqID, ctx.Target.WeCom.ChatID, ctx.Target.WeCom.ChatType, ctx.Target.WeCom.UserID), 1)
-			}
-		}
-		instructions += fmt.Sprintf(`
-
-For this conversation, prefer this explicit form:
-
-  %s`, command)
+	instructions := AgentBaseInstructionsForChannel(ctx.Channel)
+	if routing := AgentRoutingInstructionsForContext(ctx); routing != "" {
+		instructions += "\n\n" + routing
 	}
 	return instructions
+}
+
+// AgentRoutingInstructionsForContext provides only stable Session routing
+// handles. API addresses, absolute paths, requester identity, reply handles,
+// and tokens remain out of band and are never rendered into these commands.
+func AgentRoutingInstructionsForContext(ctx ToolContext) string {
+	channel := strings.TrimSpace(ctx.Channel)
+	conversationID := strings.TrimSpace(ctx.ConversationID)
+	agentID := strings.TrimSpace(ctx.AgentID)
+	workspaceID := strings.TrimSpace(ctx.WorkspaceID)
+	if channel == "" || conversationID == "" || agentID == "" || workspaceID == "" {
+		return ""
+	}
+
+	cronFlags := fmt.Sprintf("--channel %q --conversation-id %q --agent-id %q --workspace-id %q", channel, conversationID, agentID, workspaceID)
+	parts := []string{
+		"Runtime API addresses and absolute workspace paths stay in Lumi-managed environment variables. Do not print them or copy them into command arguments.",
+		"For commands scoped to this Session, pass only these stable routing flags. Use them only for Lumi CLI routing and never repeat them in chat:",
+		"  " + cronFlags,
+		"For example:",
+		fmt.Sprintf("  \"$LUMI_CLI\" cron add %s --cron \"<min> <hour> <day> <month> <weekday>\" --prompt \"<task description>\" --desc \"<short label>\"", cronFlags),
+	}
+	if channel == ChannelWeCom {
+		imFlags := fmt.Sprintf("--channel %q --conversation-id %q --workspace-id %q", channel, conversationID, workspaceID)
+		parts = append(parts,
+			"For intermediate IM files, use the same stable conversation handle:",
+			fmt.Sprintf("  \"$LUMI_CLI\" im run %s --image-out IMAGE_PATH --sh '<command that writes \"$IMAGE_PATH\">'", imFlags),
+		)
+	}
+	if channel == ChannelWeCom || channel == ChannelWeChat {
+		parts = append(parts, "The Lumi server resolves the current IM reply target. Do not request, persist, or pass WeChat context tokens, WeCom request IDs, chat IDs, or user IDs.")
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func WithAgentToolInstructionsForContext(prompt string, ctx ToolContext) string {

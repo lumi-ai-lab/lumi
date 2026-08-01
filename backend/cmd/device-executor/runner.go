@@ -13,6 +13,7 @@ import (
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 	"github.com/pengmide/lumi/internal/requestercontext"
+	"github.com/pengmide/lumi/internal/sessioninstruction"
 )
 
 type Runner struct {
@@ -146,11 +147,9 @@ func (r *Runner) createSession(taskID string, proc *agent.Process, payload TaskE
 		"cwd":        cwd,
 		"mcpServers": MCPRecordsForBackend(backend),
 	}
-	if payload.SystemPromptAppend != "" {
-		sessionNewParams["_meta"] = map[string]any{
-			"systemPrompt": map[string]string{
-				"append": payload.SystemPromptAppend,
-			},
+	if payload.InstructionProfile != nil {
+		if err := sessioninstruction.ApplyProfile(sessionNewParams, proc.SessionInstructionSupport(), *payload.InstructionProfile, sessioninstruction.PhaseNew); err != nil {
+			return "", err
 		}
 	}
 	resp, err := proc.Request("session/new", sessionNewParams)

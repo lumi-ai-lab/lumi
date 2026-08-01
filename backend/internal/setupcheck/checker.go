@@ -68,6 +68,13 @@ func InitialStatus(agents []config.AgentConfig) SetupStatus {
 	}{}
 
 	for _, agentCfg := range agents {
+		if config.IsBuiltInPIACP(agentCfg) {
+			requiredAgents["pi"] = struct {
+				Name    string
+				Command string
+			}{Name: agentCfg.Name, Command: "pi"}
+			continue
+		}
 		if agentCfg.Command == "npx" {
 			pkgSpec := extractPackageName(agentCfg.Command, agentCfg.Args)
 			if pkgSpec != "" {
@@ -231,6 +238,9 @@ func commandExists(command string) bool {
 
 func requiresPi(agents []config.AgentConfig) bool {
 	for _, agentCfg := range agents {
+		if config.IsBuiltInPIACP(agentCfg) {
+			return true
+		}
 		if normalizePackageName(extractPackageName(agentCfg.Command, agentCfg.Args)) == "pi-acp" {
 			return true
 		}

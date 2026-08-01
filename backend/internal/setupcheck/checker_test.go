@@ -38,7 +38,7 @@ func TestInitialStatusIncludesQwenPackageAndCLI(t *testing.T) {
 	}
 }
 
-func TestInitialStatusIncludesPiACPAndCLI(t *testing.T) {
+func TestInitialStatusUsesEmbeddedPiACPBridgeAndStillRequiresPiCLI(t *testing.T) {
 	t.Parallel()
 
 	status := InitialStatus([]config.AgentConfig{
@@ -50,11 +50,8 @@ func TestInitialStatusIncludesPiACPAndCLI(t *testing.T) {
 		},
 	})
 
-	if len(status.ACPPackages) != 1 {
-		t.Fatalf("len(ACPPackages) = %d, want 1", len(status.ACPPackages))
-	}
-	if got := status.ACPPackages[0].Package; got != config.PiACPPackageSpec {
-		t.Fatalf("PI ACP package = %q, want %s", got, config.PiACPPackageSpec)
+	if len(status.ACPPackages) != 0 {
+		t.Fatalf("ACPPackages = %#v, want no upstream package for embedded bridge", status.ACPPackages)
 	}
 	if len(status.Agents) != 1 {
 		t.Fatalf("len(Agents) = %d, want 1", len(status.Agents))
@@ -67,6 +64,17 @@ func TestInitialStatusIncludesPiACPAndCLI(t *testing.T) {
 	}
 	if got := installInstructions["pi"]; got != "npm install -g "+config.PiCodingAgentPackageSpec {
 		t.Fatalf("pi install instruction = %q", got)
+	}
+}
+
+func TestInitialStatusKeepsCustomPiACPAsExternalPackage(t *testing.T) {
+	t.Parallel()
+
+	status := InitialStatus([]config.AgentConfig{{
+		ID: "pi", Name: "Custom PI", Command: "npx", Args: []string{"-y", "pi-acp@custom"},
+	}})
+	if len(status.ACPPackages) != 1 || status.ACPPackages[0].Package != "pi-acp@custom" {
+		t.Fatalf("ACPPackages = %#v", status.ACPPackages)
 	}
 }
 
