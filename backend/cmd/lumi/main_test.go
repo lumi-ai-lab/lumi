@@ -53,7 +53,7 @@ func TestPrintStartupInfoIncludesAutoAddedAgents(t *testing.T) {
 		"Command: npx -y @qwen-code/qwen-code --acp",
 		"PI",
 		"ID: pi",
-		"Command: npx -y pi-acp@0.0.27",
+		"Command: npx -y " + config.PiACPPackageSpec,
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("startup output missing %q:\n%s", want, output)

@@ -16,6 +16,7 @@ import (
 	"github.com/pengmide/lumi/internal/imdebug"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 	"github.com/pengmide/lumi/internal/mcpstore"
+	"github.com/pengmide/lumi/internal/sessioninstruction"
 	"github.com/pengmide/lumi/internal/storage"
 	"github.com/pengmide/lumi/internal/wechat"
 )
@@ -27,7 +28,8 @@ type wechatChatRuntime struct {
 	mcpStore      *mcpstore.Store
 
 	agentSessions              map[string]map[string]string
-	agentSessionPromptVersions map[string]map[string]int
+	agentSessionProfileDigests map[string]map[string]string
+	agentSessionLoaded         map[string]map[string]bool
 	initialized                map[string]bool
 	cron                       *lumicron.Service
 	mu                         sync.Mutex
@@ -40,7 +42,8 @@ func newWeChatChatRuntime(cfg *config.Config, cronService *lumicron.Service, mcp
 		conversations:              conversation.NewManager(),
 		mcpStore:                   mcp,
 		agentSessions:              make(map[string]map[string]string),
-		agentSessionPromptVersions: make(map[string]map[string]int),
+		agentSessionProfileDigests: make(map[string]map[string]string),
+		agentSessionLoaded:         make(map[string]map[string]bool),
 		initialized:                make(map[string]bool),
 		cron:                       cronService,
 	}
@@ -56,9 +59,10 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 		return err
 	}
 	agentChanged := shouldInjectIMAgentContext(conv.Messages, input.AgentID)
+	turnContext := ""
 	if agentChanged {
 		if contextSummary := r.conversations.GetContextSummary(input.ConversationID, 10); contextSummary != "" {
-			input.PromptPrefix = joinIMSystemPromptAppend(input.PromptPrefix, contextSummary)
+			turnContext = contextSummary
 		}
 	}
 	r.conversations.SetActiveAgent(input.ConversationID, input.AgentID)
@@ -72,8 +76,16 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 	if err := r.ensureInitialized(input.AgentID, input.WorkspaceID, input.WorkspacePath, sink); err != nil {
 		return err
 	}
+	profile := buildIMSessionInstructionProfile(input.PromptPrefix, lumicron.ToolContext{
+		Channel: lumicron.ChannelWeChat, ConversationID: input.ConversationID,
+		AgentID: input.AgentID, WorkspaceID: input.WorkspaceID,
+	})
+	support := agentProc.SessionInstructionSupport()
+	if !support.SupportsProfile() {
+		return r.emitError(sink, "ACP adapter does not support recoverable Lumi Session instructions")
+	}
 
-	sessionID, _, err := r.ensureAgentSession(input, sink)
+	sessionID, _, err := r.ensureAgentSession(input, profile, support, sink)
 	if err != nil {
 		return err
 	}
@@ -148,10 +160,18 @@ func (r *wechatChatRuntime) RunWeChatChat(ctx context.Context, input wechat.Chat
 
 	promptText := input.Message
 
-	response, err := agentProc.Request("session/prompt", map[string]any{
+	promptParams := map[string]any{
 		"sessionId": sessionID,
 		"prompt":    []map[string]string{{"type": "text", "text": promptText}},
-	})
+	}
+	if err := sessioninstruction.ApplyProfile(promptParams, support, profile, sessioninstruction.PhasePrompt); err != nil {
+		return r.emitError(sink, err.Error())
+	}
+	if turnContext != "" && !sessioninstruction.ApplyTurnContext(promptParams, support, turnContext) {
+		promptText = sessioninstruction.WithUntrustedTurnContext(promptText, turnContext)
+		promptParams["prompt"] = []map[string]string{{"type": "text", "text": promptText}}
+	}
+	response, err := agentProc.Request("session/prompt", promptParams)
 	if err != nil {
 		if autoPermissionErr != "" {
 			return nil
@@ -194,10 +214,16 @@ func (r *wechatChatRuntime) StopAgent(agentID string) error {
 			delete(r.agentSessions, convID)
 		}
 	}
-	for convID, versions := range r.agentSessionPromptVersions {
-		delete(versions, agentID)
-		if len(versions) == 0 {
-			delete(r.agentSessionPromptVersions, convID)
+	for convID, digests := range r.agentSessionProfileDigests {
+		delete(digests, agentID)
+		if len(digests) == 0 {
+			delete(r.agentSessionProfileDigests, convID)
+		}
+	}
+	for convID, loaded := range r.agentSessionLoaded {
+		delete(loaded, agentID)
+		if len(loaded) == 0 {
+			delete(r.agentSessionLoaded, convID)
 		}
 	}
 	return nil
@@ -253,7 +279,8 @@ func (r *wechatChatRuntime) restoreStoredConversation(session *storage.StoredSes
 
 	r.mu.Lock()
 	r.agentSessions[session.ID] = cloneAgentSessions(session.AgentSessions)
-	delete(r.agentSessionPromptVersions, session.ID)
+	r.agentSessionProfileDigests[session.ID] = cloneAgentSessions(session.AgentSessionProfileDigests)
+	delete(r.agentSessionLoaded, session.ID)
 	r.mu.Unlock()
 	return conv
 }
@@ -265,15 +292,16 @@ func (r *wechatChatRuntime) persistConversation(convID string, store wechat.Hidd
 	}
 	debug := imdebug.ToolDebugEnabled(store, convID)
 	session := &storage.StoredSession{
-		ID:            conv.ID,
-		Title:         storage.GenerateTitle(conv.Messages),
-		Messages:      append([]conversation.Message(nil), conv.Messages...),
-		ActiveAgent:   conv.ActiveAgent,
-		WorkspaceID:   conv.WorkspaceID,
-		AgentSessions: r.snapshotAgentSessions(conv.ID),
-		IMDebug:       debug,
-		CreatedAt:     conv.CreatedAt,
-		UpdatedAt:     time.Now().UnixMilli(),
+		ID:                         conv.ID,
+		Title:                      storage.GenerateTitle(conv.Messages),
+		Messages:                   append([]conversation.Message(nil), conv.Messages...),
+		ActiveAgent:                conv.ActiveAgent,
+		WorkspaceID:                conv.WorkspaceID,
+		AgentSessions:              r.snapshotAgentSessions(conv.ID),
+		AgentSessionProfileDigests: r.snapshotAgentSessionProfileDigests(conv.ID),
+		IMDebug:                    debug,
+		CreatedAt:                  conv.CreatedAt,
+		UpdatedAt:                  time.Now().UnixMilli(),
 	}
 	return store.Save(session)
 }
@@ -282,6 +310,12 @@ func (r *wechatChatRuntime) snapshotAgentSessions(convID string) map[string]stri
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return cloneAgentSessions(r.agentSessions[convID])
+}
+
+func (r *wechatChatRuntime) snapshotAgentSessionProfileDigests(convID string) map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return cloneAgentSessions(r.agentSessionProfileDigests[convID])
 }
 
 func (r *wechatChatRuntime) ensureInitialized(agentID string, workspaceID string, workspacePath string, sink wechat.ChatEventSink) error {
@@ -323,7 +357,7 @@ func (r *wechatChatRuntime) ensureInitialized(agentID string, workspaceID string
 	return nil
 }
 
-func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, sink wechat.ChatEventSink) (string, bool, error) {
+func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, profile sessioninstruction.Profile, support sessioninstruction.Support, sink wechat.ChatEventSink) (string, bool, error) {
 	r.mu.Lock()
 	sessions := r.agentSessions[input.ConversationID]
 	if sessions == nil {
@@ -331,33 +365,47 @@ func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, sink w
 		r.agentSessions[input.ConversationID] = sessions
 	}
 	sessionID := ""
+	loaded := false
 	if !input.NewSession {
-		if r.agentSessionPromptVersions[input.ConversationID][input.AgentID] == imSystemPromptVersion {
+		if r.agentSessionProfileDigests[input.ConversationID][input.AgentID] == profile.ProfileDigest {
 			sessionID = sessions[input.AgentID]
+			loaded = r.agentSessionLoaded[input.ConversationID][input.AgentID]
 		}
 	}
 	r.mu.Unlock()
 	if sessionID != "" {
-		return sessionID, false, nil
+		if loaded {
+			return sessionID, false, nil
+		}
+		loadParams := map[string]any{
+			"sessionId":  sessionID,
+			"cwd":        input.WorkspacePath,
+			"mcpServers": AgentMCPServersFor(r.config.Agents, input.AgentID, r.mcpStore),
+		}
+		if err := sessioninstruction.ApplyProfile(loadParams, support, profile, sessioninstruction.PhaseLoad); err != nil {
+			return "", false, r.emitError(sink, err.Error())
+		}
+		if _, err := r.agents.Request(input.AgentID, "session/load", loadParams); err == nil {
+			r.mu.Lock()
+			if r.agentSessionLoaded[input.ConversationID] == nil {
+				r.agentSessionLoaded[input.ConversationID] = make(map[string]bool)
+			}
+			r.agentSessionLoaded[input.ConversationID][input.AgentID] = true
+			r.mu.Unlock()
+			return sessionID, false, nil
+		} else if !isRemoteSessionInvalidError(err.Error()) {
+			return "", false, r.emitError(sink, err.Error())
+		}
 	}
 
-	result, err := r.agents.Request(input.AgentID, "session/new", map[string]any{
+	newParams := map[string]any{
 		"cwd":        input.WorkspacePath,
 		"mcpServers": AgentMCPServersFor(r.config.Agents, input.AgentID, r.mcpStore),
-		"_meta": map[string]any{
-			"systemPrompt": map[string]string{
-				"append": buildIMSystemPromptAppend(input.PromptPrefix, lumicron.ToolContext{
-					APIBase:        lumiAPIBaseForWorkspace(r.config, input.WorkspaceID),
-					Channel:        lumicron.ChannelWeChat,
-					ConversationID: input.ConversationID,
-					AgentID:        input.AgentID,
-					WorkspaceID:    input.WorkspaceID,
-					WorkspacePath:  input.WorkspacePath,
-					Target:         input.CronTarget,
-				}),
-			},
-		},
-	})
+	}
+	if err := sessioninstruction.ApplyProfile(newParams, support, profile, sessioninstruction.PhaseNew); err != nil {
+		return "", false, r.emitError(sink, err.Error())
+	}
+	result, err := r.agents.Request(input.AgentID, "session/new", newParams)
 	if err != nil {
 		return "", false, r.emitError(sink, err.Error())
 	}
@@ -384,10 +432,14 @@ func (r *wechatChatRuntime) ensureAgentSession(input wechat.ChatRunInput, sink w
 			r.agentSessions[input.ConversationID] = make(map[string]string)
 		}
 		r.agentSessions[input.ConversationID][input.AgentID] = sessionID
-		if r.agentSessionPromptVersions[input.ConversationID] == nil {
-			r.agentSessionPromptVersions[input.ConversationID] = make(map[string]int)
+		if r.agentSessionProfileDigests[input.ConversationID] == nil {
+			r.agentSessionProfileDigests[input.ConversationID] = make(map[string]string)
 		}
-		r.agentSessionPromptVersions[input.ConversationID][input.AgentID] = imSystemPromptVersion
+		r.agentSessionProfileDigests[input.ConversationID][input.AgentID] = profile.ProfileDigest
+		if r.agentSessionLoaded[input.ConversationID] == nil {
+			r.agentSessionLoaded[input.ConversationID] = make(map[string]bool)
+		}
+		r.agentSessionLoaded[input.ConversationID][input.AgentID] = true
 	}
 	r.mu.Unlock()
 	return sessionID, true, nil

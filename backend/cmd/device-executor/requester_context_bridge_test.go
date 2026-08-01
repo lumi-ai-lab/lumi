@@ -13,6 +13,7 @@ import (
 	"github.com/pengmide/lumi/internal/agent"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/requestercontext"
+	"github.com/pengmide/lumi/internal/sessioninstruction"
 )
 
 func TestSandboxRequesterContextBridgeDirMatchesAgentEnv(t *testing.T) {
@@ -99,7 +100,7 @@ func TestSandboxPromptPublishesMetaAndSessionFile(t *testing.T) {
 		Command: "sh",
 		Args: []string{
 			"-c",
-			`IFS= read -r line; printf '%s\n' "$line" > "$REQUEST_CAPTURE_PATH"; if [ -f "$EXPECTED_CONTEXT_PATH" ]; then printf present > "$CONTEXT_PRESENT_PATH"; fi; printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}'`,
+			`IFS= read -r initialize; printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"_meta":{"lumi":{"sessionInstructions":{"transportVersion":1,"systemPromptAppend":true,"rehydrateOnRestore":true,"turnContext":true}}}}}'; IFS= read -r line; printf '%s\n' "$line" > "$REQUEST_CAPTURE_PATH"; if [ -f "$EXPECTED_CONTEXT_PATH" ]; then printf present > "$CONTEXT_PRESENT_PATH"; fi; printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'`,
 		},
 		Env: map[string]string{
 			"REQUEST_CAPTURE_PATH":  requestCapturePath,
@@ -108,12 +109,18 @@ func TestSandboxPromptPublishesMetaAndSessionFile(t *testing.T) {
 		},
 	})
 	t.Cleanup(func() { _ = proc.Stop() })
+	if _, err := proc.Request("initialize", map[string]any{"protocolVersion": 1}); err != nil {
+		t.Fatalf("initialize fake ACP process: %v", err)
+	}
 
 	requester := bridgeTestRequesterContext()
+	profile := sessioninstruction.NewProfile("stable protocol", "Session routing context")
 	_, err = runner.promptWithRequesterContext(proc, sessionID, TaskExecutePayload{
-		AgentID:          "fake-agent",
-		Prompt:           "show revenue",
-		RequesterContext: &requester,
+		AgentID:            "fake-agent",
+		Prompt:             "show revenue",
+		InstructionProfile: &profile,
+		TurnContext:        "quoted prior history",
+		RequesterContext:   &requester,
 	})
 	if err != nil {
 		t.Fatalf("promptWithRequesterContext() error = %v", err)
@@ -148,7 +155,23 @@ func TestSandboxPromptPublishesMetaAndSessionFile(t *testing.T) {
 		t.Fatalf("prompt content = %#v", request.Params.Prompt)
 	}
 
-	wantMeta := requestercontext.PromptMeta(requester)
+	wantParams := map[string]any{"_meta": requestercontext.PromptMeta(requester)}
+	support := sessioninstruction.Support{
+		Transport: sessioninstruction.TransportLumiV1,
+		Capability: sessioninstruction.Capability{
+			TransportVersion:   sessioninstruction.TransportVersion,
+			SystemPromptAppend: true,
+			RehydrateOnRestore: true,
+			TurnContext:        true,
+		},
+	}
+	if err := sessioninstruction.ApplyProfile(wantParams, support, profile, sessioninstruction.PhasePrompt); err != nil {
+		t.Fatal(err)
+	}
+	if !sessioninstruction.ApplyTurnContext(wantParams, support, "quoted prior history") {
+		t.Fatal("expected turn context support")
+	}
+	wantMeta := wantParams["_meta"]
 	wantMetaData, err := json.Marshal(wantMeta)
 	if err != nil {
 		t.Fatalf("json.Marshal(want meta) error = %v", err)

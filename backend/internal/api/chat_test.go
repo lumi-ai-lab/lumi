@@ -56,7 +56,7 @@ func TestPersistAndRestoreConversationKeepsAgentSessions(t *testing.T) {
 	server.conversations.AddUserMessage(conv.ID, "hello", nil)
 	server.conversations.SetSessionID(conv.ID, "local-session-1")
 	server.agentSessions[conv.ID] = map[string]string{"claude": "local-session-1"}
-	server.setRemoteSession(conv.ID, "dev-1", "claude", "remote-session-1")
+	server.setRemoteSessionForProfile(conv.ID, "dev-1", "claude", "remote-session-1", "profile-digest")
 
 	server.persistConversation(conv.ID)
 	stored, err := server.sessionStore.Load(conv.ID)
@@ -68,6 +68,9 @@ func TestPersistAndRestoreConversationKeepsAgentSessions(t *testing.T) {
 	}
 	if got := stored.RemoteAgentSessions["dev-1"]["claude"]; got != "remote-session-1" {
 		t.Fatalf("stored.RemoteAgentSessions[dev-1][claude] = %q, want remote-session-1", got)
+	}
+	if got := stored.RemoteAgentSessionProfileDigests["dev-1"]["claude"]; got != "profile-digest" {
+		t.Fatalf("stored remote profile digest = %q", got)
 	}
 
 	restored := newTestAPIServer(t)
@@ -83,17 +86,17 @@ func TestPersistAndRestoreConversationKeepsAgentSessions(t *testing.T) {
 	}
 }
 
-func TestClearRemoteSessionRemovesPromptVersionMapping(t *testing.T) {
+func TestClearRemoteSessionRemovesProfileDigestMapping(t *testing.T) {
 	server := newTestAPIServer(t)
-	server.setRemoteSessionForPromptVersion("conv-1", "dev-1", "pi", "remote-session-1", imSystemPromptVersion)
+	server.setRemoteSessionForProfile("conv-1", "dev-1", "pi", "remote-session-1", "profile-digest")
 
 	server.clearRemoteSession("conv-1", "dev-1", "pi")
 
 	if got := server.getRemoteSession("conv-1", "dev-1", "pi"); got != "" {
 		t.Fatalf("getRemoteSession() = %q, want empty", got)
 	}
-	if got := server.getRemoteSessionForPromptVersion("conv-1", "dev-1", "pi", imSystemPromptVersion); got != "" {
-		t.Fatalf("getRemoteSessionForPromptVersion() = %q, want empty", got)
+	if got := server.getRemoteSessionForProfile("conv-1", "dev-1", "pi", "profile-digest"); got != "" {
+		t.Fatalf("getRemoteSessionForProfile() = %q, want empty", got)
 	}
 }
 
@@ -171,7 +174,7 @@ func TestServerWithMigratedConfigExposesBuiltInAgentsAndSetup(t *testing.T) {
 	if !strings.Contains(setupRec.Body.String(), `@qwen-code/qwen-code`) {
 		t.Fatalf("/api/setup/status missing qwen package: %s", setupRec.Body.String())
 	}
-	if !strings.Contains(setupRec.Body.String(), `pi-acp@0.0.27`) || !strings.Contains(setupRec.Body.String(), `"command":"pi"`) {
+	if strings.Contains(setupRec.Body.String(), config.PiACPPackageSpec) || !strings.Contains(setupRec.Body.String(), `"command":"pi"`) {
 		t.Fatalf("/api/setup/status missing pi setup items: %s", setupRec.Body.String())
 	}
 }

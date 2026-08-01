@@ -8,8 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pengmide/lumi/internal/agentmode"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/jsonrpc"
+	"github.com/pengmide/lumi/internal/piacpbridge"
+	"github.com/pengmide/lumi/internal/sessioninstruction"
 )
 
 // Status represents agent process status
@@ -86,6 +89,32 @@ type Process struct {
 	// Event handlers (support multiple concurrent handlers)
 	notificationHandlers []notificationCallback
 	permissionHandlers   []permissionCallback
+	instructionSupport   sessioninstruction.Support
+}
+
+// SessionInstructionSupport returns the capability captured from initialize.
+// Claude's established systemPrompt.append extension is the sole compatibility
+// profile; PI and all unknown adapters must declare the Lumi capability.
+func (p *Process) SessionInstructionSupport() sessioninstruction.Support {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.instructionSupport.SupportsProfile() || p.instructionSupport.Explicit {
+		return p.instructionSupport
+	}
+	if p.config != nil {
+		backend := agentmode.DetectBackend(p.config.ID, p.config.Command, p.config.Args)
+		if backend == agentmode.BackendClaude {
+			return sessioninstruction.KnownClaudeSupport()
+		}
+	}
+	return sessioninstruction.Support{}
+}
+
+func (p *Process) captureInitializeResult(result []byte) {
+	support, _ := sessioninstruction.ExplicitSupportFromInitialize(result)
+	p.mu.Lock()
+	p.instructionSupport = support
+	p.mu.Unlock()
 }
 
 // NewProcess creates a new agent process
@@ -169,24 +198,20 @@ func (p *Process) Start() error {
 	p.status = StatusStarting
 	p.mu.Unlock()
 
-	cfg, err := ResolveManagedConfig(p.config)
+	command, args, err := processCommand(p.config)
 	if err != nil {
 		p.setStatus(StatusError)
 		return err
 	}
-	if cfg != p.config {
-		fmt.Printf("Using Lumi managed agent [%s]: %s\n", p.ID, cfg.Command)
-	}
-
-	cmd := exec.Command(cfg.Command, cfg.Args...)
+	cmd := exec.Command(command, args...)
 	cmd.Env = os.Environ()
-	for k, v := range cfg.Env {
+	for k, v := range p.config.Env {
 		envVar := fmt.Sprintf("%s=%s", k, v)
 		cmd.Env = append(cmd.Env, envVar)
 		if isSensitiveEnvKey(k) {
 			fmt.Printf("ENV [%s] %s=<redacted>\n", p.ID, k)
 		} else {
-			fmt.Printf("ENV [%s] %s\n", p.ID, redactLogValue(envVar))
+			fmt.Printf("ENV [%s] %s=<set>\n", p.ID, k)
 		}
 	}
 
@@ -230,6 +255,20 @@ func (p *Process) Start() error {
 	return nil
 }
 
+func processCommand(cfg *config.AgentConfig) (string, []string, error) {
+	if cfg == nil {
+		return "", nil, fmt.Errorf("agent config is missing")
+	}
+	if !config.IsBuiltInPIACP(*cfg) {
+		return cfg.Command, append([]string(nil), cfg.Args...), nil
+	}
+	entrypoint, err := piacpbridge.Materialize()
+	if err != nil {
+		return "", nil, err
+	}
+	return "node", []string{entrypoint}, nil
+}
+
 // readStderr reads and logs stderr output
 func (p *Process) readStderr() {
 	p.mu.Lock()
@@ -244,7 +283,7 @@ func (p *Process) readStderr() {
 	for {
 		n, err := stderr.Read(buf)
 		if n > 0 {
-			fmt.Printf("!!! [%s] stderr: %s", p.ID, redactLogValue(string(buf[:n])))
+			fmt.Printf("!!! [%s] stderr output received (%d bytes, content suppressed)\n", p.ID, n)
 		}
 		if err != nil {
 			break

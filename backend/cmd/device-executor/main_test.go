@@ -1,10 +1,11 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/pengmide/lumi/internal/acppatch"
+	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/setupcheck"
 )
 
@@ -51,16 +52,36 @@ func TestInstallSetupDependenciesWritesBootstrapManifest(t *testing.T) {
 	}
 }
 
-func TestSetupSignatureIncludesPiACPPatchID(t *testing.T) {
+func TestSetupSignatureIncludesPinnedPiVersions(t *testing.T) {
 	status := setupcheck.SetupStatus{
+		Agents: []setupcheck.DependencyItem{
+			{Name: "PI", Command: "pi", Package: config.PiCodingAgentPackageSpec, Status: "ready"},
+		},
 		ACPPackages: []setupcheck.DependencyItem{
-			{Name: "PI", Package: acppatch.PiACPPackageSpec, Status: "ready"},
+			{Name: "PI", Package: config.PiACPPackageSpec, Status: "ready"},
 		},
 	}
-	withPatch := setupSignature(status)
-	status.ACPPackages[0].Package = "pi-acp@0.0.28"
-	withoutPatch := setupSignature(status)
-	if withPatch == withoutPatch {
-		t.Fatal("setupSignature did not include PI ACP patch identity")
+	current := setupSignature(status)
+	status.ACPPackages[0].Package = config.LegacyPiACPPackageSpec
+	if current == setupSignature(status) {
+		t.Fatal("setupSignature did not include PI ACP version")
+	}
+	status.ACPPackages[0].Package = config.PiACPPackageSpec
+	status.Agents[0].Package = "@earendil-works/pi-coding-agent@0.82.1"
+	if current == setupSignature(status) {
+		t.Fatal("setupSignature did not include PI CLI version")
+	}
+}
+
+func TestBootstrapManifestRejectsPreviousVersion(t *testing.T) {
+	original := bootstrapManifestFile
+	bootstrapManifestFile = filepath.Join(t.TempDir(), "bootstrap.json")
+	t.Cleanup(func() { bootstrapManifestFile = original })
+
+	if err := os.WriteFile(bootstrapManifestFile, []byte(`{"version":1,"signature":"legacy"}`), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if bootstrapManifestReady("legacy") {
+		t.Fatal("bootstrapManifestReady() accepted the pre-upgrade manifest version")
 	}
 }

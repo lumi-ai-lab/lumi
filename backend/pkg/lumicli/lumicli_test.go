@@ -84,6 +84,55 @@ func TestEnsureConfigFileDoesNotRewriteExistingConfig(t *testing.T) {
 	}
 }
 
+func TestResolveConfigStatePersistsExactLegacyPiACPMigration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	configPath := filepath.Join(home, ".lumi", "lumi.config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	original := `{
+  "customTopLevel": {"keep": true},
+  "agents": [
+    {"id":"claude","name":"Claude Code","command":"npx"},
+    {"id":"pi","name":"Custom PI Name","command":"npx","args":["-y","` + config.LegacyPiACPPackageSpec + `"],"env":{"KEEP":"1"},"sessionMode":"bypass","customAgentField":"keep"}
+  ],
+  "defaultAgent":"claude",
+  "routing":{"keywords":{"@qwen":"qwen","@pi":"pi"}}
+}
+`
+	if err := os.WriteFile(configPath, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	state, err := ResolveConfigState(configPath)
+	if err != nil {
+		t.Fatalf("ResolveConfigState() error = %v", err)
+	}
+	pi := state.Config.FindAgent("pi")
+	if pi == nil || strings.Join(pi.Args, " ") != "-y "+config.PiACPPackageSpec {
+		t.Fatalf("PI config = %+v, want migrated %s", pi, config.PiACPPackageSpec)
+	}
+	if pi.Name != "Custom PI Name" || pi.Env["KEEP"] != "1" || pi.SessionMode != "bypass" {
+		t.Fatalf("migration overwrote supported custom fields: %+v", pi)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, config.LegacyPiACPPackageSpec) || !strings.Contains(text, config.PiACPPackageSpec) {
+		t.Fatalf("PI ACP migration was not persisted:\n%s", data)
+	}
+	for _, want := range []string{`"customTopLevel": {`, `"keep": true`, `"customAgentField": "keep"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("migration dropped custom field %s:\n%s", want, data)
+		}
+	}
+}
+
 func TestAgentIDsReturnsExistingAgents(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

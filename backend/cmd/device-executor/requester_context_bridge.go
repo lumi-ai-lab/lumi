@@ -11,6 +11,7 @@ import (
 	"github.com/pengmide/lumi/internal/agent"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 	"github.com/pengmide/lumi/internal/requestercontext"
+	"github.com/pengmide/lumi/internal/sessioninstruction"
 )
 
 func executorRequesterContextRoot() string {
@@ -32,11 +33,25 @@ func (r *Runner) requesterContextBridge(agentID string) (*requestercontext.FileB
 }
 
 func (r *Runner) promptWithRequesterContext(proc *agent.Process, sessionID string, payload TaskExecutePayload) (*jsonrpc.Message, error) {
+	promptText := payload.Prompt
 	params := map[string]any{
 		"sessionId": sessionID,
 		"prompt": []map[string]string{
-			{"type": "text", "text": payload.Prompt},
+			{"type": "text", "text": promptText},
 		},
+	}
+	if payload.RequesterContext != nil {
+		params["_meta"] = requestercontext.PromptMeta(*payload.RequesterContext)
+	}
+	if payload.InstructionProfile != nil {
+		support := proc.SessionInstructionSupport()
+		if err := sessioninstruction.ApplyProfile(params, support, *payload.InstructionProfile, sessioninstruction.PhasePrompt); err != nil {
+			return nil, err
+		}
+		if payload.TurnContext != "" && !sessioninstruction.ApplyTurnContext(params, support, payload.TurnContext) {
+			promptText = sessioninstruction.WithUntrustedTurnContext(promptText, payload.TurnContext)
+			params["prompt"] = []map[string]string{{"type": "text", "text": promptText}}
+		}
 	}
 	if payload.RequesterContext == nil {
 		return proc.Request("session/prompt", params)
@@ -46,16 +61,15 @@ func (r *Runner) promptWithRequesterContext(proc *agent.Process, sessionID strin
 	if err != nil {
 		return nil, err
 	}
-	path, cleanup, err := bridge.Write(sessionID, *payload.RequesterContext)
+	_, cleanup, err := bridge.Write(sessionID, *payload.RequesterContext)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		if cleanupErr := cleanup(); cleanupErr != nil {
-			log.Printf("failed to clean requester context file %s: %v", path, cleanupErr)
+			log.Printf("failed to clean requester context file: %v", cleanupErr)
 		}
 	}()
-	params["_meta"] = requestercontext.PromptMeta(*payload.RequesterContext)
 	response, err := proc.Request("session/prompt", params)
 	if err != nil {
 		return nil, fmt.Errorf("request agent prompt: %w", err)

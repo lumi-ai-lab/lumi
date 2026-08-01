@@ -1,13 +1,13 @@
 package setupcheck
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/pengmide/lumi/internal/acppatch"
 	"github.com/pengmide/lumi/internal/config"
 )
 
@@ -36,7 +36,7 @@ var installInstructions = map[string]string{
 	"claude": "npm install -g @anthropic-ai/claude-code",
 	"codex":  "npm install -g @openai/codex",
 	"qwen":   "npm install -g @qwen-code/qwen-code",
-	"pi":     "npm install -g @earendil-works/pi-coding-agent@0.78.0",
+	"pi":     "npm install -g " + config.PiCodingAgentPackageSpec,
 }
 
 var acpToAgentCommand = map[string]struct {
@@ -68,6 +68,13 @@ func InitialStatus(agents []config.AgentConfig) SetupStatus {
 	}{}
 
 	for _, agentCfg := range agents {
+		if config.IsBuiltInPIACP(agentCfg) {
+			requiredAgents["pi"] = struct {
+				Name    string
+				Command string
+			}{Name: agentCfg.Name, Command: "pi"}
+			continue
+		}
 		if agentCfg.Command == "npx" {
 			pkgSpec := extractPackageName(agentCfg.Command, agentCfg.Args)
 			if pkgSpec != "" {
@@ -106,6 +113,7 @@ func InitialStatus(agents []config.AgentConfig) SetupStatus {
 		status.Agents = append(status.Agents, DependencyItem{
 			Name:    agentInfo.Name,
 			Command: agentInfo.Command,
+			Package: agentNpmPackages[agentInfo.Command],
 			Status:  "checking",
 			Message: "Checking...",
 		})
@@ -144,6 +152,13 @@ func Check(agents []config.AgentConfig) SetupStatus {
 	for i := range status.Agents {
 		item := &status.Agents[i]
 		if commandExists(item.Command) {
+			if item.Command == "pi" && !commandSatisfiesSemver(item.Command, config.PiCodingAgentMinimumVersion) {
+				item.Status = "outdated"
+				item.Message = "Requires PI >= " + config.PiCodingAgentMinimumVersion + " for " + config.PiACPPackageSpec
+				item.Install = installInstructions[item.Command]
+				allAgentsReady = false
+				continue
+			}
 			item.Status = "ready"
 			item.Message = "Installed"
 			continue
@@ -162,17 +177,6 @@ func Check(agents []config.AgentConfig) SetupStatus {
 		case !npmReady || !npxReady:
 			item.Status = "blocked"
 			item.Message = "Requires npm/npx"
-			allACPReady = false
-		case acppatch.IsTargetPiACP(item.Package):
-			patchStatus := acppatch.Status(acppatch.RuntimeOptions{})
-			if patchStatus.Applied {
-				item.Status = "ready"
-				item.Message = patchStatus.Message
-				break
-			}
-			item.Status = "not_installed"
-			item.Message = patchStatus.Message
-			item.Install = "npm install -g --prefix " + acppatch.RuntimePrefix() + " " + item.Package
 			allACPReady = false
 		case isPackageCached(item.Package):
 			item.Status = "ready"
@@ -234,6 +238,9 @@ func commandExists(command string) bool {
 
 func requiresPi(agents []config.AgentConfig) bool {
 	for _, agentCfg := range agents {
+		if config.IsBuiltInPIACP(agentCfg) {
+			return true
+		}
 		if normalizePackageName(extractPackageName(agentCfg.Command, agentCfg.Args)) == "pi-acp" {
 			return true
 		}
@@ -245,12 +252,45 @@ func requiresPi(agents []config.AgentConfig) bool {
 }
 
 func nodeSatisfies(minVersion string) bool {
-	cmd := exec.Command("node", "--version")
+	return commandSatisfiesSemver("node", minVersion)
+}
+
+func commandSatisfiesSemver(command, minVersion string) bool {
+	cmd := exec.Command(command, "--version")
 	output, err := cmd.Output()
 	if err != nil {
 		return false
 	}
-	return compareSemver(strings.TrimSpace(string(output)), minVersion) >= 0
+	version := firstSemverToken(string(output))
+	return version != "" && compareSemver(version, minVersion) >= 0
+}
+
+func firstSemverToken(value string) string {
+	for _, field := range strings.Fields(value) {
+		candidate := strings.Trim(field, "vV,;()[]")
+		core := strings.SplitN(strings.SplitN(candidate, "-", 2)[0], "+", 2)[0]
+		parts := strings.Split(core, ".")
+		if len(parts) != 3 {
+			continue
+		}
+		valid := true
+		for _, part := range parts {
+			if part == "" {
+				valid = false
+				break
+			}
+			for _, r := range part {
+				if r < '0' || r > '9' {
+					valid = false
+					break
+				}
+			}
+		}
+		if valid {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func compareSemver(actual, minimum string) int {
@@ -285,14 +325,15 @@ func semverPart(parts []string, index int) int {
 	return value
 }
 
-func isPackageCached(packageName string) bool {
-	packageName = normalizePackageName(packageName)
+func isPackageCached(packageSpec string) bool {
+	packageName := normalizePackageName(packageSpec)
 	if packageName == "" {
 		return false
 	}
+	expectedVersion := exactPackageVersion(packageSpec)
 
-	cmd := exec.Command("npm", "list", "-g", "--depth=0", packageName)
-	if err := cmd.Run(); err == nil {
+	cmd := exec.Command("npm", "list", "-g", "--depth=0", "--json", packageName)
+	if output, _ := cmd.Output(); installedPackageVersion(output, packageName, expectedVersion) {
 		return true
 	}
 
@@ -317,13 +358,57 @@ func isPackageCached(packageName string) bool {
 				continue
 			}
 			pkgPath := filepath.Join(cacheDir, entry.Name(), "node_modules", packageName, "package.json")
-			if _, err := os.Stat(pkgPath); err == nil {
+			if packageJSONMatches(pkgPath, packageName, expectedVersion) {
 				return true
 			}
 		}
 	}
 
 	return false
+}
+
+func exactPackageVersion(packageSpec string) string {
+	packageName := normalizePackageName(packageSpec)
+	if packageName == "" || len(packageSpec) <= len(packageName) || packageSpec[len(packageName)] != '@' {
+		return ""
+	}
+	version := packageSpec[len(packageName)+1:]
+	if firstSemverToken(version) != version {
+		return ""
+	}
+	return version
+}
+
+func installedPackageVersion(data []byte, packageName, expectedVersion string) bool {
+	var listing struct {
+		Dependencies map[string]struct {
+			Version string `json:"version"`
+		} `json:"dependencies"`
+	}
+	if json.Unmarshal(data, &listing) != nil {
+		return false
+	}
+	installed, ok := listing.Dependencies[packageName]
+	return ok && versionMatches(installed.Version, expectedVersion)
+}
+
+func packageJSONMatches(path, packageName, expectedVersion string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var metadata struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	}
+	if json.Unmarshal(data, &metadata) != nil || metadata.Name != packageName {
+		return false
+	}
+	return versionMatches(metadata.Version, expectedVersion)
+}
+
+func versionMatches(installed, expected string) bool {
+	return installed != "" && (expected == "" || installed == expected)
 }
 
 func isWindows() bool {

@@ -120,6 +120,23 @@ func TestIMRunRequiresIMContext(t *testing.T) {
 	}
 }
 
+func TestIMRunAcceptsConversationForServerResolvedTarget(t *testing.T) {
+	opts := imRunOptions{
+		apiBase:        "http://lumi.invalid/api",
+		channel:        "wecom",
+		workspacePath:  t.TempDir(),
+		conversationID: "conversation-1",
+		shellCommand:   "echo ready",
+	}
+	if err := validateIMRunOptions(opts, nil); err != nil {
+		t.Fatalf("validateIMRunOptions() error = %v", err)
+	}
+	opts.conversationID = ""
+	if err := validateIMRunOptions(opts, nil); err == nil || !strings.Contains(err.Error(), "conversation-id") {
+		t.Fatalf("validateIMRunOptions() error = %v, want stable conversation handle requirement", err)
+	}
+}
+
 func TestCronEditParsesScopedFlagsAfterValue(t *testing.T) {
 	var gotPath string
 	var gotQuery string

@@ -69,9 +69,9 @@ func runServer(args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	if config.LoadedConfigPath != "" && cfg.BuiltInDefaultsChanged() {
+	if config.LoadedConfigPath != "" && cfg.LegacyPiACPConfigMigrated() {
 		if err := cfg.Save(config.LoadedConfigPath); err != nil {
-			return fmt.Errorf("failed to save config defaults: %w", err)
+			return fmt.Errorf("failed to save PI ACP config migration: %w", err)
 		}
 	}
 

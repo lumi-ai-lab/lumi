@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/imfile"
 	"github.com/pengmide/lumi/internal/wecom"
 )
@@ -60,6 +61,14 @@ func (s *Server) sendIM(ctx context.Context, req imSendRequest) error {
 	typ := strings.TrimSpace(req.Type)
 	if typ != "text" && typ != "image" && typ != "file" {
 		return imSendBadRequest("type must be text, image, or file")
+	}
+	if strings.TrimSpace(req.WeCom.ChatID) == "" && strings.TrimSpace(req.WeCom.ReqID) == "" {
+		if target, ok := s.currentIMTarget(lumicron.ChannelWeCom, req.ConversationID); ok && target.WeCom != nil {
+			req.WeCom = imSendWeComRequest{
+				ReqID: target.WeCom.ReqID, ChatID: target.WeCom.ChatID,
+				ChatType: target.WeCom.ChatType, UserID: target.WeCom.UserID,
+			}
+		}
 	}
 	if strings.TrimSpace(req.WeCom.ChatID) == "" && strings.TrimSpace(req.WeCom.ReqID) == "" {
 		return imSendBadRequest("wecom.chatId or wecom.reqId is required")

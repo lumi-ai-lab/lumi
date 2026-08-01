@@ -13,6 +13,7 @@ import (
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 	"github.com/pengmide/lumi/internal/requestercontext"
+	"github.com/pengmide/lumi/internal/sessioninstruction"
 )
 
 type Runner struct {
@@ -146,11 +147,9 @@ func (r *Runner) createSession(taskID string, proc *agent.Process, payload TaskE
 		"cwd":        cwd,
 		"mcpServers": MCPRecordsForBackend(backend),
 	}
-	if payload.SystemPromptAppend != "" {
-		sessionNewParams["_meta"] = map[string]any{
-			"systemPrompt": map[string]string{
-				"append": payload.SystemPromptAppend,
-			},
+	if payload.InstructionProfile != nil {
+		if err := sessioninstruction.ApplyProfile(sessionNewParams, proc.SessionInstructionSupport(), *payload.InstructionProfile, sessioninstruction.PhaseNew); err != nil {
+			return "", err
 		}
 	}
 	resp, err := proc.Request("session/new", sessionNewParams)
@@ -348,11 +347,7 @@ func (r *Runner) getOrStartAgent(agentID, workspacePath string) (*agent.Process,
 		if agentCfg == nil {
 			return nil, fmt.Errorf("agent not found: %s", agentID)
 		}
-		resolvedAgentCfg, err := agent.ResolveManagedConfig(agentCfg)
-		if err != nil {
-			return nil, err
-		}
-		runtimeEnv, err := buildLumiRuntimeEnv(r.client.server, r.cfg, resolvedAgentCfg.Env)
+		runtimeEnv, err := buildLumiRuntimeEnv(r.client.server, r.cfg, agentCfg.Env)
 		if err != nil {
 			return nil, err
 		}
@@ -361,7 +356,7 @@ func (r *Runner) getOrStartAgent(agentID, workspacePath string) (*agent.Process,
 			return nil, err
 		}
 		runtimeEnv[requestercontext.EnvRequesterContextDir] = bridge.Dir()
-		proc = agent.NewProcess(mergeAgentEnv(resolvedAgentCfg, runtimeEnv))
+		proc = agent.NewProcess(mergeAgentEnv(agentCfg, runtimeEnv))
 		r.agents[agentID] = proc
 	}
 

@@ -432,9 +432,13 @@ func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	if !reflect.DeepEqual(taskPayload.RequesterContext, requester) {
 		t.Fatalf("RequesterContext = %#v, want %#v", taskPayload.RequesterContext, requester)
 	}
-	for _, want := range []string{"prefix", "You are running inside Lumi.", "Current Lumi context:"} {
-		if !strings.Contains(taskPayload.SystemPromptAppend, want) {
-			t.Fatalf("SystemPromptAppend missing %q:\n%s", want, taskPayload.SystemPromptAppend)
+	if taskPayload.InstructionProfile == nil {
+		t.Fatal("InstructionProfile is nil")
+	}
+	profileText := taskPayload.InstructionProfile.Text()
+	for _, want := range []string{"prefix", "You are running inside Lumi.", "Current Lumi Session context:"} {
+		if !strings.Contains(profileText, want) {
+			t.Fatalf("InstructionProfile missing %q:\n%s", want, profileText)
 		}
 	}
 	if err := wsjson.Write(ctx, conn, device.AckEnvelope(taskExecute.ID)); err != nil {
@@ -836,9 +840,15 @@ func TestRunWeComChatSandboxSwitchPersistsActiveAgentAndInjectsContext(t *testin
 	if taskPayload.Prompt != "new question" {
 		t.Fatalf("Prompt = %q, want clean user message", taskPayload.Prompt)
 	}
-	for _, want := range []string{"[Previous conversation context]", "User: previous question", "Assistant (claude): previous answer", "prefix"} {
-		if !strings.Contains(taskPayload.SystemPromptAppend, want) {
-			t.Fatalf("system prompt append missing %q:\n%s", want, taskPayload.SystemPromptAppend)
+	if taskPayload.InstructionProfile == nil || !strings.Contains(taskPayload.InstructionProfile.BaseInstructions, "prefix") {
+		t.Fatalf("InstructionProfile = %#v", taskPayload.InstructionProfile)
+	}
+	if strings.Contains(taskPayload.InstructionProfile.Text(), "previous question") {
+		t.Fatalf("untrusted history was promoted into Session instructions: %s", taskPayload.InstructionProfile.Text())
+	}
+	for _, want := range []string{"[Previous conversation context]", "User: previous question", "Assistant (claude): previous answer"} {
+		if !strings.Contains(taskPayload.TurnContext, want) {
+			t.Fatalf("turn context missing %q:\n%s", want, taskPayload.TurnContext)
 		}
 	}
 	if err := wsjson.Write(ctx, conn, device.AckEnvelope(taskExecute.ID)); err != nil {
@@ -926,9 +936,13 @@ func TestRunWeChatChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	if taskPayload.Prompt != "hello sandbox" {
 		t.Fatalf("Prompt = %q, want clean user message", taskPayload.Prompt)
 	}
-	for _, want := range []string{"prefix", "You are running inside Lumi.", "Current Lumi context:"} {
-		if !strings.Contains(taskPayload.SystemPromptAppend, want) {
-			t.Fatalf("SystemPromptAppend missing %q:\n%s", want, taskPayload.SystemPromptAppend)
+	if taskPayload.InstructionProfile == nil {
+		t.Fatal("InstructionProfile is nil")
+	}
+	profileText := taskPayload.InstructionProfile.Text()
+	for _, want := range []string{"prefix", "You are running inside Lumi.", "Current Lumi Session context:"} {
+		if !strings.Contains(profileText, want) {
+			t.Fatalf("InstructionProfile missing %q:\n%s", want, profileText)
 		}
 	}
 	if err := wsjson.Write(ctx, conn, device.AckEnvelope(taskExecute.ID)); err != nil {

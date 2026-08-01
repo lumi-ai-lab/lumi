@@ -1,6 +1,10 @@
 package agentmode
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/pengmide/lumi/internal/config"
+)
 
 func TestResolveSessionMode(t *testing.T) {
 	t.Parallel()
@@ -92,7 +96,7 @@ func TestDetectBackendRecognizesPi(t *testing.T) {
 		args    []string
 	}{
 		{name: "id", id: "pi", command: "npx"},
-		{name: "package arg", command: "npx", args: []string{"-y", "pi-acp@0.0.27"}},
+		{name: "package arg", command: "npx", args: []string{"-y", config.PiACPPackageSpec}},
 		{name: "global command", command: "pi-acp"},
 	}
 

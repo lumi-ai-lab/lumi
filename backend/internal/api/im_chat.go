@@ -15,6 +15,7 @@ import (
 	"github.com/pengmide/lumi/internal/device"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 	"github.com/pengmide/lumi/internal/requestercontext"
+	"github.com/pengmide/lumi/internal/sessioninstruction"
 	"github.com/pengmide/lumi/internal/storage"
 	"github.com/pengmide/lumi/internal/wechat"
 	"github.com/pengmide/lumi/internal/wecom"
@@ -33,7 +34,8 @@ type imRunInput struct {
 	DeviceID           string
 	AgentID            string
 	Prompt             string
-	SystemPromptAppend string
+	InstructionProfile sessioninstruction.Profile
+	TurnContext        string
 	Files              []device.TaskFileInfo
 	ConversationStore  imHiddenConversationStore
 	NewSession         bool
@@ -97,6 +99,7 @@ func (s *Server) RunWeComChat(ctx context.Context, input wecom.ChatRunInput, sin
 	if input.ConversationID == "" || input.WorkspaceID == "" || input.AgentID == "" || input.ConversationStore == nil {
 		return errors.New("invalid wecom chat input")
 	}
+	s.rememberIMTarget(lumicron.ChannelWeCom, input.ConversationID, input.CronTarget)
 	runtime, err := s.resolveWorkspaceRuntime(ctx, input.WorkspaceID, nil)
 	if err != nil {
 		_ = sink.Emit(wecom.ChatEvent{Name: "error", Data: runtimeErrorEventPayload(err)})
@@ -117,14 +120,11 @@ func (s *Server) RunWeComChat(ctx context.Context, input wecom.ChatRunInput, sin
 		DeviceID:       runtime.DeviceID,
 		AgentID:        input.AgentID,
 		Prompt:         input.Message,
-		SystemPromptAppend: buildIMSystemPromptAppend(input.PromptPrefix, lumicron.ToolContext{
-			APIBase:        lumiAPIBaseForWorkspace(s.config, runtime.WorkspaceID),
+		InstructionProfile: buildIMSessionInstructionProfile(input.PromptPrefix, lumicron.ToolContext{
 			Channel:        lumicron.ChannelWeCom,
 			ConversationID: input.ConversationID,
 			AgentID:        input.AgentID,
 			WorkspaceID:    runtime.WorkspaceID,
-			WorkspacePath:  runtime.WorkspacePath,
-			Target:         input.CronTarget,
 		}),
 		Files:             wecomTaskFiles(input.Files),
 		ConversationStore: input.ConversationStore,
@@ -137,6 +137,7 @@ func (s *Server) RunWeChatChat(ctx context.Context, input wechat.ChatRunInput, s
 	if input.ConversationID == "" || input.WorkspaceID == "" || input.AgentID == "" || input.ConversationStore == nil {
 		return errors.New("invalid wechat chat input")
 	}
+	s.rememberIMTarget(lumicron.ChannelWeChat, input.ConversationID, input.CronTarget)
 	runtime, err := s.resolveWorkspaceRuntime(ctx, input.WorkspaceID, nil)
 	if err != nil {
 		_ = sink.Emit(wechat.ChatEvent{Name: "error", Data: runtimeErrorEventPayload(err)})
@@ -157,14 +158,11 @@ func (s *Server) RunWeChatChat(ctx context.Context, input wechat.ChatRunInput, s
 		DeviceID:       runtime.DeviceID,
 		AgentID:        input.AgentID,
 		Prompt:         input.Message,
-		SystemPromptAppend: buildIMSystemPromptAppend(input.PromptPrefix, lumicron.ToolContext{
-			APIBase:        lumiAPIBaseForWorkspace(s.config, runtime.WorkspaceID),
+		InstructionProfile: buildIMSessionInstructionProfile(input.PromptPrefix, lumicron.ToolContext{
 			Channel:        lumicron.ChannelWeChat,
 			ConversationID: input.ConversationID,
 			AgentID:        input.AgentID,
 			WorkspaceID:    runtime.WorkspaceID,
-			WorkspacePath:  runtime.WorkspacePath,
-			Target:         input.CronTarget,
 		}),
 		Files:             wechatTaskFiles(input.Files),
 		ConversationStore: input.ConversationStore,
@@ -192,7 +190,7 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 		return nil
 	}
 
-	conv, err := restoreIMConversation(input)
+	conv, err := s.restoreIMConversation(input)
 	if err != nil {
 		return err
 	}
@@ -200,7 +198,7 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 	prompt := input.Prompt
 	if agentChanged {
 		if contextSummary := imContextSummary(conv.Messages, 10); contextSummary != "" {
-			input.SystemPromptAppend = joinIMSystemPromptAppend(input.SystemPromptAppend, contextSummary)
+			input.TurnContext = contextSummary
 		}
 	}
 	conv.ActiveAgent = input.AgentID
@@ -213,7 +211,7 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 	})
 
 	taskID := newTaskRunID()
-	remoteSessionID := s.getRemoteSessionForPromptVersion(input.ConversationID, deviceID, input.AgentID, imSystemPromptVersion)
+	remoteSessionID := s.getRemoteSessionForProfile(input.ConversationID, deviceID, input.AgentID, input.InstructionProfile.ProfileDigest)
 	if input.NewSession {
 		remoteSessionID = ""
 	}
@@ -223,7 +221,7 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 		_ = sink.Emit("error", map[string]string{"message": deviceErrorMessage(err)})
 		return nil
 	}
-	log.Printf("im device task start: deviceID=%s taskID=%s conversationID=%s agentID=%s workspaceID=%s", deviceID, task.ID, input.ConversationID, input.AgentID, input.WorkspaceID)
+	log.Printf("im device task start: adapter=%s profile=%s", input.AgentID, digestLogPrefix(input.InstructionProfile.ProfileDigest))
 	defer s.devices.FinishTask(task.ID)
 
 	taskCtx := ctx
@@ -240,7 +238,8 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 		WorkspaceID:        input.WorkspaceID,
 		WorkspacePath:      input.WorkspacePath,
 		Prompt:             prompt,
-		SystemPromptAppend: input.SystemPromptAppend,
+		InstructionProfile: &input.InstructionProfile,
+		TurnContext:        input.TurnContext,
 		Files:              input.Files,
 		RequesterContext:   input.RequesterContext,
 	}
@@ -254,7 +253,7 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 		return nil
 	}
 	appendStreamItems(&conv.Messages, input.AgentID, streamItems)
-	return saveIMConversation(input.ConversationStore, conv, input.AgentID, input.WorkspaceID)
+	return s.saveIMConversation(input.ConversationStore, conv, input.AgentID, input.WorkspaceID)
 }
 
 func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput, task *device.TaskRun, sink imEventSink, isNew bool) ([]streamItem, error) {
@@ -332,7 +331,7 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 					return nil, errors.New("device returned an invalid session")
 				}
 				task.SessionID = payload.SessionID
-				s.setRemoteSessionForPromptVersion(input.ConversationID, task.DeviceID, input.AgentID, payload.SessionID, imSystemPromptVersion)
+				s.setRemoteSessionForProfile(input.ConversationID, task.DeviceID, input.AgentID, payload.SessionID, input.InstructionProfile.ProfileDigest)
 				sessionReady = true
 				if !sessionTimer.Stop() {
 					select {
@@ -382,7 +381,7 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 					return nil, err
 				}
 			case device.DeviceEventDone:
-				log.Printf("im device task.done consumed: deviceID=%s taskID=%s conversationID=%s", task.DeviceID, task.ID, input.ConversationID)
+				log.Printf("im device task.done consumed: adapter=%s profile=%s", input.AgentID, digestLogPrefix(input.InstructionProfile.ProfileDigest))
 				if !sessionReady {
 					_ = sink.Emit("error", map[string]string{"message": "Device protocol error"})
 					sendCancel("protocol_error")
@@ -425,7 +424,7 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 	}
 }
 
-func restoreIMConversation(input imRunInput) (*conversation.Conversation, error) {
+func (s *Server) restoreIMConversation(input imRunInput) (*conversation.Conversation, error) {
 	conv := &conversation.Conversation{
 		ID:          input.ConversationID,
 		Messages:    []conversation.Message{},
@@ -435,6 +434,10 @@ func restoreIMConversation(input imRunInput) (*conversation.Conversation, error)
 	}
 	stored, err := input.ConversationStore.Load(input.ConversationID)
 	if err == nil {
+		s.remoteSessionsMu.Lock()
+		s.remoteAgentSessions[input.ConversationID] = cloneRemoteAgentSessions(stored.RemoteAgentSessions)
+		s.remoteAgentSessionProfileDigests[input.ConversationID] = cloneRemoteAgentSessions(stored.RemoteAgentSessionProfileDigests)
+		s.remoteSessionsMu.Unlock()
 		conv.Messages = append(conv.Messages, stored.Messages...)
 		conv.ActiveAgent = stored.ActiveAgent
 		if conv.ActiveAgent == "" {
@@ -453,20 +456,22 @@ func restoreIMConversation(input imRunInput) (*conversation.Conversation, error)
 	return nil, err
 }
 
-func saveIMConversation(store imHiddenConversationStore, conv *conversation.Conversation, agentID string, workspaceID string) error {
+func (s *Server) saveIMConversation(store imHiddenConversationStore, conv *conversation.Conversation, agentID string, workspaceID string) error {
 	debug := storage.IMDebugSettings{}
 	if stored, err := store.Load(conv.ID); err == nil && stored != nil {
 		debug = stored.IMDebug
 	}
 	session := &storage.StoredSession{
-		ID:          conv.ID,
-		Title:       storage.GenerateTitle(conv.Messages),
-		Messages:    append([]conversation.Message(nil), conv.Messages...),
-		ActiveAgent: agentID,
-		WorkspaceID: workspaceID,
-		IMDebug:     debug,
-		CreatedAt:   conv.CreatedAt,
-		UpdatedAt:   time.Now().UnixMilli(),
+		ID:                               conv.ID,
+		Title:                            storage.GenerateTitle(conv.Messages),
+		Messages:                         append([]conversation.Message(nil), conv.Messages...),
+		ActiveAgent:                      agentID,
+		WorkspaceID:                      workspaceID,
+		RemoteAgentSessions:              s.snapshotRemoteAgentSessions(conv.ID),
+		RemoteAgentSessionProfileDigests: s.snapshotRemoteAgentSessionProfileDigests(conv.ID),
+		IMDebug:                          debug,
+		CreatedAt:                        conv.CreatedAt,
+		UpdatedAt:                        time.Now().UnixMilli(),
 	}
 	return store.Save(session)
 }
@@ -532,11 +537,19 @@ func appendStreamItems(messages *[]conversation.Message, agentID string, streamI
 	}
 }
 
-func buildIMSystemPromptAppend(prefix string, toolContext lumicron.ToolContext) string {
-	return joinIMSystemPromptAppend(prefix, lumicron.AgentToolInstructionsForContext(toolContext))
+func buildIMSessionInstructionProfile(prefix string, toolContext lumicron.ToolContext) sessioninstruction.Profile {
+	base := joinIMInstructionParts(prefix, lumicron.AgentBaseInstructionsForChannel(toolContext.Channel))
+	context := joinIMInstructionParts(strings.Join([]string{
+		"Current Lumi Session context:",
+		"Channel: " + strings.TrimSpace(toolContext.Channel),
+		"Conversation ID: " + strings.TrimSpace(toolContext.ConversationID),
+		"Workspace ID: " + strings.TrimSpace(toolContext.WorkspaceID),
+		"Agent ID: " + strings.TrimSpace(toolContext.AgentID),
+	}, "\n"), lumicron.AgentRoutingInstructionsForContext(toolContext))
+	return sessioninstruction.NewProfile(base, context)
 }
 
-func joinIMSystemPromptAppend(parts ...string) string {
+func joinIMInstructionParts(parts ...string) string {
 	clean := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if trimmed := strings.TrimSpace(part); trimmed != "" {
@@ -544,6 +557,65 @@ func joinIMSystemPromptAppend(parts ...string) string {
 		}
 	}
 	return strings.Join(clean, "\n\n")
+}
+
+func digestLogPrefix(digest string) string {
+	digest = strings.TrimSpace(digest)
+	if len(digest) > 12 {
+		return digest[:12]
+	}
+	return digest
+}
+
+func (s *Server) rememberIMTarget(channel, conversationID string, target lumicron.Target) {
+	channel = strings.TrimSpace(channel)
+	conversationID = strings.TrimSpace(conversationID)
+	if s == nil || conversationID == "" || !hasIMTarget(channel, target) {
+		return
+	}
+	s.imTargetsMu.Lock()
+	if s.imTargets == nil {
+		s.imTargets = make(map[string]map[string]lumicron.Target)
+	}
+	if s.imTargets[channel] == nil {
+		s.imTargets[channel] = make(map[string]lumicron.Target)
+	}
+	s.imTargets[channel][conversationID] = cloneIMTarget(target)
+	s.imTargetsMu.Unlock()
+}
+
+func (s *Server) currentIMTarget(channel, conversationID string) (lumicron.Target, bool) {
+	if s == nil {
+		return lumicron.Target{}, false
+	}
+	s.imTargetsMu.RLock()
+	target, ok := s.imTargets[strings.TrimSpace(channel)][strings.TrimSpace(conversationID)]
+	s.imTargetsMu.RUnlock()
+	return cloneIMTarget(target), ok && hasIMTarget(channel, target)
+}
+
+func hasIMTarget(channel string, target lumicron.Target) bool {
+	switch strings.TrimSpace(channel) {
+	case lumicron.ChannelWeCom:
+		return target.WeCom != nil && (strings.TrimSpace(target.WeCom.ChatID) != "" || strings.TrimSpace(target.WeCom.ReqID) != "")
+	case lumicron.ChannelWeChat:
+		return target.WeChat != nil && strings.TrimSpace(target.WeChat.ConversationKey) != ""
+	default:
+		return false
+	}
+}
+
+func cloneIMTarget(target lumicron.Target) lumicron.Target {
+	cloned := lumicron.Target{}
+	if target.WeCom != nil {
+		value := *target.WeCom
+		cloned.WeCom = &value
+	}
+	if target.WeChat != nil {
+		value := *target.WeChat
+		cloned.WeChat = &value
+	}
+	return cloned
 }
 
 func imMessageFiles(files []device.TaskFileInfo) []conversation.MessageFile {

@@ -201,8 +201,8 @@ func validateIMRunOptions(opts imRunOptions, commandArgs []string) error {
 	if strings.TrimSpace(opts.workspacePath) == "" {
 		return errors.New("lumi im run requires LUMI_WORKSPACE_PATH or --workspace-path")
 	}
-	if strings.TrimSpace(opts.wecomChatID) == "" && strings.TrimSpace(opts.wecomReqID) == "" {
-		return errors.New("lumi im run requires LUMI_WECOM_CHAT_ID or LUMI_WECOM_REQ_ID in IM context")
+	if strings.TrimSpace(opts.wecomChatID) == "" && strings.TrimSpace(opts.wecomReqID) == "" && strings.TrimSpace(opts.conversationID) == "" {
+		return errors.New("lumi im run requires LUMI_CONVERSATION_ID/--conversation-id or an explicit WeCom target")
 	}
 	if strings.TrimSpace(opts.shellCommand) != "" && len(commandArgs) > 0 {
 		return errors.New("--sh and -- <command> are mutually exclusive")

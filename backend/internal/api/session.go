@@ -80,7 +80,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		delete(s.agentSessions, id)
 		s.remoteSessionsMu.Lock()
 		delete(s.remoteAgentSessions, id)
-		delete(s.remoteAgentSessionPromptVersions, id)
+		delete(s.remoteAgentSessionProfileDigests, id)
 		s.remoteSessionsMu.Unlock()
 		writeJSON(w, map[string]any{"success": true})
 
@@ -100,7 +100,7 @@ func (s *Server) restoreConversation(session *storage.StoredSession) {
 	s.agentSessions[session.ID] = cloneAgentSessions(session.AgentSessions)
 	s.remoteSessionsMu.Lock()
 	s.remoteAgentSessions[session.ID] = cloneRemoteAgentSessions(session.RemoteAgentSessions)
-	delete(s.remoteAgentSessionPromptVersions, session.ID)
+	s.remoteAgentSessionProfileDigests[session.ID] = cloneRemoteAgentSessions(session.RemoteAgentSessionProfileDigests)
 	s.remoteSessionsMu.Unlock()
 }
 
@@ -111,15 +111,16 @@ func (s *Server) persistConversation(convID string) {
 	}
 
 	session := &storage.StoredSession{
-		ID:                  convID,
-		Title:               storage.GenerateTitle(conv.Messages),
-		Messages:            conv.Messages,
-		ActiveAgent:         conv.ActiveAgent,
-		WorkspaceID:         conv.WorkspaceID,
-		AgentSessions:       s.snapshotAgentSessions(convID),
-		RemoteAgentSessions: s.snapshotRemoteAgentSessions(convID),
-		CreatedAt:           conv.CreatedAt,
-		UpdatedAt:           time.Now().UnixMilli(),
+		ID:                               convID,
+		Title:                            storage.GenerateTitle(conv.Messages),
+		Messages:                         conv.Messages,
+		ActiveAgent:                      conv.ActiveAgent,
+		WorkspaceID:                      conv.WorkspaceID,
+		AgentSessions:                    s.snapshotAgentSessions(convID),
+		RemoteAgentSessions:              s.snapshotRemoteAgentSessions(convID),
+		RemoteAgentSessionProfileDigests: s.snapshotRemoteAgentSessionProfileDigests(convID),
+		CreatedAt:                        conv.CreatedAt,
+		UpdatedAt:                        time.Now().UnixMilli(),
 	}
 
 	s.sessionStore.Save(session)
@@ -139,6 +140,15 @@ func (s *Server) snapshotRemoteAgentSessions(convID string) map[string]map[strin
 	s.remoteSessionsMu.RLock()
 	defer s.remoteSessionsMu.RUnlock()
 	return cloneRemoteAgentSessions(s.remoteAgentSessions[convID])
+}
+
+func (s *Server) snapshotRemoteAgentSessionProfileDigests(convID string) map[string]map[string]string {
+	if s == nil || s.remoteAgentSessionProfileDigests == nil {
+		return nil
+	}
+	s.remoteSessionsMu.RLock()
+	defer s.remoteSessionsMu.RUnlock()
+	return cloneRemoteAgentSessions(s.remoteAgentSessionProfileDigests[convID])
 }
 
 func cloneAgentSessions(source map[string]string) map[string]string {
