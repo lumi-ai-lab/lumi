@@ -2,6 +2,8 @@
 
 FROM golang:1.25-bookworm AS builder
 
+ARG TARGETARCH
+
 WORKDIR /src
 
 COPY gotray/go.mod gotray/go.sum ./gotray/

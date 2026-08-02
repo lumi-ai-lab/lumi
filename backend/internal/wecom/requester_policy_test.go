@@ -89,6 +89,37 @@ func TestLoadRequesterPolicyBuildsImmutableContexts(t *testing.T) {
 	}
 }
 
+func TestLoadRequesterPolicyAcceptsScopeWithoutDCManageAreaIDs(t *testing.T) {
+	raw := `{
+	  "version": 1,
+	  "botId": "bot-1",
+	  "users": [{
+	    "userId": "u1",
+	    "displayName": "Legacy User",
+	    "enabled": true,
+	    "capabilities": ["qdm.cmr.query"],
+	    "scope": {
+	      "manageAreaIds": ["CN18"],
+	      "categoryLevel1Ids": ["12"]
+	    }
+	  }]
+	}`
+	policy, err := LoadRequesterPolicy(writeRequesterPolicyFile(t, raw), "bot-1")
+	if err != nil {
+		t.Fatalf("LoadRequesterPolicy() error = %v", err)
+	}
+	ctx, ok := policy.BuildContext("u1", "msg-1", "chat-1", "group")
+	if !ok {
+		t.Fatal("BuildContext() ok = false")
+	}
+	if strings.Join(ctx.Authorization.Scope.ManageAreaIDs, ",") != "CN18" {
+		t.Fatalf("manageAreaIds = %v", ctx.Authorization.Scope.ManageAreaIDs)
+	}
+	if len(ctx.Authorization.Scope.DCManageAreaIDs) != 0 {
+		t.Fatalf("dcManageAreaIds = %v, want empty", ctx.Authorization.Scope.DCManageAreaIDs)
+	}
+}
+
 func TestLoadRequesterPolicyRejectsInvalidDocuments(t *testing.T) {
 	tests := []struct {
 		name string

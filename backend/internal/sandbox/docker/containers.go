@@ -29,37 +29,7 @@ type CredentialMount struct {
 }
 
 func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (string, error) {
-	mounts := []mount.Mount{
-		{
-			Type:   mount.TypeBind,
-			Source: spec.WorkspacePath,
-			Target: "/workspace",
-		},
-		{
-			Type:     mount.TypeBind,
-			Source:   spec.ConfigHostPath,
-			Target:   "/lumi/device-executor/config.json",
-			ReadOnly: true,
-		},
-	}
-	if spec.RuntimeHostPath != "" {
-		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeBind,
-			Source: spec.RuntimeHostPath,
-			Target: "/lumi/runtime",
-		})
-	}
-	for _, credentialMount := range spec.CredentialMounts {
-		if credentialMount.Source == "" || credentialMount.Target == "" {
-			continue
-		}
-		mounts = append(mounts, mount.Mount{
-			Type:     mount.TypeBind,
-			Source:   credentialMount.Source,
-			Target:   credentialMount.Target,
-			ReadOnly: credentialMount.ReadOnly,
-		})
-	}
+	mounts := containerMounts(spec)
 
 	resp, err := c.raw.ContainerCreate(
 		ctx,
@@ -93,6 +63,40 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 		return "", err
 	}
 	return resp.ID, nil
+}
+
+func containerMounts(spec ContainerSpec) []mount.Mount {
+	mounts := []mount.Mount{
+		{
+			Type:   mount.TypeBind,
+			Source: spec.WorkspacePath,
+			Target: "/workspace",
+		},
+		{
+			Type:   mount.TypeBind,
+			Source: spec.ConfigHostPath,
+			Target: "/lumi/device-executor/config.json",
+		},
+	}
+	if spec.RuntimeHostPath != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: spec.RuntimeHostPath,
+			Target: "/lumi/runtime",
+		})
+	}
+	for _, credentialMount := range spec.CredentialMounts {
+		if credentialMount.Source == "" || credentialMount.Target == "" {
+			continue
+		}
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   credentialMount.Source,
+			Target:   credentialMount.Target,
+			ReadOnly: credentialMount.ReadOnly,
+		})
+	}
+	return mounts
 }
 
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {

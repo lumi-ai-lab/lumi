@@ -135,6 +135,7 @@ trim(body.from.userid) == canonicalUserId
         "qdm.cas.token",
         "qdm.cmr.query",
         "qdm.indicators.query",
+        "qdm.metric.query",
         "qdm.sql.select"
       ],
       "scope": {
@@ -153,6 +154,7 @@ trim(body.from.userid) == canonicalUserId
 qdm.cas.token          CAS Token
 qdm.cmr.query          CMR 查询
 qdm.indicators.query   Indicators 查询
+qdm.metric.query       Metric 查询
 qdm.sql.select         只读 SQL 查询意图
 ```
 
@@ -201,6 +203,7 @@ LUMI_WECOM_REQUESTER_CONFIG=/absolute/path/wecom-requesters.json
       "qdm.cas.token",
       "qdm.cmr.query",
       "qdm.indicators.query",
+      "qdm.metric.query",
       "qdm.sql.select"
     ],
     "scope": {

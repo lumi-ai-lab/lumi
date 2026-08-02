@@ -347,10 +347,7 @@ func (r *Runner) getOrStartAgent(agentID, workspacePath string) (*agent.Process,
 		if agentCfg == nil {
 			return nil, fmt.Errorf("agent not found: %s", agentID)
 		}
-		runtimeEnv, err := buildLumiRuntimeEnv(r.client.server, r.cfg, agentCfg.Env)
-		if err != nil {
-			return nil, err
-		}
+		runtimeEnv := buildLumiRuntimeEnv(r.client.server, r.cfg)
 		bridge, err := r.requesterContextBridge(agentID)
 		if err != nil {
 			return nil, err

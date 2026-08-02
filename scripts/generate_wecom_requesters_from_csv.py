@@ -15,6 +15,7 @@ CAPABILITIES = [
     "qdm.cas.token",
     "qdm.cmr.query",
     "qdm.indicators.query",
+    "qdm.metric.query",
     "qdm.sql.select",
 ]
 

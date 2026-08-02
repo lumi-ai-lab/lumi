@@ -52,5 +52,6 @@ func injectLocalAgentRuntimeEnv(cfg *config.Config, workspaceID, agentID, apiBas
 	if err := injectLocalRequesterContextEnv(cfg, workspaceID, agentID); err != nil {
 		return err
 	}
-	return injectLumiAgentEnv(cfg, agentID, apiBase, workspaceID, workspacePath)
+	injectLumiAgentEnv(cfg, agentID, apiBase, workspaceID, workspacePath)
+	return nil
 }
