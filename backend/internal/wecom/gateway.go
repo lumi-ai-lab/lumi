@@ -122,6 +122,7 @@ type gatewayEventSink struct {
 	finalTextAccumulated string
 	endTurnTextBuilder   strings.Builder
 	endTurnAccumulated   string
+	seenToolCallIDs      map[string]struct{}
 	stopReason           string
 }
 
@@ -163,7 +164,7 @@ func (s *gatewayEventSink) Emit(event ChatEvent) error {
 				}
 			}
 		case "tool_call", "tool_call_update":
-			s.resetEndTurnText()
+			s.resetEndTurnTextForTool(update)
 			s.buffer.AddTool(update)
 			if err := s.flushReadySegments(); err != nil {
 				return err
@@ -178,7 +179,7 @@ func (s *gatewayEventSink) Emit(event ChatEvent) error {
 			return err
 		}
 	case "tool_call", "tool_call_update":
-		s.resetEndTurnText()
+		s.resetEndTurnTextForTool(event.Data)
 		s.buffer.AddTool(event.Data)
 		if err := s.flushReadySegments(); err != nil {
 			return err
@@ -259,38 +260,41 @@ func appendIncompleteReplyNotice(text string) string {
 }
 
 func looksLikeIncompleteEndTurn(text string) bool {
+	return incompleteEndTurnReason(text) != ""
+}
+
+func incompleteEndTurnReason(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return false
+		return ""
 	}
 	if hasUnclosedWeComCodeFence(text) {
-		return true
+		return "unclosed_code_fence"
 	}
 	if strings.Count(text, "**")%2 == 1 {
-		return true
+		return "unclosed_bold"
 	}
 	lastLine := strings.TrimSpace(text)
 	if idx := strings.LastIndex(lastLine, "\n"); idx >= 0 {
 		lastLine = strings.TrimSpace(lastLine[idx+1:])
 	}
 	if lastLine == "" {
-		return false
+		return ""
 	}
 	switch lastLine {
 	case "-", "*", "+", ">", "`", "```", "**":
-		return true
+		return "bare_markdown_marker"
 	}
 	if strings.HasPrefix(lastLine, "#") && strings.Trim(strings.TrimSpace(lastLine), "#") == "" {
-		return true
-	}
-	if strings.HasSuffix(lastLine, "**") || strings.HasSuffix(lastLine, "`") {
-		return true
+		return "empty_heading"
 	}
 	if strings.HasSuffix(lastLine, "-") {
 		before := strings.TrimSpace(strings.TrimSuffix(lastLine, "-"))
-		return before == "" || strings.HasSuffix(before, "：") || strings.HasSuffix(before, ":")
+		if before == "" || strings.HasSuffix(before, "：") || strings.HasSuffix(before, ":") {
+			return "dangling_list_marker"
+		}
 	}
-	return false
+	return ""
 }
 
 func hasUnclosedWeComCodeFence(text string) bool {
@@ -331,6 +335,27 @@ func (s *gatewayEventSink) addFinalMessageChunk(text string) {
 func (s *gatewayEventSink) resetEndTurnText() {
 	s.endTurnTextBuilder.Reset()
 	s.endTurnAccumulated = ""
+}
+
+func (s *gatewayEventSink) resetEndTurnTextForTool(data any) {
+	payload, ok := data.(map[string]any)
+	if !ok {
+		s.resetEndTurnText()
+		return
+	}
+	toolCallID, _ := payload["toolCallId"].(string)
+	if toolCallID == "" {
+		s.resetEndTurnText()
+		return
+	}
+	if s.seenToolCallIDs == nil {
+		s.seenToolCallIDs = make(map[string]struct{})
+	}
+	if _, seen := s.seenToolCallIDs[toolCallID]; seen {
+		return
+	}
+	s.seenToolCallIDs[toolCallID] = struct{}{}
+	s.resetEndTurnText()
 }
 
 func deltaAgainstText(accumulated, chunk string) string {
@@ -519,13 +544,14 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 
 	finalText := sink.FinalText()
 	continuedText := ""
-	if sink.stopReason == "end_turn" && looksLikeIncompleteEndTurn(ParseSendProtocol(sink.EndTurnText(), workspace.Path).VisibleText) {
+	endTurnReason := incompleteEndTurnReason(ParseSendProtocol(sink.EndTurnText(), workspace.Path).VisibleText)
+	if sink.stopReason == "end_turn" && endTurnReason != "" {
 		beforeContinue := finalText
 		continueInput := chatInput
 		continueInput.Message = continueReplyPrompt
 		continueInput.Files = nil
 		continueInput.NewSession = false
-		log.Printf("wecom final appears incomplete, requesting continuation: traceID=%s conversationID=%s bytes=%d chars=%d", traceID, conversationID, len(beforeContinue), len([]rune(beforeContinue)))
+		log.Printf("wecom final appears incomplete, requesting continuation: traceID=%s conversationID=%s reason=%s bytes=%d chars=%d", traceID, conversationID, endTurnReason, len(beforeContinue), len([]rune(beforeContinue)))
 		continueErr := s.runner.RunWeComChat(runCtx, continueInput, sink)
 		if runCtx.Err() != nil {
 			return runCtx.Err()

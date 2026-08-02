@@ -597,6 +597,22 @@ func TestGatewayEndTurnCompleteReplyDoesNotContinue(t *testing.T) {
 	}
 }
 
+func TestLooksLikeIncompleteEndTurnAcceptsCompleteBoldEnding(t *testing.T) {
+	complete := "因此，公开 Metric CLI 返回的销售额原始指标值是 **`13228167.07`**。"
+	if looksLikeIncompleteEndTurn(complete) {
+		t.Fatalf("complete bold ending classified as incomplete: %q", complete)
+	}
+	completeInlineCode := "退出状态为 `0`"
+	if looksLikeIncompleteEndTurn(completeInlineCode) {
+		t.Fatalf("complete inline code ending classified as incomplete: %q", completeInlineCode)
+	}
+
+	incomplete := "因此，公开 Metric CLI 返回的销售额原始指标值是 **`13228167.07`。"
+	if !looksLikeIncompleteEndTurn(incomplete) {
+		t.Fatalf("unclosed bold ending classified as complete: %q", incomplete)
+	}
+}
+
 func TestGatewayEndTurnCompleteReplyAfterToolDoesNotContinueForEarlierIncompleteMarkdown(t *testing.T) {
 	const completeReply = `## 查询结果
 
@@ -726,6 +742,66 @@ qdm-metric-cli analysis execute --start-date 2026-07-30 --end-date 2026-07-30 --
 	}
 	if !strings.Contains(strings.Join(sender.replies, "\n"), "13,228,167.07") {
 		t.Fatalf("replies missing business result: %v", sender.replies)
+	}
+}
+
+func TestGatewayEndTurnLateCompletedToolUpdateDoesNotTruncateCompletionCandidate(t *testing.T) {
+	runner := &scriptedRunner{
+		run: func(ctx context.Context, input ChatRunInput, sink ChatEventSink) error {
+			if input.Message == continueReplyPrompt {
+				t.Fatalf("unexpected continuation run")
+			}
+			if err := sink.Emit(ChatEvent{Name: "tool_call", Data: map[string]any{
+				"toolCallId": "tool-1",
+				"toolName":   "Bash",
+				"status":     "pending",
+			}}); err != nil {
+				return err
+			}
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "结果：\n```json\n["},
+				},
+			}}); err != nil {
+				return err
+			}
+			if err := sink.Emit(ChatEvent{Name: "tool_call", Data: map[string]any{
+				"toolCallId": "tool-1",
+				"toolName":   "Bash",
+				"status":     "completed",
+			}}); err != nil {
+				return err
+			}
+			if err := sink.Emit(ChatEvent{Name: "update", Data: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "]\n```\n\n**完整结束。**"},
+				},
+			}}); err != nil {
+				return err
+			}
+			return sink.Emit(ChatEvent{Name: "done", Data: map[string]any{"stopReason": "end_turn"}})
+		},
+	}
+	service := newTestService(t, runner)
+	sender := &fakeSender{}
+
+	err := service.handleInboundMessage(context.Background(), testGatewayConfig(), WeComInboundMessage{
+		ConversationKey: "wecom:chat:user",
+		MessageID:       "msg-end-turn-late-tool-update",
+		ReplyContext:    replyContext{ReqID: "req-end-turn", ChatID: "chat", UserID: "user"},
+		Text:            "hello",
+		ReceivedAt:      time.Now().UnixMilli(),
+	}, sender)
+	if err != nil {
+		t.Fatalf("handleInboundMessage() error = %v", err)
+	}
+	if len(runner.inputs) != 1 {
+		t.Fatalf("runner inputs = %d, want one", len(runner.inputs))
+	}
+	if !strings.Contains(strings.Join(sender.replies, "\n"), "完整结束") {
+		t.Fatalf("replies missing complete answer: %v", sender.replies)
 	}
 }
 
