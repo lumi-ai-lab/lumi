@@ -6,9 +6,18 @@ import { delimiter, join } from 'node:path'
 import {
   defaultPiCommand,
   inspectPiSpawn,
+  piProjectApprovalArgs,
   piSpawnEnvironmentSummary,
   shouldUseShellForPiCommand
 } from '../../src/pi-rpc/command.js'
+
+test('piProjectApprovalArgs: requires an explicit valid opt-in', () => {
+  assert.deepEqual(piProjectApprovalArgs(), [])
+  assert.deepEqual(piProjectApprovalArgs(''), [])
+  assert.deepEqual(piProjectApprovalArgs(' false '), [])
+  assert.deepEqual(piProjectApprovalArgs(' TRUE '), ['--approve'])
+  assert.throws(() => piProjectApprovalArgs('yes'), /must be true or false/)
+})
 
 test('defaultPiCommand: uses pi.cmd on Windows and pi elsewhere', () => {
   const originalPlatform = process.platform

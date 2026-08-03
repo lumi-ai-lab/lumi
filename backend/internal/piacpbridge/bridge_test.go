@@ -83,7 +83,7 @@ func TestVersionMatchesForkMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "0.0.33-lumi.1" {
+	if got != "0.0.33-lumi.2" {
 		t.Fatalf("Version() = %q", got)
 	}
 }

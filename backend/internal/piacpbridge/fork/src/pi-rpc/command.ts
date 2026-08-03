@@ -10,6 +10,13 @@ export function getPiCommand(override?: string): string {
   return override ?? defaultPiCommand()
 }
 
+export function piProjectApprovalArgs(value?: string): string[] {
+  const normalized = value?.trim().toLowerCase()
+  if (!normalized || normalized === 'false') return []
+  if (normalized === 'true') return ['--approve']
+  throw new Error('PI_ACP_APPROVE_PROJECT must be true or false')
+}
+
 export type PiSpawnInspection = {
   commandAvailable: boolean
   cwdAvailable: boolean

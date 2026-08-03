@@ -114,6 +114,7 @@ Point your ACP client to the built `dist/index.js`:
 - `PI_ACP_ENABLE_EMBEDDED_CONTEXT=true` advertises ACP `promptCapabilities.embeddedContext` support to the client.
 - Default: unset/any other value means `false`.
 - When disabled, compliant ACP clients should avoid sending embedded `resource` blocks. If they send them anyway, `pi-acp` still degrades gracefully by converting them into plain-text prompt context.
+- `PI_ACP_APPROVE_PROJECT=true` passes Pi's native `--approve` flag to every RPC process so project-local settings, extensions, and skills are loaded. It is disabled by default and accepts only `true` or `false`. Enable it only when the ACP host has independently reviewed and trusts the configured workspace.
 
 You can add the environment variable in the Zed settings with:
 

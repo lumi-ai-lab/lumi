@@ -13617,6 +13617,12 @@ function defaultPiCommand() {
 function getPiCommand(override) {
   return override ?? defaultPiCommand();
 }
+function piProjectApprovalArgs(value) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || normalized === "false") return [];
+  if (normalized === "true") return ["--approve"];
+  throw new Error("PI_ACP_APPROVE_PROJECT must be true or false");
+}
 function isAccessibleDirectory(path) {
   try {
     if (!statSync(path).isDirectory()) return false;
@@ -13760,6 +13766,11 @@ var PiRpcProcess = class _PiRpcProcess {
   static async spawn(params) {
     const cmd = getPiCommand(params.piCommand);
     const args = ["--mode", "rpc", "--no-themes"];
+    try {
+      args.push(...piProjectApprovalArgs(process.env.PI_ACP_APPROVE_PROJECT));
+    } catch (cause) {
+      throw new PiRpcSpawnError("Could not start pi: invalid project approval configuration.", { cause });
+    }
     if (params.sessionPath) args.push("--session", params.sessionPath);
     const systemPromptFile = params.systemPromptAppend ? createSystemPromptFile(params.systemPromptAppend) : null;
     if (systemPromptFile) args.push("--append-system-prompt", systemPromptFile.path);

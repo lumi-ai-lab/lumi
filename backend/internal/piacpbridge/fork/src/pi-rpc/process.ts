@@ -3,7 +3,13 @@ import * as readline from 'node:readline'
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getPiCommand, inspectPiSpawn, piSpawnEnvironmentSummary, shouldUseShellForPiCommand } from './command.js'
+import {
+  getPiCommand,
+  inspectPiSpawn,
+  piProjectApprovalArgs,
+  piSpawnEnvironmentSummary,
+  shouldUseShellForPiCommand
+} from './command.js'
 
 export class PiRpcSpawnError extends Error {
   /** Underlying spawn error code, e.g. ENOENT, EACCES */
@@ -183,6 +189,11 @@ export class PiRpcProcess {
     // Keep extensions + prompt templates enabled because ACP users may rely on them
     // (e.g. MCP extensions, prompt templates for workflows).
     const args = ['--mode', 'rpc', '--no-themes']
+    try {
+      args.push(...piProjectApprovalArgs(process.env.PI_ACP_APPROVE_PROJECT))
+    } catch (cause) {
+      throw new PiRpcSpawnError('Could not start pi: invalid project approval configuration.', { cause })
+    }
     if (params.sessionPath) args.push('--session', params.sessionPath)
     const systemPromptFile = params.systemPromptAppend ? createSystemPromptFile(params.systemPromptAppend) : null
     if (systemPromptFile) args.push('--append-system-prompt', systemPromptFile.path)

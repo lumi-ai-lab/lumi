@@ -1,6 +1,6 @@
 {
   "name": "@lumi-ai-lab/pi-acp-bridge",
-  "version": "0.0.33-lumi.1",
+  "version": "0.0.33-lumi.2",
   "description": "Lumi's auditable pi-acp bridge with session instruction transport",
   "license": "MIT",
   "author": "Sergii Kozak <svkozak@gmail.com>",

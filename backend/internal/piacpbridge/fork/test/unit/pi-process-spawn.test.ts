@@ -14,7 +14,7 @@ const rl = readline.createInterface({ input: process.stdin })
 rl.on('line', line => {
   const request = JSON.parse(line)
   const data = request.type === 'get_state'
-    ? { sessionFile: '/tmp/fake-session.jsonl', model: null, thinkingLevel: 'off' }
+    ? { sessionFile: '/tmp/fake-session.jsonl', model: null, thinkingLevel: 'off', argv: process.argv.slice(2) }
     : {}
   process.stdout.write(JSON.stringify({ type: 'response', id: request.id, command: request.type, success: true, data }) + '\\n')
 })
@@ -23,6 +23,39 @@ rl.on('line', line => {
   )
   chmodSync(path, 0o755)
 }
+
+test('PiRpcProcess.spawn: forwards explicit project approval without changing the default', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-rpc-approval-'))
+  const command = join(root, 'pi')
+  fakePi(command)
+  const previous = process.env.PI_ACP_APPROVE_PROJECT
+  try {
+    delete process.env.PI_ACP_APPROVE_PROJECT
+    const defaultProc = await PiRpcProcess.spawn({ cwd: root, piCommand: command })
+    const defaultState = (await defaultProc.getState()) as any
+    assert.equal(defaultState.argv.includes('--approve'), false)
+    defaultProc.dispose()
+
+    process.env.PI_ACP_APPROVE_PROJECT = 'true'
+    const approvedProc = await PiRpcProcess.spawn({ cwd: root, piCommand: command })
+    const approvedState = (await approvedProc.getState()) as any
+    assert.equal(approvedState.argv.includes('--approve'), true)
+    approvedProc.dispose()
+
+    process.env.PI_ACP_APPROVE_PROJECT = 'invalid-sensitive-value'
+    await assert.rejects(
+      () => PiRpcProcess.spawn({ cwd: root, piCommand: command }),
+      (error: any) => {
+        const message = String(error?.message ?? '')
+        return message.includes('invalid project approval configuration') && !message.includes('sensitive')
+      }
+    )
+  } finally {
+    if (previous == null) delete process.env.PI_ACP_APPROVE_PROJECT
+    else process.env.PI_ACP_APPROVE_PROJECT = previous
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('PiRpcProcess.spawn: launches pi from an npm-prefix PATH without a shell', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pi-rpc-path-'))
