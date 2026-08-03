@@ -1,0 +1,19 @@
+{
+  "agents": [
+    {
+      "id": "pi",
+      "name": "PI",
+      "command": "npx",
+      "args": ["-y", "pi-acp@0.0.33"],
+      "sessionMode": "default"
+    }
+  ],
+  "defaultAgent": "pi",
+  "routing": {
+    "keywords": {
+      "@pi": "pi"
+    },
+    "meta": true
+  },
+  "workspaces": []
+}

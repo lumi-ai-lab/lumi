@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "botId": "bot-demo-001",
+  "users": [
+    {
+      "userId": "user-demo-allowed",
+      "displayName": "Allowed Demo User",
+      "enabled": true,
+      "authorization": {
+        "capabilities": [
+          "qdm.cmr.query",
+          "qdm.indicators.query"
+        ],
+        "claims": {
+          "qdm.scope": {
+            "schemaVersion": 1,
+            "manageAreaIds": ["area-demo"],
+            "dcManageAreaIds": ["dc-area-demo"],
+            "categoryLevel1Ids": ["category-demo"]
+          }
+        }
+      }
+    },
+    {
+      "userId": "user-demo-disabled",
+      "displayName": "Disabled Demo User",
+      "enabled": false,
+      "authorization": {
+        "capabilities": [],
+        "claims": {}
+      }
+    }
+  ]
+}
