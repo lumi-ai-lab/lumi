@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 
 	"github.com/docker/docker/api/types"
@@ -10,6 +11,8 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/errdefs"
 )
+
+const securedRequesterContextRoot = "/run/lumi/requester-context"
 
 type ContainerSpec struct {
 	Name                      string
@@ -22,6 +25,7 @@ type ContainerSpec struct {
 	Labels                    map[string]string
 	ExtraHosts                []string
 	CredentialMounts          []CredentialMount
+	RequesterContextHostPath  string
 	RequesterContextRoot      string
 	RequesterContextReaderGID *uint32
 }
@@ -37,36 +41,9 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 	if err != nil {
 		return "", err
 	}
-	mounts := []mount.Mount{
-		{
-			Type:   mount.TypeBind,
-			Source: spec.WorkspacePath,
-			Target: "/workspace",
-		},
-		{
-			Type:     mount.TypeBind,
-			Source:   spec.ConfigHostPath,
-			Target:   "/lumi/device-executor/config.json",
-			ReadOnly: true,
-		},
-	}
-	if spec.RuntimeHostPath != "" {
-		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeBind,
-			Source: spec.RuntimeHostPath,
-			Target: "/lumi/runtime",
-		})
-	}
-	for _, credentialMount := range spec.CredentialMounts {
-		if credentialMount.Source == "" || credentialMount.Target == "" {
-			continue
-		}
-		mounts = append(mounts, mount.Mount{
-			Type:     mount.TypeBind,
-			Source:   credentialMount.Source,
-			Target:   credentialMount.Target,
-			ReadOnly: credentialMount.ReadOnly,
-		})
+	mounts, err := containerMounts(spec)
+	if err != nil {
+		return "", err
 	}
 
 	resp, err := c.raw.ContainerCreate(
@@ -98,6 +75,52 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 	return resp.ID, nil
 }
 
+func containerMounts(spec ContainerSpec) ([]mount.Mount, error) {
+	securedRequesterContext, err := validateRequesterContextSpec(spec)
+	if err != nil {
+		return nil, err
+	}
+	mounts := []mount.Mount{
+		{
+			Type:   mount.TypeBind,
+			Source: spec.WorkspacePath,
+			Target: "/workspace",
+		},
+		{
+			Type:     mount.TypeBind,
+			Source:   spec.ConfigHostPath,
+			Target:   "/lumi/device-executor/config.json",
+			ReadOnly: true,
+		},
+	}
+	if spec.RuntimeHostPath != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: spec.RuntimeHostPath,
+			Target: "/lumi/runtime",
+		})
+	}
+	if securedRequesterContext {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: spec.RequesterContextHostPath,
+			Target: securedRequesterContextRoot,
+		})
+	}
+	for _, credentialMount := range spec.CredentialMounts {
+		if credentialMount.Source == "" || credentialMount.Target == "" {
+			continue
+		}
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   credentialMount.Source,
+			Target:   credentialMount.Target,
+			ReadOnly: credentialMount.ReadOnly,
+		})
+	}
+	return mounts, nil
+}
+
 func containerEnvironment(spec ContainerSpec) ([]string, error) {
 	env := []string{
 		"LUMI_WORKSPACE_PATH=/workspace",
@@ -105,24 +128,42 @@ func containerEnvironment(spec ContainerSpec) ([]string, error) {
 		"NPM_CONFIG_CACHE=/lumi/runtime/npm-cache",
 		"PATH=/lumi/runtime/npm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}
-	rootSet := spec.RequesterContextRoot != ""
-	gidSet := spec.RequesterContextReaderGID != nil
-	if rootSet != gidSet {
-		return nil, fmt.Errorf("sandbox requester-context root and reader GID must be configured together")
+	secure, err := validateRequesterContextSpec(spec)
+	if err != nil {
+		return nil, err
 	}
-	if !rootSet {
+	if !secure {
 		return env, nil
-	}
-	if spec.RequesterContextRoot != "/lumi/runtime/requester-context" {
-		return nil, fmt.Errorf("sandbox requester-context root must be /lumi/runtime/requester-context")
-	}
-	if *spec.RequesterContextReaderGID == 0 {
-		return nil, fmt.Errorf("sandbox requester-context reader GID must not be root")
 	}
 	return append(env,
 		"LUMI_REQUESTER_CONTEXT_ROOT="+spec.RequesterContextRoot,
 		"LUMI_REQUESTER_CONTEXT_READER_GID="+strconv.FormatUint(uint64(*spec.RequesterContextReaderGID), 10),
 	), nil
+}
+
+func validateRequesterContextSpec(spec ContainerSpec) (bool, error) {
+	hostSet := spec.RequesterContextHostPath != ""
+	rootSet := spec.RequesterContextRoot != ""
+	gidSet := spec.RequesterContextReaderGID != nil
+	if hostSet != rootSet || rootSet != gidSet {
+		return false, fmt.Errorf("sandbox requester-context host path, root and reader GID must be configured together")
+	}
+	if !rootSet {
+		return false, nil
+	}
+	if spec.RequesterContextRoot != securedRequesterContextRoot {
+		return false, fmt.Errorf("sandbox requester-context root must be %s", securedRequesterContextRoot)
+	}
+	if !filepath.IsAbs(spec.RequesterContextHostPath) || filepath.Clean(spec.RequesterContextHostPath) != spec.RequesterContextHostPath {
+		return false, fmt.Errorf("sandbox requester-context host path must be clean and absolute")
+	}
+	if filepath.Base(spec.RequesterContextHostPath) != "requester-context" {
+		return false, fmt.Errorf("sandbox requester-context host path basename must be requester-context")
+	}
+	if *spec.RequesterContextReaderGID == 0 {
+		return false, fmt.Errorf("sandbox requester-context reader GID must not be root")
+	}
+	return true, nil
 }
 
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {

@@ -2,8 +2,11 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/fssecure"
 	"github.com/pengmide/lumi/internal/requestercontext"
 )
 
@@ -13,7 +16,7 @@ const (
 	WorkspacePath         = "/workspace"
 	ConfigPath            = "/lumi/device-executor/config.json"
 	RuntimePath           = "/lumi/runtime"
-	RequesterContextPath  = "/lumi/runtime/requester-context"
+	RequesterContextPath  = "/run/lumi/requester-context"
 )
 
 const (
@@ -89,6 +92,10 @@ type requesterContextContainerSettings struct {
 	ReaderGID *uint32
 }
 
+func (settings requesterContextContainerSettings) Secure() bool {
+	return settings.Root != "" && settings.ReaderGID != nil
+}
+
 func resolveRequesterContextContainerSettings(cfg *config.Config, workspace config.WorkspaceConfig) (requesterContextContainerSettings, error) {
 	settings, err := requestercontext.RuntimeSettingsFromEnv("")
 	if err != nil {
@@ -113,6 +120,39 @@ func resolveRequesterContextContainerSettings(cfg *config.Config, workspace conf
 	}
 	gid := *settings.ReaderGID
 	return requesterContextContainerSettings{Root: RequesterContextPath, ReaderGID: &gid}, nil
+}
+
+// prepareRequesterContextMount creates a publisher-controlled, per-workspace
+// bind source for secured Sandbox requester context. It intentionally lives
+// outside the shared /lumi/runtime mount, whose owner may be the run-as Agent.
+func (m *Manager) prepareRequesterContextMount(workspaceID string, settings requesterContextContainerSettings) (string, error) {
+	if !settings.Secure() {
+		return "", nil
+	}
+	if settings.Root != RequesterContextPath {
+		return "", fmt.Errorf("secured Sandbox requester-context root must be %s", RequesterContextPath)
+	}
+
+	sandboxesRoot := filepath.Join(m.runtimeDir, "sandboxes")
+	source, err := requestercontext.SessionDir(sandboxesRoot, workspaceID, "requester-context")
+	if err != nil {
+		return "", fmt.Errorf("resolve Sandbox requester-context mount source: %w", err)
+	}
+	workspaceRoot := filepath.Dir(source)
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		return "", fmt.Errorf("create Sandbox workspace runtime directory: %w", err)
+	}
+	workspaceInfo, err := os.Lstat(workspaceRoot)
+	if err != nil {
+		return "", fmt.Errorf("inspect Sandbox workspace runtime directory: %w", err)
+	}
+	if workspaceInfo.Mode()&os.ModeSymlink != 0 || !workspaceInfo.IsDir() {
+		return "", fmt.Errorf("Sandbox workspace runtime directory %q must be a real directory", workspaceRoot)
+	}
+	if err := fssecure.EnsureDirectory(source, 0o710, settings.ReaderGID); err != nil {
+		return "", fmt.Errorf("prepare Sandbox requester-context mount source: %w", err)
+	}
+	return source, nil
 }
 
 func ResolveImage(ws config.WorkspaceConfig) string {

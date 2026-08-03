@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/device"
+	"github.com/pengmide/lumi/internal/fssecure"
 	"github.com/pengmide/lumi/internal/requestercontext"
 	"github.com/pengmide/lumi/internal/sandbox/docker"
 )
@@ -139,6 +141,72 @@ func TestPrepareWorkspaceRuntimeSeedsSharedRuntimeFromLargestLegacyRuntime(t *te
 	}
 }
 
+func TestPrepareRequesterContextMountUsesDedicatedWorkspaceSource(t *testing.T) {
+	readerGID := sandboxTestReaderGID(t)
+	runtimeDir := t.TempDir()
+	manager := &Manager{runtimeDir: runtimeDir}
+	settings := requesterContextContainerSettings{Root: RequesterContextPath, ReaderGID: &readerGID}
+
+	got, err := manager.prepareRequesterContextMount("workspace-1", settings)
+	if err != nil {
+		t.Fatalf("prepareRequesterContextMount() error = %v", err)
+	}
+	want := filepath.Join(runtimeDir, "sandboxes", "workspace-1", "requester-context")
+	if got != want {
+		t.Fatalf("requester-context mount source = %q, want %q", got, want)
+	}
+	info, err := os.Lstat(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o710 {
+		t.Fatalf("requester-context mount source mode = %v, want directory 0710", info.Mode())
+	}
+	if err := fssecure.ValidatePublisherOwnership(got, info, &readerGID); err != nil {
+		t.Fatalf("requester-context mount source ownership: %v", err)
+	}
+	if _, err := manager.prepareRequesterContextMount("workspace-1", settings); err != nil {
+		t.Fatalf("reuse exact requester-context mount source: %v", err)
+	}
+	if got == filepath.Join(runtimeDir, "shared", "runtime", "requester-context") {
+		t.Fatal("secured requester-context source must not live in the shared Agent runtime")
+	}
+}
+
+func TestPrepareRequesterContextMountRejectsUnsafeExistingSourceWithoutRepair(t *testing.T) {
+	readerGID := sandboxTestReaderGID(t)
+	runtimeDir := t.TempDir()
+	manager := &Manager{runtimeDir: runtimeDir}
+	source := filepath.Join(runtimeDir, "sandboxes", "workspace-1", "requester-context")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	settings := requesterContextContainerSettings{Root: RequesterContextPath, ReaderGID: &readerGID}
+	if _, err := manager.prepareRequesterContextMount("workspace-1", settings); err == nil {
+		t.Fatal("prepareRequesterContextMount() error = nil for mismatched existing source")
+	}
+	info, err := os.Lstat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("mismatched source was repaired to %04o, want unchanged 0755", info.Mode().Perm())
+	}
+}
+
+func TestPrepareRequesterContextMountRejectsWorkspacePathEscape(t *testing.T) {
+	readerGID := sandboxTestReaderGID(t)
+	manager := &Manager{runtimeDir: t.TempDir()}
+	settings := requesterContextContainerSettings{Root: RequesterContextPath, ReaderGID: &readerGID}
+	if _, err := manager.prepareRequesterContextMount("../escape", settings); err == nil {
+		t.Fatal("prepareRequesterContextMount() error = nil for unsafe workspace ID")
+	}
+}
+
 func TestResolveRequesterContextContainerSettings(t *testing.T) {
 	uid, primaryGID, readerGID := uint32(2001), uint32(2002), uint32(2003)
 	cfg := &config.Config{Agents: []config.AgentConfig{{
@@ -188,7 +256,8 @@ func TestResolveRequesterContextContainerSettings(t *testing.T) {
 }
 
 func TestDoEnsurePassesSecureRequesterContextToContainerSpec(t *testing.T) {
-	uid, primaryGID, readerGID := uint32(2001), uint32(2002), uint32(2003)
+	readerGID := sandboxTestReaderGID(t)
+	uid, primaryGID := uint32(2001), uint32(2002)
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{{
 			ID:                "pi",
@@ -201,7 +270,7 @@ func TestDoEnsurePassesSecureRequesterContextToContainerSpec(t *testing.T) {
 		DefaultAgent: "pi",
 	}
 	t.Setenv(requestercontext.EnvRequesterContextRoot, filepath.Join(t.TempDir(), "requester-context"))
-	t.Setenv(requestercontext.EnvRequesterContextReaderGID, "2003")
+	t.Setenv(requestercontext.EnvRequesterContextReaderGID, fmt.Sprint(readerGID))
 	registry, err := device.NewRegistry(device.NewStore(filepath.Join(t.TempDir(), "devices.json")), "test-secret")
 	if err != nil {
 		t.Fatal(err)
@@ -222,8 +291,9 @@ func TestDoEnsurePassesSecureRequesterContextToContainerSpec(t *testing.T) {
 		t.Fatal("doEnsure() error = nil, want fake CreateContainer stop")
 	}
 	spec := fakeDocker.createdSpec
-	if spec.RequesterContextRoot != RequesterContextPath || spec.RequesterContextReaderGID == nil || *spec.RequesterContextReaderGID != readerGID {
-		t.Fatalf("captured ContainerSpec requester context = %q/%v", spec.RequesterContextRoot, spec.RequesterContextReaderGID)
+	wantHostPath := filepath.Join(manager.runtimeDir, "sandboxes", workspace.ID, "requester-context")
+	if spec.RequesterContextHostPath != wantHostPath || spec.RequesterContextRoot != RequesterContextPath || spec.RequesterContextReaderGID == nil || *spec.RequesterContextReaderGID != readerGID {
+		t.Fatalf("captured ContainerSpec requester context = %q -> %q/%v", spec.RequesterContextHostPath, spec.RequesterContextRoot, spec.RequesterContextReaderGID)
 	}
 }
 

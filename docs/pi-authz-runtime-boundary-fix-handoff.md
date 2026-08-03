@@ -75,7 +75,7 @@ LUMI_REQUESTER_CONTEXT_READER_GID=<非 root reader GID>
 2. 内置 Pi 配置了 run-as identity 时，使用 publisher 控制的专用共享 bridge 根：
    - 安全模式下建议从 RequesterContext root 的父目录派生兄弟目录 `pi-acp-bridge`；
    - Local 示例：`/run/lumi/requester-context` 对应 `/run/lumi/pi-acp-bridge`；
-   - Sandbox 示例：`/lumi/runtime/requester-context` 对应 `/lumi/runtime/pi-acp-bridge`；
+   - Sandbox 示例：`/run/lumi/requester-context` 对应 `/run/lumi/pi-acp-bridge`；
    - 不得放在降权身份无法遍历的 `/root/...` 路径下。
 3. 共享 bridge 目录使用 `0750`，文件使用 `0640`；publisher 保持 owner，group 使用 Pi 的 `runAsGid` 或另一个明确包含在 Pi groups 中的专用 GID。
 4. Pi 必须可读、可遍历但不可修改 bridge；无关 UID/GID 不得读取。
@@ -118,11 +118,11 @@ LUMI_REQUESTER_CONTEXT_READER_GID=<非 root reader GID>
 2. 扩展 `ContainerSpec`，只在安全模式启用时成对注入：
 
    ```text
-   LUMI_REQUESTER_CONTEXT_ROOT=/lumi/runtime/requester-context
+   LUMI_REQUESTER_CONTEXT_ROOT=/run/lumi/requester-context
    LUMI_REQUESTER_CONTEXT_READER_GID=<与 host 部署一致的数值 GID>
    ```
 
-3. 不得把宿主的 `/run/lumi/requester-context` 原样传入容器；Sandbox 的共享 runtime bind mount 位于 `/lumi/runtime`。
+3. 使用每个 Workspace 独立的宿主 source `$LUMI_HOME/runtime/sandboxes/<workspace>/requester-context`，将其 bind mount 到容器内 `/run/lumi/requester-context`；不得复用 Agent 可控制的共享 `/lumi/runtime`。
 4. 未启用安全模式时不得注入其中任何一个变量，保持 legacy 行为。
 5. 单元测试必须断言安全模式下两个变量同时存在、legacy 模式下两个变量同时不存在、部分配置被拒绝。
 
@@ -180,7 +180,7 @@ LUMI_REQUESTER_CONTEXT_READER_GID=<非 root reader GID>
 
 ### 5.2 Sandbox 配置
 
-- secure host 设置映射为容器内 `/lumi/runtime/requester-context`。
+- secure host 设置映射为容器内独立挂载 `/run/lumi/requester-context`。
 - reader GID 数值保持一致。
 - 两个环境变量只会成对出现。
 - Pi config 不含 reader group 时，在启动容器前 fail closed。

@@ -371,6 +371,12 @@ func (m *Manager) doEnsure(ctx context.Context, opts EnsureOptions) (RuntimeStat
 		m.failWorkspace(workspace, runtimeErr, StageStartingContainer)
 		return m.Status(workspace), runtimeErr
 	}
+	requesterContextHostPath, err := m.prepareRequesterContextMount(workspace.ID, requesterContextSettings)
+	if err != nil {
+		runtimeErr := wrapRuntimeError(CodeUnknown, err)
+		m.failWorkspace(workspace, runtimeErr, StageStartingContainer)
+		return m.Status(workspace), runtimeErr
+	}
 	credentialMounts := m.resolveCredentialMounts(workspace.ID, filterAgents(m.config, workspace.Agents))
 
 	_ = m.docker.StopRemoveContainer(ctx, record.ContainerName)
@@ -385,6 +391,7 @@ func (m *Manager) doEnsure(ctx context.Context, opts EnsureOptions) (RuntimeStat
 		Labels:                    sandboxdocker.BuildLabels(workspace.ID, record.DeviceID),
 		ExtraHosts:                target.ExtraHosts,
 		CredentialMounts:          credentialMounts,
+		RequesterContextHostPath:  requesterContextHostPath,
 		RequesterContextRoot:      requesterContextSettings.Root,
 		RequesterContextReaderGID: requesterContextSettings.ReaderGID,
 	})

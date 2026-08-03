@@ -13,7 +13,7 @@ The committed policy is bot-agnostic and uses a placeholder UserID. Render a run
 
 `render-runtime-policy.mjs` renders that private copy from environment variables. `start-sandbox-e2e.sh` reads a private `runtime.env`, keeps credentials out of the repository, and starts a PI-only Sandbox instance.
 
-The committed Sandbox agent fixture runs PI as numeric UID/GID `2001:2002` with requester-context reader group `2003`. The launcher enables the paired host security settings; Sandbox manager maps the host root to `/lumi/runtime/requester-context` while preserving reader GID `2003`.
+The committed Sandbox agent fixture runs PI as numeric UID/GID `2001:2002` with requester-context reader group `2003`. The launcher enables the paired host security settings. For each Workspace, Sandbox manager creates a publisher-controlled host source at `$LUMI_HOME/runtime/sandboxes/<workspace>/requester-context` and bind-mounts it at `/run/lumi/requester-context`, preserving reader GID `2003`. This mount is independent from `/lumi/runtime`, which is writable by the run-as Agent.
 
 ## Build
 

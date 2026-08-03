@@ -216,6 +216,7 @@ device-executor
 
 - Task 只包含本轮 Context，不包含完整 policy 文件。
 - Context 在 Host、device-executor 和领域 consumer 之间必须保持 v2。
+- 托管 Sandbox 使用每个 Workspace 独立的宿主 source：`$LUMI_HOME/runtime/sandboxes/<workspace>/requester-context`，并将它 bind mount 到容器内 `/run/lumi/requester-context`。该 source 不得放入共享 `/lumi/runtime`；后者可由降权 Agent 控制，不能作为授权信封的信任根。
 - 已存在的 Sandbox 镜像不会自动更新；升级本协议后必须重新构建镜像并重建或重启 Sandbox。
 
 ## 9. 文件生命周期
