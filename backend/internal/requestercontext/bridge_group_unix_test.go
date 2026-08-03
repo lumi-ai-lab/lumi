@@ -5,6 +5,7 @@ package requestercontext
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,9 @@ import (
 func TestFileBridgeWithReaderGIDUsesSharedContractPermissions(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "requester-context")
 	gid := uint32(os.Getgid())
+	if gid == 0 {
+		gid = 62002
+	}
 	bridge, err := NewFileBridge(root, "workspace-1", "pi", WithReaderGID(gid))
 	if err != nil {
 		t.Fatalf("NewFileBridge() error = %v", err)
@@ -177,6 +181,7 @@ func TestSecuredFileBridgeRealReaderBoundary(t *testing.T) {
 	if err := os.Chmod(parent, 0o711); err != nil {
 		t.Fatal(err)
 	}
+	helper := stageRequesterContextBoundaryHelper(t, parent)
 	readerUID, readerGID := uint32(62101), uint32(62102)
 	root := filepath.Join(parent, "requester-context")
 	bridge, err := NewFileBridge(root, "workspace", "pi", WithReaderGID(readerGID))
@@ -189,13 +194,38 @@ func TestSecuredFileBridgeRealReaderBoundary(t *testing.T) {
 	}
 	defer cleanup()
 
-	runBoundaryHelper(t, readerUID, readerGID, "reader", path, bridge.Dir())
-	runBoundaryHelper(t, 62103, 62104, "outsider", path, bridge.Dir())
+	runBoundaryHelper(t, helper, readerUID, readerGID, "reader", path, bridge.Dir())
+	runBoundaryHelper(t, helper, 62103, 62104, "outsider", path, bridge.Dir())
 }
 
-func runBoundaryHelper(t *testing.T, uid, gid uint32, role, path, dir string) {
+func stageRequesterContextBoundaryHelper(t *testing.T, parent string) string {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestSecuredFileBridgeRealReaderBoundary$")
+	source, err := os.Open(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	target := filepath.Join(parent, "requester-context-boundary-helper")
+	destination, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(destination, source); err != nil {
+		destination.Close()
+		t.Fatal(err)
+	}
+	if err := destination.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return target
+}
+
+func runBoundaryHelper(t *testing.T, helper string, uid, gid uint32, role, path, dir string) {
+	t.Helper()
+	cmd := exec.Command(helper, "-test.run=^TestSecuredFileBridgeRealReaderBoundary$")
 	cmd.Env = append(os.Environ(),
 		"LUMI_REQUESTER_CONTEXT_HELPER=1",
 		"LUMI_BOUNDARY_ROLE="+role,

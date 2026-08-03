@@ -25,8 +25,85 @@ env:
   IMAGE_NAME: lumi-ai-lab/lumi-sandbox
 
 jobs:
+  authz-boundary:
+    name: Test Pi authorization runtime boundary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: |
+            backend/go.sum
+            gotray/go.sum
+
+      - name: Test as publisher
+        working-directory: backend
+        run: go test ./...
+
+      - name: Test real cross-UID/GID boundary
+        working-directory: backend
+        run: sudo env "PATH=$PATH" go test -count=1 -v ./internal/piacpbridge ./internal/requestercontext
+
+  verify-images:
+    name: Verify sandbox image (${{ matrix.arch }})
+    needs: authz-boundary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            elf_machine: '62'
+          - platform: linux/arm64
+            arch: arm64
+            elf_machine: '183'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build platform image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/sandbox/Dockerfile
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: lumi-sandbox:verify-${{ matrix.arch }}
+          cache-from: type=gha,scope=sandbox-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=sandbox-${{ matrix.arch }}
+
+      - name: Verify platform image
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE: lumi-sandbox:verify-${{ matrix.arch }}
+          ELF_MACHINE: ${{ matrix.elf_machine }}
+        run: |
+          actual_machine="$(docker run --rm --platform "$PLATFORM" --entrypoint sh "$IMAGE" -c 'od -An -tu2 -j18 -N2 /usr/local/bin/device-executor | xargs')"
+          test "$actual_machine" = "$ELF_MACHINE"
+          docker run --rm --platform "$PLATFORM" "$IMAGE" --help
+          test "$(docker run --rm --platform "$PLATFORM" --entrypoint node "$IMAGE" --version)" = "v22.22.2"
+
   build:
     name: Build and publish sandbox image
+    needs: verify-images
     runs-on: ubuntu-latest
 
     steps:

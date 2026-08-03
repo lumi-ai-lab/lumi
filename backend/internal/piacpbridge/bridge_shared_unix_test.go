@@ -5,6 +5,7 @@ package piacpbridge
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,6 +132,7 @@ func TestMaterializeSharedRealRunAsReadOnlyBoundary(t *testing.T) {
 	if err := os.Chmod(parent, 0o711); err != nil {
 		t.Fatal(err)
 	}
+	helper := stageSharedBridgeBoundaryHelper(t, parent)
 	readerUID, readerGID := uint32(62301), uint32(62302)
 	root := filepath.Join(parent, "pi-acp-bridge")
 	entrypoint, err := MaterializeShared(root, readerGID)
@@ -143,13 +145,38 @@ func TestMaterializeSharedRealRunAsReadOnlyBoundary(t *testing.T) {
 	if output, err := check.CombinedOutput(); err != nil {
 		t.Fatalf("run-as node could not load embedded bridge: %v, output=%s", err, output)
 	}
-	runSharedHelper(t, readerUID, readerGID, "reader", entrypoint)
-	runSharedHelper(t, 62303, 62304, "outsider", entrypoint)
+	runSharedHelper(t, helper, readerUID, readerGID, "reader", entrypoint)
+	runSharedHelper(t, helper, 62303, 62304, "outsider", entrypoint)
 }
 
-func runSharedHelper(t *testing.T, uid, gid uint32, role, entrypoint string) {
+func stageSharedBridgeBoundaryHelper(t *testing.T, parent string) string {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestMaterializeSharedRealRunAsReadOnlyBoundary$")
+	source, err := os.Open(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	target := filepath.Join(parent, "pi-bridge-boundary-helper")
+	destination, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(destination, source); err != nil {
+		destination.Close()
+		t.Fatal(err)
+	}
+	if err := destination.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return target
+}
+
+func runSharedHelper(t *testing.T, helper string, uid, gid uint32, role, entrypoint string) {
+	t.Helper()
+	cmd := exec.Command(helper, "-test.run=^TestMaterializeSharedRealRunAsReadOnlyBoundary$")
 	cmd.Env = append(os.Environ(), "LUMI_PI_BRIDGE_HELPER=1", "LUMI_BOUNDARY_ROLE="+role, "LUMI_BOUNDARY_PATH="+entrypoint)
 	cmd.SysProcAttr = credential(uid, gid)
 	if output, err := cmd.CombinedOutput(); err != nil {

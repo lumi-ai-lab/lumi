@@ -2,6 +2,9 @@
 
 FROM golang:1.25-bookworm AS builder
 
+ARG TARGETOS
+ARG TARGETARCH
+
 WORKDIR /src
 
 COPY gotray/go.mod gotray/go.sum ./gotray/
@@ -12,9 +15,13 @@ RUN cd backend && go mod download
 COPY gotray ./gotray
 COPY backend ./backend
 RUN cd backend \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
+    && test "${TARGETOS}" = "linux" \
+    && case "${TARGETARCH}" in amd64|arm64) ;; *) exit 1 ;; esac \
+    && CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
       go build -buildvcs=false -trimpath -ldflags="-s -w" \
-      -o /out/device-executor ./cmd/device-executor
+      -o /out/device-executor ./cmd/device-executor \
+    && machine="$(od -An -tu2 -j18 -N2 /out/device-executor | xargs)" \
+    && case "${TARGETARCH}:${machine}" in amd64:62|arm64:183) ;; *) exit 1 ;; esac
 
 FROM node:22.22.2-bookworm-slim AS runtime
 
