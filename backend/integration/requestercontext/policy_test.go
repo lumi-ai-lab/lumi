@@ -22,7 +22,7 @@ func TestDemoPolicyLoadsAndBuildsContext(t *testing.T) {
 	if !ok {
 		t.Fatal("BuildContext(allowed user) ok = false")
 	}
-	if ctx.Version != 2 || ctx.Principal.Channel != "wecom" || ctx.Principal.CanonicalUserID != "user-demo-allowed" {
+	if ctx.Version != 2 || ctx.Principal.Channel != "wecom" || ctx.Principal.BotID != "bot-demo-001" || ctx.Principal.CanonicalUserID != "user-demo-allowed" {
 		t.Fatalf("requester context identity = %#v", ctx)
 	}
 	if len(ctx.Authorization.Capabilities) != 2 || ctx.Authorization.Capabilities[0] != "qdm.cmr.query" {
@@ -50,7 +50,7 @@ func TestExternalMigratedPolicyLoadsWhenConfigured(t *testing.T) {
 	if path == "" {
 		t.Skip("LUMI_E2E_REQUESTER_POLICY is not configured")
 	}
-	policy, err := wecom.LoadRequesterPolicy(path, "")
+	policy, err := wecom.LoadRequesterPolicy(path, "policy-validation-bot")
 	if err != nil {
 		t.Fatalf("LoadRequesterPolicy(%s) error = %v", path, err)
 	}

@@ -9,7 +9,7 @@ This fixture verifies the boundary between Lumi's generic authorization envelope
 - `consumer` is a fail-closed QDM scope consumer intended to run as a PI tool inside a Lumi Sandbox.
 - `sandbox/Dockerfile` replaces only `device-executor` in an existing Sandbox image for branch-level E2E testing.
 
-The committed policy uses placeholder BotID and UserID values. Render a runtime copy outside the workspace with the real test bot and exact WeCom `from.userid`; never commit those values or the bot secret.
+The committed policy is bot-agnostic and uses a placeholder UserID. Render a runtime copy outside the workspace with the exact WeCom `from.userid`; the authenticated BotID comes from Lumi's runtime configuration and the bot secret must never enter the policy.
 
 `render-runtime-policy.mjs` renders that private copy from environment variables. `start-sandbox-e2e.sh` reads a private `runtime.env`, keeps credentials out of the repository, and starts a PI-only Sandbox instance.
 

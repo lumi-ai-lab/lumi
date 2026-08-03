@@ -95,7 +95,7 @@ func requesterSandboxRunOptions(workspace, policyPath string) RunOptions {
 
 func writeRequesterSandboxPolicy(t *testing.T, path string) {
 	t.Helper()
-	const raw = `{"version":2,"botId":"bot-123","users":[{"userId":"u1","displayName":"U1","enabled":true,"authorization":{"capabilities":["com.example.reports.read"],"claims":{"com.example.reports":{"tenantIds":["tenant-a"]}}}}]}`
+	const raw = `{"version":2,"users":[{"userId":"u1","displayName":"U1","enabled":true,"authorization":{"capabilities":["com.example.reports.read"],"claims":{"com.example.reports":{"tenantIds":["tenant-a"]}}}}]}`
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("WriteFile(policy) error = %v", err)
 	}

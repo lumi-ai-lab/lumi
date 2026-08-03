@@ -4,11 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 const [templateArg, outputArg] = process.argv.slice(2);
-const botId = (process.env.LUMI_BOT_ID ?? "").trim();
 const userId = (process.env.LUMI_TEST_USER_ID ?? "").trim();
 
-if (!templateArg || !outputArg || !botId || !userId) {
-  console.error("usage: LUMI_BOT_ID=... LUMI_TEST_USER_ID=... render-runtime-policy.mjs TEMPLATE OUTPUT");
+if (!templateArg || !outputArg || !userId) {
+  console.error("usage: LUMI_TEST_USER_ID=... render-runtime-policy.mjs TEMPLATE OUTPUT");
   process.exit(2);
 }
 
@@ -20,7 +19,6 @@ if (enabledUsers.length !== 1) {
   throw new Error(`template must contain exactly one enabled user, found ${enabledUsers.length}`);
 }
 
-policy.botId = botId;
 enabledUsers[0].userId = userId;
 enabledUsers[0].displayName = "E2E Test User";
 

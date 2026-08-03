@@ -255,7 +255,7 @@ func requesterPolicyServiceConfig(workspaceID, policyPath string) Config {
 }
 
 func requesterPolicyJSONForUser(userID string) string {
-	return `{"version":2,"botId":"bot-1","users":[{"userId":"` + userID + `","displayName":"` + userID + `","enabled":true,"authorization":{"capabilities":["com.example.reports.read"],"claims":{"com.example.reports":{"tenantIds":["tenant-a"]}}}}]}`
+	return `{"version":2,"users":[{"userId":"` + userID + `","displayName":"` + userID + `","enabled":true,"authorization":{"capabilities":["com.example.reports.read"],"claims":{"com.example.reports":{"tenantIds":["tenant-a"]}}}}]}`
 }
 
 func writeRequesterPolicyAt(t *testing.T, path, raw string) {

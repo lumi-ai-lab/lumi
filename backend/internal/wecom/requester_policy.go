@@ -17,7 +17,7 @@ const requesterPolicyVersion = 2
 
 type requesterPolicyDocument struct {
 	Version int                   `json:"version"`
-	BotID   string                `json:"botId"`
+	BotID   string                `json:"botId,omitempty"`
 	Users   []requesterPolicyUser `json:"users"`
 }
 
@@ -44,11 +44,17 @@ type RequesterPolicy struct {
 }
 
 // LoadRequesterPolicy loads and validates one strict JSON policy document.
-// When expectedBotID is non-empty, the document must target that exact bot ID.
-func LoadRequesterPolicy(path, expectedBotID string) (*RequesterPolicy, error) {
+// botId is an optional audience constraint: when both the document and runtime
+// BotIDs are non-empty, they must match. The runtime BotID remains the source of
+// truth for RequesterContext principals.
+func LoadRequesterPolicy(path, runtimeBotID string) (*RequesterPolicy, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, errors.New("requester config path is required")
+	}
+	runtimeBotID = strings.TrimSpace(runtimeBotID)
+	if runtimeBotID == "" {
+		return nil, errors.New("runtime bot id is required")
 	}
 
 	data, err := os.ReadFile(path)
@@ -70,12 +76,12 @@ func LoadRequesterPolicy(path, expectedBotID string) (*RequesterPolicy, error) {
 		return nil, fmt.Errorf("decode requester config: %w", err)
 	}
 
-	if err := normalizeAndValidateRequesterPolicy(&document, expectedBotID); err != nil {
+	if err := normalizeAndValidateRequesterPolicy(&document, runtimeBotID); err != nil {
 		return nil, err
 	}
 	hash := sha256.Sum256(data)
 	policy := &RequesterPolicy{
-		botID:    document.BotID,
+		botID:    runtimeBotID,
 		revision: "sha256:" + hex.EncodeToString(hash[:]),
 		enabled:  make(map[string]requesterPolicyUser),
 	}

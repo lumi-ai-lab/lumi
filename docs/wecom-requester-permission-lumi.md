@@ -50,7 +50,6 @@ LUMI_WECOM_REQUESTER_CONFIG=/absolute/config/wecom-requesters.json
 ```json
 {
   "version": 2,
-  "botId": "bot-demo-001",
   "users": [
     {
       "userId": "user-demo-001",
@@ -84,7 +83,8 @@ LUMI_WECOM_REQUESTER_CONFIG=/absolute/config/wecom-requesters.json
 ### 通用校验规则
 
 - Policy 版本必须为 `2`，不自动转换 v1。
-- BotID 必须非空，并与当前企业微信机器人一致。
+- `botId` 是可选的 audience 约束；省略或留空时 Policy 可被多个机器人复用，非空时必须与当前企业微信机器人一致。
+- RequesterContext 中的 BotID 始终来自 Lumi 运行时配置，而不是 Policy。
 - UserID 去除首尾空白后非空、唯一、大小写敏感。
 - 启用用户至少包含一个 capability；停用用户可以使用空授权。
 - capability 和 claim namespace 必须为小写点分标识，可使用数字、`_` 和 `-`：
@@ -109,7 +109,7 @@ Policy file changed      不自动热加载
 Service restart          建立新快照
 ```
 
-加载失败、版本错误、BotID 不匹配或通用结构非法时，服务拒绝启动或保存配置，不回退到 `allowFrom`。
+加载失败、版本错误、非空 BotID 约束不匹配或通用结构非法时，服务拒绝启动或保存配置，不回退到 `allowFrom`。
 
 Policy revision 使用原始文件内容的 SHA-256。仅改变 JSON 排版也会产生新的 revision，便于确认运行时加载的确切文件版本。
 
@@ -231,7 +231,7 @@ Lumi 不提供 capability 注册表、领域 validator 注入点或外部 valida
 
 - 合法用户的 Local 请求；
 - 合法用户的 Sandbox 请求；
-- 未知、停用和 BotID 不匹配用户的提前拒绝；
+- 未知、停用用户以及 Policy BotID 约束不匹配的提前拒绝；
 - 空 claims capability；
 - 多 namespace claims；
 - consumer 对缺失或错误 claim schema 的 fail-closed 行为。

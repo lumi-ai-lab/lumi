@@ -1,7 +1,6 @@
 package wecom
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -13,10 +12,7 @@ func normalizeAndValidateRequesterPolicy(document *requesterPolicyDocument, expe
 		return fmt.Errorf("requester config version must be %d", requesterPolicyVersion)
 	}
 	document.BotID = strings.TrimSpace(document.BotID)
-	if document.BotID == "" {
-		return errors.New("requester config botId is required")
-	}
-	if expected := strings.TrimSpace(expectedBotID); expected != "" && document.BotID != expected {
+	if expected := strings.TrimSpace(expectedBotID); document.BotID != "" && expected != "" && document.BotID != expected {
 		return fmt.Errorf("requester config botId %q does not match configured botId %q", document.BotID, expected)
 	}
 

@@ -56,7 +56,6 @@ Policy v2 将身份字段和授权字段分开：
 ```json
 {
   "version": 2,
-  "botId": "bot-demo-001",
   "users": [
     {
       "userId": "user-demo-001",
@@ -82,7 +81,8 @@ Policy v2 将身份字段和授权字段分开：
 ### 3.1 Lumi 校验的内容
 
 - `version` 必须为 `2`。
-- `botId` 非空，并与运行中的 BotID 精确一致。
+- `botId` 是可选的 audience 约束；非空时必须与运行中的 BotID 精确一致，省略或留空时允许跨机器人复用。
+- RequesterContext 的 `principal.botId` 始终使用运行时认证的 BotID，Policy 不能覆盖它。
 - UserID 非空且去除首尾空白后不得重复。
 - 启用用户至少有一个 capability。
 - capability 去除首尾空白后必须唯一，并满足：

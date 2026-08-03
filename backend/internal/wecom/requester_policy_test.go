@@ -122,6 +122,53 @@ func TestLoadRequesterPolicyNormalizesMissingClaimsToObject(t *testing.T) {
 	}
 }
 
+func TestLoadRequesterPolicyAllowsUnboundPolicyAndUsesRuntimeBotID(t *testing.T) {
+	raw := `{
+      "version": 2,
+      "users": [{
+        "userId": "u1",
+        "displayName": "Unbound User",
+        "enabled": true,
+        "authorization": {"capabilities": ["com.example.status.read"], "claims": {}}
+      }]
+    }`
+	path := writeRequesterPolicyFile(t, raw)
+
+	for _, botID := range []string{"bot-a", "bot-b"} {
+		t.Run(botID, func(t *testing.T) {
+			policy, err := LoadRequesterPolicy(path, botID)
+			if err != nil {
+				t.Fatalf("LoadRequesterPolicy() error = %v", err)
+			}
+			if policy.BotID() != botID {
+				t.Fatalf("BotID() = %q, want runtime BotID %q", policy.BotID(), botID)
+			}
+			ctx, ok := policy.BuildContext("u1", "msg-1", "chat-1", "group")
+			if !ok {
+				t.Fatal("BuildContext() ok = false")
+			}
+			if ctx.Principal.BotID != botID {
+				t.Fatalf("context principal BotID = %q, want %q", ctx.Principal.BotID, botID)
+			}
+		})
+	}
+}
+
+func TestLoadRequesterPolicyTreatsBlankBotIDAsUnbound(t *testing.T) {
+	raw := `{"version":2,"botId":" ","users":[{"userId":"u1","enabled":true,"authorization":{"capabilities":["com.example.status.read"],"claims":{}}}]}`
+	policy, err := LoadRequesterPolicy(writeRequesterPolicyFile(t, raw), "runtime-bot")
+	if err != nil {
+		t.Fatalf("LoadRequesterPolicy() error = %v", err)
+	}
+	ctx, ok := policy.BuildContext("u1", "msg-1", "chat-1", "group")
+	if !ok {
+		t.Fatal("BuildContext() ok = false")
+	}
+	if ctx.Principal.BotID != "runtime-bot" {
+		t.Fatalf("context principal = %#v", ctx.Principal)
+	}
+}
+
 func TestLoadRequesterPolicyRejectsInvalidDocuments(t *testing.T) {
 	tests := []struct {
 		name string
@@ -134,7 +181,7 @@ func TestLoadRequesterPolicyRejectsInvalidDocuments(t *testing.T) {
 		{name: "unknown authorization field", raw: `{"version":2,"botId":"bot-1","users":[{"userId":"u1","enabled":false,"authorization":{"capabilities":[],"claims":{},"scope":{}}}]}`, bot: "bot-1", want: "unknown field"},
 		{name: "multiple values", raw: `{"version":2,"botId":"bot-1","users":[]} {}`, bot: "bot-1", want: "multiple JSON values"},
 		{name: "legacy version", raw: `{"version":1,"botId":"bot-1","users":[]}`, bot: "bot-1", want: "version must be 2"},
-		{name: "empty bot", raw: `{"version":2,"botId":" ","users":[]}`, want: "botId is required"},
+		{name: "missing runtime bot", raw: `{"version":2,"users":[]}`, want: "runtime bot id is required"},
 		{name: "bot mismatch", raw: `{"version":2,"botId":"bot-2","users":[]}`, bot: "bot-1", want: "does not match"},
 		{name: "empty user", raw: `{"version":2,"botId":"bot-1","users":[{"userId":" ","enabled":false,"authorization":{"capabilities":[],"claims":{}}}]}`, bot: "bot-1", want: "userId is required"},
 		{name: "duplicate user after trim", raw: `{"version":2,"botId":"bot-1","users":[{"userId":"u1","enabled":false,"authorization":{"capabilities":[],"claims":{}}},{"userId":" u1 ","enabled":false,"authorization":{"capabilities":[],"claims":{}}}]}`, bot: "bot-1", want: "duplicate userId"},
