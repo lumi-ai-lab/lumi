@@ -19,6 +19,7 @@ import (
 	"github.com/pengmide/lumi/internal/agentmode"
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/device"
+	"github.com/pengmide/lumi/internal/piruntime"
 	sandboxdocker "github.com/pengmide/lumi/internal/sandbox/docker"
 )
 
@@ -370,7 +371,7 @@ func (m *Manager) doEnsure(ctx context.Context, opts EnsureOptions) (RuntimeStat
 		m.failWorkspace(workspace, runtimeErr, StageStartingContainer)
 		return m.Status(workspace), runtimeErr
 	}
-	credentialMounts := m.resolveCredentialMounts(workspace.ID)
+	credentialMounts := m.resolveCredentialMounts(workspace.ID, filterAgents(m.config, workspace.Agents))
 
 	_ = m.docker.StopRemoveContainer(ctx, record.ContainerName)
 	containerID, err := m.docker.CreateContainer(ctx, sandboxdocker.ContainerSpec{
@@ -688,7 +689,9 @@ func (m *Manager) writeExecutorConfig(workspace config.WorkspaceConfig, runtimeS
 		return "", err
 	}
 
-	agents := sanitizeAgentsForCredentialMounts(filterAgents(m.config, workspace.Agents), m.resolveCredentialMounts(workspace.ID))
+	selectedAgents := filterAgents(m.config, workspace.Agents)
+	credentialMounts := m.resolveCredentialMounts(workspace.ID, selectedAgents)
+	agents := configureSandboxRunAsPiAgents(sanitizeAgentsForCredentialMounts(selectedAgents, credentialMounts))
 	defaultAgent := m.config.DefaultAgent
 	if !agentAllowed(agents, defaultAgent) && len(agents) > 0 {
 		defaultAgent = agents[0].ID
@@ -835,13 +838,13 @@ func filterAgents(cfg *config.Config, allowed []string) []config.AgentConfig {
 	return result
 }
 
-func (m *Manager) resolveCredentialMounts(workspaceID string) []sandboxdocker.CredentialMount {
+func (m *Manager) resolveCredentialMounts(workspaceID string, agents []config.AgentConfig) []sandboxdocker.CredentialMount {
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
 		return nil
 	}
 	dir := filepath.Join(m.runtimeDir, "sandboxes", workspaceID, "credentials")
-	mounts := resolveCredentialMountsFromHome(home, dir)
+	mounts := resolveCredentialMountsFromHomeForAgents(home, dir, agents)
 	if m.ssotApplier != nil {
 		m.ssotApplier(workspaceID, dir)
 	}
@@ -882,6 +885,10 @@ func (m *Manager) CredentialsRoot(workspaceID string) string {
 }
 
 func resolveCredentialMountsFromHome(home string, runtimeDir string) []sandboxdocker.CredentialMount {
+	return resolveCredentialMountsFromHomeForAgents(home, runtimeDir, nil)
+}
+
+func resolveCredentialMountsFromHomeForAgents(home string, runtimeDir string, agents []config.AgentConfig) []sandboxdocker.CredentialMount {
 	mounts := make([]sandboxdocker.CredentialMount, 0, 3)
 	seenTargets := make(map[string]bool, 2)
 	if source, ok := prepareWritableClaudeRoot(home, filepath.Join(runtimeDir, "claude-root")); ok {
@@ -908,7 +915,15 @@ func resolveCredentialMountsFromHome(home string, runtimeDir string) []sandboxdo
 			ReadOnly: false,
 		})
 	}
-	if source, ok := prepareWritablePiHome(home, filepath.Join(runtimeDir, "pi")); ok {
+	if hasRunAsBuiltInPi(agents) {
+		if source, ok := prepareRunAsPiCredentialSource(home, filepath.Join(runtimeDir, "pi-source")); ok {
+			mounts = append(mounts, sandboxdocker.CredentialMount{
+				Source:   source,
+				Target:   piruntime.SandboxCredentialSource,
+				ReadOnly: true,
+			})
+		}
+	} else if source, ok := prepareWritablePiHome(home, filepath.Join(runtimeDir, "pi")); ok {
 		mounts = append(mounts, sandboxdocker.CredentialMount{
 			Source:   source,
 			Target:   "/root/.pi",
@@ -916,6 +931,15 @@ func resolveCredentialMountsFromHome(home string, runtimeDir string) []sandboxdo
 		})
 	}
 	return mounts
+}
+
+func hasRunAsBuiltInPi(agents []config.AgentConfig) bool {
+	for _, agentCfg := range agents {
+		if config.IsBuiltInPIACP(agentCfg) && agentCfg.RunAsUID != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveCredentialFile(path string) (string, bool) {
@@ -987,6 +1011,20 @@ func prepareWritablePiHome(home string, targetDir string) (string, bool) {
 	}
 	if err := copyDir(sourceDir, targetDir); err != nil {
 		return "", false
+	}
+	return targetDir, true
+}
+
+func prepareRunAsPiCredentialSource(home string, targetDir string) (string, bool) {
+	piTarget := filepath.Join(targetDir, ".pi")
+	if err := os.MkdirAll(filepath.Join(piTarget, "agent", "sessions"), 0o700); err != nil {
+		return "", false
+	}
+	sourceDir := filepath.Join(home, ".pi")
+	if info, err := os.Stat(sourceDir); err == nil && info.IsDir() {
+		if err := copyDir(sourceDir, piTarget); err != nil {
+			return "", false
+		}
 	}
 	return targetDir, true
 }
@@ -1086,6 +1124,28 @@ func sanitizeAgentsForCredentialMounts(agents []config.AgentConfig, mounts []san
 		}
 	}
 	return sanitized
+}
+
+func configureSandboxRunAsPiAgents(agents []config.AgentConfig) []config.AgentConfig {
+	configured := make([]config.AgentConfig, len(agents))
+	copy(configured, agents)
+	for i := range configured {
+		if !config.IsBuiltInPIACP(configured[i]) || configured[i].RunAsUID == nil {
+			continue
+		}
+		env := make(map[string]string, len(configured[i].Env)+4)
+		for key, value := range configured[i].Env {
+			env[key] = value
+		}
+		env["HOME"] = piruntime.SandboxHome
+		env[piruntime.EnvPiAgentDir] = piruntime.SandboxAgentDir
+		env[piruntime.EnvPiCredentialSource] = piruntime.SandboxCredentialSource
+		if strings.TrimSpace(env[piruntime.EnvPiCommand]) == "" {
+			env[piruntime.EnvPiCommand] = piruntime.SandboxPiCommand
+		}
+		configured[i].Env = env
+	}
+	return configured
 }
 
 func withoutHostClaudeExecutableEnv(env map[string]string) map[string]string {

@@ -67,7 +67,7 @@ jobs:
 
       - name: Test real cross-UID/GID boundary
         working-directory: backend
-        run: sudo env "PATH=$PATH" go test -count=1 -v ./internal/piacpbridge ./internal/requestercontext
+        run: sudo env "PATH=$PATH" go test -count=1 -v ./internal/agent ./internal/piacpbridge ./internal/requestercontext ./internal/sandbox ./cmd/device-executor
 
   verify-images:
     name: Verify sandbox image (${{ matrix.arch }})
