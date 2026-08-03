@@ -10,6 +10,9 @@ lumi_bin="$script_dir/lumi"
 config_path="$script_dir/lumi.config.json"
 workspace_path="$script_dir/workspace"
 
+e2e_run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}"
+sandbox_id="requester-context-e2e-$e2e_run_id"
+
 if [[ ! -f "$runtime_env" ]]; then
   echo "missing $runtime_env" >&2
   exit 1
@@ -31,26 +34,25 @@ if [[ ! -d "$workspace_path" ]]; then
   exit 1
 fi
 
-# Sandbox discovery is currently Docker-daemon global. A Manager backed by this
-# fixture's private LUMI_HOME would remove Lumi Sandbox containers that are not
-# present in its own runtime store. Refuse a shared daemon unless the operator
-# has explicitly accepted that destructive test behavior.
-expected_sandbox_workspace="cli-sandbox-requester-context-e2e"
-foreign_sandboxes=()
+# Sandbox discovery is currently Docker-daemon global. This run uses a unique
+# workspace ID, so no pre-existing Lumi Sandbox can belong to it. A Manager
+# backed by this fixture's private LUMI_HOME would remove such containers as
+# orphans; refuse to start unless the operator explicitly accepts that
+# destructive test behavior.
+existing_sandboxes=()
 if command -v docker >/dev/null 2>&1; then
   while IFS= read -r container_id; do
     [[ -n "$container_id" ]] || continue
     workspace_id=$(docker inspect \
       --format '{{ index .Config.Labels "lumi.workspace_id" }}' \
       "$container_id" 2>/dev/null || true)
-    if [[ -n "$workspace_id" && "$workspace_id" != "$expected_sandbox_workspace" ]]; then
-      foreign_sandboxes+=("$workspace_id")
-    fi
+    [[ -n "$workspace_id" ]] || workspace_id="<missing-workspace-label>"
+    existing_sandboxes+=("$workspace_id ($container_id)")
   done < <(docker ps -aq --filter 'label=lumi.runtime=sandbox')
 fi
-if (( ${#foreign_sandboxes[@]} > 0 )) && [[ "${LUMI_E2E_ALLOW_FOREIGN_SANDBOX_REMOVAL:-0}" != "1" ]]; then
-  echo "refusing to start: the Docker daemon contains Sandbox workspaces owned by another Lumi runtime:" >&2
-  printf '  - %s\n' "${foreign_sandboxes[@]}" >&2
+if (( ${#existing_sandboxes[@]} > 0 )) && [[ "${LUMI_E2E_ALLOW_FOREIGN_SANDBOX_REMOVAL:-0}" != "1" ]]; then
+  echo "refusing to start: the Docker daemon already contains Lumi Sandbox containers that this unique E2E run does not own:" >&2
+  printf '  - %s\n' "${existing_sandboxes[@]}" >&2
   echo "use a dedicated Docker daemon; the current Sandbox Manager removes containers absent from its own LUMI_HOME store" >&2
   exit 1
 fi
@@ -74,6 +76,6 @@ exec "$lumi_bin" wecom run \
   --kind sandbox \
   --agent pi \
   --agents pi \
-  --sandbox-id requester-context-e2e \
+  --sandbox-id "$sandbox_id" \
   --sandbox-warmup wait \
   --stream

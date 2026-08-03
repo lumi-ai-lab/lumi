@@ -58,7 +58,7 @@ node ./render-runtime-policy.mjs \
 ./start-sandbox-e2e.sh
 ```
 
-> **Docker isolation:** Sandbox container discovery is currently daemon-global. A Lumi process using a fresh `LUMI_HOME` treats Sandbox containers absent from its own runtime store as orphans and removes them. The start script therefore refuses to run when it finds another Lumi Sandbox workspace. Use a dedicated Docker daemon/host for this fixture. The escape hatch `LUMI_E2E_ALLOW_FOREIGN_SANDBOX_REMOVAL=1` is intended only for a controlled environment where removing and subsequently restoring those containers is acceptable.
+> **Docker isolation:** Sandbox container discovery is currently daemon-global. A Lumi process using a fresh `LUMI_HOME` treats Sandbox containers absent from its own runtime store as orphans and removes them. Each invocation therefore generates a unique Sandbox Workspace ID, and the start script refuses to run when it finds any pre-existing Lumi Sandbox container—even one carrying the legacy fixed E2E Workspace ID. Use a clean, dedicated Docker daemon/host for this fixture. The escape hatch `LUMI_E2E_ALLOW_FOREIGN_SANDBOX_REMOVAL=1` is intended only for a controlled environment where every existing Lumi Sandbox container is disposable.
 
 ## Sandbox invocation
 
