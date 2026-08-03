@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -25,6 +24,7 @@ const (
 
 type consumerConfig struct {
 	ContextDir       string
+	SessionID        string
 	WorkspaceID      string
 	AgentID          string
 	Capability       string
@@ -86,6 +86,7 @@ func parseConfig(args []string, getenv func(string) string) (consumerConfig, err
 	flags := flag.NewFlagSet("requester-context-consumer", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&cfg.ContextDir, "context-dir", strings.TrimSpace(getenv(requesterctx.EnvRequesterContextDir)), "requester context directory")
+	flags.StringVar(&cfg.SessionID, "session-id", "", "raw ACP session ID")
 	flags.StringVar(&cfg.WorkspaceID, "workspace-id", strings.TrimSpace(getenv("LUMI_WORKSPACE_ID")), "expected workspace ID")
 	flags.StringVar(&cfg.AgentID, "agent-id", "pi", "expected agent ID")
 	flags.StringVar(&cfg.Capability, "capability", defaultCapability, "required capability")
@@ -101,6 +102,7 @@ func parseConfig(args []string, getenv func(string) string) (consumerConfig, err
 	}
 
 	cfg.ContextDir = strings.TrimSpace(cfg.ContextDir)
+	// SessionID is an opaque protocol identity. Do not trim or normalize it.
 	cfg.WorkspaceID = strings.TrimSpace(cfg.WorkspaceID)
 	cfg.AgentID = strings.TrimSpace(cfg.AgentID)
 	cfg.Capability = strings.TrimSpace(cfg.Capability)
@@ -114,6 +116,8 @@ func parseConfig(args []string, getenv func(string) string) (consumerConfig, err
 		return consumerConfig{}, errors.New("requester context directory is required")
 	case !filepath.IsAbs(cfg.ContextDir):
 		return consumerConfig{}, errors.New("requester context directory must be absolute")
+	case cfg.SessionID == "":
+		return consumerConfig{}, errors.New("raw ACP session ID is required")
 	case cfg.WorkspaceID == "":
 		return consumerConfig{}, errors.New("expected workspace ID is required")
 	case cfg.AgentID == "":
@@ -131,7 +135,7 @@ func parseConfig(args []string, getenv func(string) string) (consumerConfig, err
 }
 
 func consume(cfg consumerConfig, now time.Time) (decision, error) {
-	envelope, err := loadCurrentEnvelope(cfg.ContextDir, now)
+	envelope, err := loadEnvelope(cfg.ContextDir, cfg.SessionID)
 	if err != nil {
 		return decision{}, err
 	}
@@ -170,37 +174,20 @@ func consume(cfg consumerConfig, now time.Time) (decision, error) {
 	}, nil
 }
 
-func loadCurrentEnvelope(dir string, now time.Time) (requesterctx.Envelope, error) {
-	entries, err := os.ReadDir(dir)
+func loadEnvelope(dir, sessionID string) (requesterctx.Envelope, error) {
+	name, err := requesterctx.SessionFileName(sessionID)
 	if err != nil {
-		return requesterctx.Envelope{}, fmt.Errorf("read requester context directory: %w", err)
+		return requesterctx.Envelope{}, err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	active := make([]requesterctx.Envelope, 0, 1)
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		payload, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			return requesterctx.Envelope{}, fmt.Errorf("read requester context envelope: %w", err)
-		}
-		var envelope requesterctx.Envelope
-		if err := decodeStrictJSON(payload, &envelope); err != nil {
-			return requesterctx.Envelope{}, fmt.Errorf("decode requester context envelope: %w", err)
-		}
-		if envelope.ExpiresAt.IsZero() || !envelope.ExpiresAt.After(now) {
-			continue
-		}
-		active = append(active, envelope)
+	payload, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return requesterctx.Envelope{}, fmt.Errorf("read requester context envelope for exact session: %w", err)
 	}
-	if len(active) == 0 {
-		return requesterctx.Envelope{}, errors.New("no active requester context envelope found")
+	var envelope requesterctx.Envelope
+	if err := decodeStrictJSON(payload, &envelope); err != nil {
+		return requesterctx.Envelope{}, fmt.Errorf("decode requester context envelope: %w", err)
 	}
-	if len(active) != 1 {
-		return requesterctx.Envelope{}, fmt.Errorf("found %d active requester context envelopes; refusing an ambiguous identity", len(active))
-	}
-	return active[0], nil
+	return envelope, nil
 }
 
 func validateEnvelope(envelope requesterctx.Envelope, cfg consumerConfig, now time.Time) error {
@@ -214,8 +201,8 @@ func validateEnvelope(envelope requesterctx.Envelope, cfg consumerConfig, now ti
 		return errors.New("requester context workspace binding mismatch")
 	case envelope.AgentID != cfg.AgentID:
 		return errors.New("requester context agent binding mismatch")
-	case envelope.SessionID == "":
-		return errors.New("requester context session binding is empty")
+	case envelope.SessionID != cfg.SessionID:
+		return errors.New("requester context session binding mismatch")
 	case envelope.IssuedAt.IsZero() || envelope.IssuedAt.After(now.Add(time.Minute)):
 		return errors.New("requester context issue time is invalid")
 	case envelope.ExpiresAt.IsZero() || !envelope.ExpiresAt.After(now):

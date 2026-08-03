@@ -116,7 +116,7 @@ func TestSecureLocalRequesterContextRequiresPiReaderIdentity(t *testing.T) {
 func TestSecurePiSettingsPreserveLegacyPathForOtherAgents(t *testing.T) {
 	lumiHome := filepath.Join(t.TempDir(), "lumi-home")
 	t.Setenv("LUMI_HOME", lumiHome)
-	t.Setenv(requestercontext.EnvRequesterContextRoot, filepath.Join(t.TempDir(), "secure-requester-context"))
+	t.Setenv(requestercontext.EnvRequesterContextRoot, filepath.Join(t.TempDir(), "requester-context"))
 	t.Setenv(requestercontext.EnvRequesterContextReaderGID, "2003")
 	cfg := &config.Config{Agents: []config.AgentConfig{{ID: "claude"}}}
 	if err := injectLocalRequesterContextEnv(cfg, "workspace-a", "claude"); err != nil {

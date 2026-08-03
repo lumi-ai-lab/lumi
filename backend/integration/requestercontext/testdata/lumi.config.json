@@ -5,7 +5,10 @@
       "name": "PI",
       "command": "npx",
       "args": ["-y", "pi-acp@0.0.33"],
-      "sessionMode": "default"
+      "sessionMode": "default",
+      "runAsUid": 2001,
+      "runAsGid": 2002,
+      "supplementaryGids": [2003]
     }
   ],
   "defaultAgent": "pi",

@@ -44,8 +44,6 @@ func (settings RuntimeSettings) BridgeOptions() []FileBridgeOption {
 func RuntimeSettingsFromEnv(defaultRoot string) (RuntimeSettings, error) {
 	rootValue, rootSet := os.LookupEnv(EnvRequesterContextRoot)
 	gidValue, gidSet := os.LookupEnv(EnvRequesterContextReaderGID)
-	rootValue = strings.TrimSpace(rootValue)
-	gidValue = strings.TrimSpace(gidValue)
 	rootSet = rootSet && rootValue != ""
 	gidSet = gidSet && gidValue != ""
 	if rootSet != gidSet {
@@ -54,10 +52,12 @@ func RuntimeSettingsFromEnv(defaultRoot string) (RuntimeSettings, error) {
 	if !rootSet {
 		return RuntimeSettings{Root: defaultRoot}, nil
 	}
-	if !filepath.IsAbs(rootValue) {
-		return RuntimeSettings{}, fmt.Errorf("%s must be an absolute path", EnvRequesterContextRoot)
+	if err := validateSecureRoot(rootValue); err != nil {
+		return RuntimeSettings{}, fmt.Errorf("invalid %s: %w", EnvRequesterContextRoot, err)
 	}
-
+	if gidValue != strings.TrimSpace(gidValue) {
+		return RuntimeSettings{}, fmt.Errorf("%s must not contain surrounding whitespace", EnvRequesterContextReaderGID)
+	}
 	parsed, err := strconv.ParseUint(gidValue, 10, 32)
 	if err != nil {
 		return RuntimeSettings{}, fmt.Errorf("parse %s: %w", EnvRequesterContextReaderGID, err)
@@ -66,5 +66,29 @@ func RuntimeSettingsFromEnv(defaultRoot string) (RuntimeSettings, error) {
 	if gid == 0 {
 		return RuntimeSettings{}, fmt.Errorf("%s must not be the root group", EnvRequesterContextReaderGID)
 	}
-	return RuntimeSettings{Root: filepath.Clean(rootValue), ReaderGID: &gid}, nil
+	return RuntimeSettings{Root: rootValue, ReaderGID: &gid}, nil
+}
+
+func validateSecureRoot(root string) error {
+	if strings.ContainsRune(root, '\x00') {
+		return fmt.Errorf("path must not contain NUL")
+	}
+	if root != strings.TrimSpace(root) {
+		return fmt.Errorf("path must not contain surrounding whitespace")
+	}
+	if !filepath.IsAbs(root) {
+		return fmt.Errorf("path must be absolute")
+	}
+	clean := filepath.Clean(root)
+	if clean != root {
+		return fmt.Errorf("path must be clean")
+	}
+	volume := filepath.VolumeName(clean)
+	if clean == string(filepath.Separator) || (volume != "" && clean == volume+string(filepath.Separator)) {
+		return fmt.Errorf("filesystem volume root is not allowed")
+	}
+	if filepath.Base(clean) != "requester-context" {
+		return fmt.Errorf("path basename must be requester-context")
+	}
+	return nil
 }

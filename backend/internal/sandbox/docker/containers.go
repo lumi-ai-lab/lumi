@@ -2,6 +2,8 @@ package docker
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -10,16 +12,18 @@ import (
 )
 
 type ContainerSpec struct {
-	Name             string
-	Image            string
-	WorkspacePath    string
-	ConfigHostPath   string
-	RuntimeHostPath  string
-	BackendURL       string
-	Token            string
-	Labels           map[string]string
-	ExtraHosts       []string
-	CredentialMounts []CredentialMount
+	Name                      string
+	Image                     string
+	WorkspacePath             string
+	ConfigHostPath            string
+	RuntimeHostPath           string
+	BackendURL                string
+	Token                     string
+	Labels                    map[string]string
+	ExtraHosts                []string
+	CredentialMounts          []CredentialMount
+	RequesterContextRoot      string
+	RequesterContextReaderGID *uint32
 }
 
 type CredentialMount struct {
@@ -29,6 +33,10 @@ type CredentialMount struct {
 }
 
 func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (string, error) {
+	env, err := containerEnvironment(spec)
+	if err != nil {
+		return "", err
+	}
 	mounts := []mount.Mount{
 		{
 			Type:   mount.TypeBind,
@@ -67,12 +75,7 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 			Image:      spec.Image,
 			WorkingDir: "/workspace",
 			Labels:     spec.Labels,
-			Env: []string{
-				"LUMI_WORKSPACE_PATH=/workspace",
-				"NPM_CONFIG_PREFIX=/lumi/runtime/npm",
-				"NPM_CONFIG_CACHE=/lumi/runtime/npm-cache",
-				"PATH=/lumi/runtime/npm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-			},
+			Env:        env,
 			Cmd: []string{
 				"connect",
 				"--server", spec.BackendURL,
@@ -93,6 +96,33 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 		return "", err
 	}
 	return resp.ID, nil
+}
+
+func containerEnvironment(spec ContainerSpec) ([]string, error) {
+	env := []string{
+		"LUMI_WORKSPACE_PATH=/workspace",
+		"NPM_CONFIG_PREFIX=/lumi/runtime/npm",
+		"NPM_CONFIG_CACHE=/lumi/runtime/npm-cache",
+		"PATH=/lumi/runtime/npm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	}
+	rootSet := spec.RequesterContextRoot != ""
+	gidSet := spec.RequesterContextReaderGID != nil
+	if rootSet != gidSet {
+		return nil, fmt.Errorf("sandbox requester-context root and reader GID must be configured together")
+	}
+	if !rootSet {
+		return env, nil
+	}
+	if spec.RequesterContextRoot != "/lumi/runtime/requester-context" {
+		return nil, fmt.Errorf("sandbox requester-context root must be /lumi/runtime/requester-context")
+	}
+	if *spec.RequesterContextReaderGID == 0 {
+		return nil, fmt.Errorf("sandbox requester-context reader GID must not be root")
+	}
+	return append(env,
+		"LUMI_REQUESTER_CONTEXT_ROOT="+spec.RequesterContextRoot,
+		"LUMI_REQUESTER_CONTEXT_READER_GID="+strconv.FormatUint(uint64(*spec.RequesterContextReaderGID), 10),
+	), nil
 }
 
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {

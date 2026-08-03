@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pengmide/lumi/internal/fssecure"
 )
 
 const DefaultTTL = 30 * time.Minute
@@ -300,31 +302,31 @@ func (bridge *FileBridge) ensureDir() error {
 	workspaceDir := filepath.Dir(bridge.dir)
 	contextRoot := filepath.Dir(workspaceDir)
 	for _, dir := range []string{contextRoot, workspaceDir, bridge.dir} {
+		if bridge.readerGID != nil {
+			if err := fssecure.EnsureDirectory(dir, bridge.dirMode, bridge.readerGID); err != nil {
+				return fmt.Errorf("prepare requester context directory: %w", err)
+			}
+			continue
+		}
 		if err := os.MkdirAll(dir, bridge.dirMode); err != nil {
-			return fmt.Errorf("create requester context directory %q: %w", dir, err)
+			return fmt.Errorf("create private requester context directory %q: %w", dir, err)
 		}
 		info, err := os.Lstat(dir)
 		if err != nil {
-			return fmt.Errorf("inspect requester context directory %q: %w", dir, err)
+			return fmt.Errorf("inspect private requester context directory %q: %w", dir, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return fmt.Errorf("requester context directory %q must be a real directory", dir)
 		}
 		if err := os.Chmod(dir, bridge.dirMode); err != nil {
-			return fmt.Errorf("set requester context directory permissions %q: %w", dir, err)
-		}
-		if err := setFileGroup(dir, bridge.readerGID); err != nil {
-			return fmt.Errorf("set requester context directory group %q: %w", dir, err)
+			return fmt.Errorf("set private requester context directory mode %q: %w", dir, err)
 		}
 	}
 	return nil
 }
 
 func setFileGroup(path string, gid *uint32) error {
-	if gid == nil {
-		return nil
-	}
-	return os.Chown(path, -1, int(*gid))
+	return fssecure.SetGroup(path, gid)
 }
 
 func validatePathSegment(label, value string) error {

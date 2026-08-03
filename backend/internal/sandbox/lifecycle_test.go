@@ -2,11 +2,16 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/docker/docker/api/types"
+	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/device"
+	"github.com/pengmide/lumi/internal/requestercontext"
 	"github.com/pengmide/lumi/internal/sandbox/docker"
 )
 
@@ -134,6 +139,94 @@ func TestPrepareWorkspaceRuntimeSeedsSharedRuntimeFromLargestLegacyRuntime(t *te
 	}
 }
 
+func TestResolveRequesterContextContainerSettings(t *testing.T) {
+	uid, primaryGID, readerGID := uint32(2001), uint32(2002), uint32(2003)
+	cfg := &config.Config{Agents: []config.AgentConfig{{
+		ID:                "pi",
+		RunAsUID:          &uid,
+		RunAsGID:          &primaryGID,
+		SupplementaryGIDs: []uint32{readerGID},
+	}}}
+	workspace := config.WorkspaceConfig{ID: "sandbox"}
+
+	t.Run("legacy", func(t *testing.T) {
+		t.Setenv(requestercontext.EnvRequesterContextRoot, "")
+		t.Setenv(requestercontext.EnvRequesterContextReaderGID, "")
+		settings, err := resolveRequesterContextContainerSettings(cfg, workspace)
+		if err != nil || settings.Root != "" || settings.ReaderGID != nil {
+			t.Fatalf("settings = %+v, error = %v", settings, err)
+		}
+	})
+	t.Run("secure mapping", func(t *testing.T) {
+		t.Setenv(requestercontext.EnvRequesterContextRoot, filepath.Join(t.TempDir(), "requester-context"))
+		t.Setenv(requestercontext.EnvRequesterContextReaderGID, "2003")
+		settings, err := resolveRequesterContextContainerSettings(cfg, workspace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if settings.Root != RequesterContextPath || settings.ReaderGID == nil || *settings.ReaderGID != readerGID {
+			t.Fatalf("settings = %+v", settings)
+		}
+	})
+	t.Run("partial host settings", func(t *testing.T) {
+		t.Setenv(requestercontext.EnvRequesterContextRoot, filepath.Join(t.TempDir(), "requester-context"))
+		t.Setenv(requestercontext.EnvRequesterContextReaderGID, "")
+		_, err := resolveRequesterContextContainerSettings(cfg, workspace)
+		if err == nil || !strings.Contains(err.Error(), "configured together") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+	t.Run("pi missing reader group", func(t *testing.T) {
+		t.Setenv(requestercontext.EnvRequesterContextRoot, filepath.Join(t.TempDir(), "requester-context"))
+		t.Setenv(requestercontext.EnvRequesterContextReaderGID, "2003")
+		withoutReader := &config.Config{Agents: []config.AgentConfig{{ID: "pi", RunAsUID: &uid, RunAsGID: &primaryGID}}}
+		_, err := resolveRequesterContextContainerSettings(withoutReader, workspace)
+		if err == nil || !strings.Contains(err.Error(), "does not receive") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+}
+
+func TestDoEnsurePassesSecureRequesterContextToContainerSpec(t *testing.T) {
+	uid, primaryGID, readerGID := uint32(2001), uint32(2002), uint32(2003)
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{{
+			ID:                "pi",
+			Name:              "PI",
+			Command:           "npx",
+			RunAsUID:          &uid,
+			RunAsGID:          &primaryGID,
+			SupplementaryGIDs: []uint32{readerGID},
+		}},
+		DefaultAgent: "pi",
+	}
+	t.Setenv(requestercontext.EnvRequesterContextRoot, filepath.Join(t.TempDir(), "requester-context"))
+	t.Setenv(requestercontext.EnvRequesterContextReaderGID, "2003")
+	registry, err := device.NewRegistry(device.NewStore(filepath.Join(t.TempDir(), "devices.json")), "test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeDocker := &fakeDockerClient{createErr: errors.New("stop after capturing container spec")}
+	manager := &Manager{
+		config:     cfg,
+		devices:    registry,
+		store:      NewStore(filepath.Join(t.TempDir(), "sandboxes.json")),
+		docker:     fakeDocker,
+		runtimeDir: t.TempDir(),
+		runtimes:   make(map[string]*RuntimeRecord),
+		ensures:    make(map[string]*ensureResult),
+	}
+	workspace := config.WorkspaceConfig{ID: "sandbox", Name: "Sandbox", Path: t.TempDir()}
+	_, runtimeErr := manager.doEnsure(context.Background(), EnsureOptions{Workspace: workspace, BackendURL: "http://localhost:3000"})
+	if runtimeErr == nil {
+		t.Fatal("doEnsure() error = nil, want fake CreateContainer stop")
+	}
+	spec := fakeDocker.createdSpec
+	if spec.RequesterContextRoot != RequesterContextPath || spec.RequesterContextReaderGID == nil || *spec.RequesterContextReaderGID != readerGID {
+		t.Fatalf("captured ContainerSpec requester context = %q/%v", spec.RequesterContextRoot, spec.RequesterContextReaderGID)
+	}
+}
+
 func TestShutdownPreserveContainersStopsSchedulerAndClosesClient(t *testing.T) {
 	fakeDocker := &fakeDockerClient{}
 	manager := &Manager{
@@ -239,6 +332,8 @@ func TestTerminateAllRemovesActiveRuntimesAndMarksTerminated(t *testing.T) {
 type fakeDockerClient struct {
 	closed          bool
 	stopRemoveCalls int
+	createdSpec     docker.ContainerSpec
+	createErr       error
 }
 
 func (f *fakeDockerClient) Close() error {
@@ -246,8 +341,9 @@ func (f *fakeDockerClient) Close() error {
 	return nil
 }
 
-func (f *fakeDockerClient) CreateContainer(context.Context, docker.ContainerSpec) (string, error) {
-	return "", nil
+func (f *fakeDockerClient) CreateContainer(_ context.Context, spec docker.ContainerSpec) (string, error) {
+	f.createdSpec = spec
+	return "", f.createErr
 }
 
 func (f *fakeDockerClient) ImageExists(context.Context, string) (bool, error) {

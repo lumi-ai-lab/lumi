@@ -1,6 +1,11 @@
 package sandbox
 
-import "github.com/pengmide/lumi/internal/config"
+import (
+	"fmt"
+
+	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/requestercontext"
+)
 
 const (
 	DefaultImage          = "ghcr.io/lumi-ai-lab/lumi-sandbox:latest"
@@ -8,6 +13,7 @@ const (
 	WorkspacePath         = "/workspace"
 	ConfigPath            = "/lumi/device-executor/config.json"
 	RuntimePath           = "/lumi/runtime"
+	RequesterContextPath  = "/lumi/runtime/requester-context"
 )
 
 const (
@@ -76,6 +82,37 @@ type RuntimeState = RuntimeRecord
 type EnsureOptions struct {
 	Workspace  config.WorkspaceConfig
 	BackendURL string
+}
+
+type requesterContextContainerSettings struct {
+	Root      string
+	ReaderGID *uint32
+}
+
+func resolveRequesterContextContainerSettings(cfg *config.Config, workspace config.WorkspaceConfig) (requesterContextContainerSettings, error) {
+	settings, err := requestercontext.RuntimeSettingsFromEnv("")
+	if err != nil {
+		return requesterContextContainerSettings{}, err
+	}
+	if !settings.Secure() {
+		return requesterContextContainerSettings{}, nil
+	}
+	if cfg == nil {
+		return requesterContextContainerSettings{}, fmt.Errorf("Lumi config is required for secured Sandbox requester context")
+	}
+	for _, agentCfg := range filterAgents(cfg, workspace.Agents) {
+		if agentCfg.ID != "pi" {
+			continue
+		}
+		if err := agentCfg.ValidateRunAsIdentity(); err != nil || agentCfg.RunAsUID == nil {
+			return requesterContextContainerSettings{}, fmt.Errorf("secured Sandbox pi agent requires a complete non-root run-as identity")
+		}
+		if !agentCfg.HasRunAsGroup(*settings.ReaderGID) {
+			return requesterContextContainerSettings{}, fmt.Errorf("secured Sandbox pi agent does not receive requester context reader GID %d", *settings.ReaderGID)
+		}
+	}
+	gid := *settings.ReaderGID
+	return requesterContextContainerSettings{Root: RequesterContextPath, ReaderGID: &gid}, nil
 }
 
 func ResolveImage(ws config.WorkspaceConfig) string {

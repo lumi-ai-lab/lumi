@@ -274,3 +274,91 @@ func TestFileBridgeWriteRejectsEmptySession(t *testing.T) {
 		t.Fatal("Write(empty session) error = nil")
 	}
 }
+
+func TestPrivateFileBridgePreservesLegacyModeRepair(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bridge, err := NewFileBridge(root, "workspace", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cleanup, err := bridge.Write("session", testContext())
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	defer cleanup()
+	after, err := os.Lstat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Mode().Perm() != 0o700 {
+		t.Fatalf("legacy private root mode = %o, want 700", after.Mode().Perm())
+	}
+}
+
+func TestFileBridgeReusesExactExistingDirectories(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "requester-context")
+	agentDir := filepath.Join(root, "workspace", "agent")
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{root, filepath.Dir(agentDir), agentDir} {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bridge, err := NewFileBridge(root, "workspace", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cleanup, err := bridge.Write("session", testContext())
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	defer cleanup()
+}
+
+func TestFileBridgeRejectsSymlinkAtEveryManagedDirectoryLevel(t *testing.T) {
+	for _, level := range []string{"root", "workspace", "agent"} {
+		t.Run(level, func(t *testing.T) {
+			parent := t.TempDir()
+			target := filepath.Join(parent, "target")
+			if err := os.Mkdir(target, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			root := filepath.Join(parent, "requester-context")
+			workspaceDir := filepath.Join(root, "workspace")
+			agentDir := filepath.Join(workspaceDir, "agent")
+			switch level {
+			case "root":
+				if err := os.Symlink(target, root); err != nil {
+					t.Skipf("symlink is unavailable: %v", err)
+				}
+			case "workspace":
+				if err := os.Mkdir(root, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, workspaceDir); err != nil {
+					t.Skipf("symlink is unavailable: %v", err)
+				}
+			case "agent":
+				if err := os.MkdirAll(workspaceDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, agentDir); err != nil {
+					t.Skipf("symlink is unavailable: %v", err)
+				}
+			}
+			bridge, err := NewFileBridge(root, "workspace", "agent")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := bridge.Write("session", testContext()); err == nil || !strings.Contains(err.Error(), "real directory") {
+				t.Fatalf("Write() error = %v, want symlink rejection", err)
+			}
+		})
+	}
+}

@@ -51,7 +51,7 @@ func TestConsumeFailsClosed(t *testing.T) {
 			edit: func(envelope *requesterctx.Envelope, _ *consumerConfig) {
 				envelope.ExpiresAt = now.Add(-time.Second)
 			},
-			want: "no active requester context",
+			want: "expired",
 		},
 		{
 			name: "out of scope manage area",
@@ -83,7 +83,7 @@ func TestConsumeFailsClosed(t *testing.T) {
 	}
 }
 
-func TestConsumeRejectsAmbiguousActiveContexts(t *testing.T) {
+func TestConsumeReadsOnlyExactSessionFile(t *testing.T) {
 	now := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
 	cfg := validConsumerConfig(t)
 	first := validEnvelope(now)
@@ -91,10 +91,30 @@ func TestConsumeRejectsAmbiguousActiveContexts(t *testing.T) {
 	second.SessionID = "session-demo-002"
 	writeEnvelope(t, cfg.ContextDir, first)
 	writeEnvelope(t, cfg.ContextDir, second)
+	if err := os.WriteFile(filepath.Join(cfg.ContextDir, "malformed.json"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := consume(cfg, now)
-	if err == nil || !strings.Contains(err.Error(), "ambiguous identity") {
-		t.Fatalf("consume() error = %v, want ambiguous identity", err)
+	if _, err := consume(cfg, now); err != nil {
+		t.Fatalf("consume() exact session error = %v", err)
+	}
+}
+
+func TestConsumeRejectsExactSessionBindingMismatch(t *testing.T) {
+	now := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
+	cfg := validConsumerConfig(t)
+	envelope := validEnvelope(now)
+	envelope.SessionID = "different-on-wire-session"
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, _ := requesterctx.SessionFileName(cfg.SessionID)
+	if err := os.WriteFile(filepath.Join(cfg.ContextDir, name), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := consume(cfg, now); err == nil || !strings.Contains(err.Error(), "session binding mismatch") {
+		t.Fatalf("consume() error = %v, want exact session mismatch", err)
 	}
 }
 
@@ -104,12 +124,21 @@ func TestParseConfigUsesSandboxEnvironment(t *testing.T) {
 		requesterctx.EnvRequesterContextDir: dir,
 		"LUMI_WORKSPACE_ID":                 "sandbox-workspace-demo",
 	}
-	cfg, err := parseConfig([]string{"--manage-area-id", "area-demo", "--category-level1-id", "category-demo"}, func(key string) string { return env[key] })
+	cfg, err := parseConfig([]string{"--session-id", " raw-session ", "--manage-area-id", "area-demo", "--category-level1-id", "category-demo"}, func(key string) string { return env[key] })
 	if err != nil {
 		t.Fatalf("parseConfig() error = %v", err)
 	}
-	if cfg.ContextDir != dir || cfg.WorkspaceID != "sandbox-workspace-demo" || cfg.AgentID != "pi" {
+	if cfg.ContextDir != dir || cfg.SessionID != " raw-session " || cfg.WorkspaceID != "sandbox-workspace-demo" || cfg.AgentID != "pi" {
 		t.Fatalf("config = %#v", cfg)
+	}
+}
+
+func TestParseConfigRequiresSessionID(t *testing.T) {
+	dir := t.TempDir()
+	env := map[string]string{requesterctx.EnvRequesterContextDir: dir, "LUMI_WORKSPACE_ID": "workspace"}
+	_, err := parseConfig([]string{"--manage-area-id", "area-demo", "--category-level1-id", "category-demo"}, func(key string) string { return env[key] })
+	if err == nil || !strings.Contains(err.Error(), "session ID") {
+		t.Fatalf("parseConfig() error = %v, want required session ID", err)
 	}
 }
 
@@ -117,6 +146,7 @@ func validConsumerConfig(t *testing.T) consumerConfig {
 	t.Helper()
 	return consumerConfig{
 		ContextDir:       t.TempDir(),
+		SessionID:        "session-demo-001",
 		WorkspaceID:      "sandbox-workspace-demo",
 		AgentID:          "pi",
 		Capability:       defaultCapability,

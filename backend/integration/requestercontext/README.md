@@ -13,6 +13,8 @@ The committed policy is bot-agnostic and uses a placeholder UserID. Render a run
 
 `render-runtime-policy.mjs` renders that private copy from environment variables. `start-sandbox-e2e.sh` reads a private `runtime.env`, keeps credentials out of the repository, and starts a PI-only Sandbox instance.
 
+The committed Sandbox agent fixture runs PI as numeric UID/GID `2001:2002` with requester-context reader group `2003`. The launcher enables the paired host security settings; Sandbox manager maps the host root to `/lumi/runtime/requester-context` while preserving reader GID `2003`.
+
 ## Build
 
 From `backend`:
@@ -66,17 +68,24 @@ Copy the binary into the sandbox workspace and ask PI to execute it while handli
 
 ```bash
 ./requester-context-consumer \
+  --session-id '<raw ACP session ID>' \
   --capability qdm.cmr.query \
   --claim-namespace qdm.scope \
   --manage-area-id area-demo \
   --category-level1-id category-demo
 ```
 
-The consumer reads `LUMI_REQUESTER_CONTEXT_DIR` and `LUMI_WORKSPACE_ID` from the PI process environment. It accepts exactly one live session envelope and validates:
+The consumer reads `LUMI_REQUESTER_CONTEXT_DIR` and `LUMI_WORKSPACE_ID` from the PI process environment. The caller must also pass the exact, untrimmed ACP session ID through `--session-id`; the consumer hashes that raw value and opens only the corresponding envelope. It never enumerates the `0710` Agent directory.
+
+The selected envelope is validated for:
 
 - Envelope v1, RequesterContext v2, TTL, WorkspaceID, AgentID, and session binding;
 - WeCom identity and policy revision structure;
 - the required capability;
 - the domain-owned `qdm.scope` schema and requested scope values.
 
-Success is emitted as JSON without the raw requester identity. Missing, expired, ambiguous, malformed, or out-of-scope authorization exits non-zero.
+Success is emitted as JSON without the raw requester identity. Missing, expired, mismatched, malformed, or out-of-scope authorization exits non-zero.
+
+## Release coupling
+
+This boundary spans the host Lumi manager and the device-executor embedded in the Sandbox image. A release containing this fix must publish both the Lumi artifacts and a rebuilt Sandbox image; deploying only one side leaves the secure runtime contract incomplete.

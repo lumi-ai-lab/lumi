@@ -3,6 +3,7 @@ package piacpbridge
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -60,6 +61,20 @@ func TestMaterializeCreatesPrivateVersionedSelfContainedRuntime(t *testing.T) {
 	}
 	if secondPath != entrypoint || string(second) != string(first) {
 		t.Fatal("Materialize() is not idempotent")
+	}
+}
+
+func TestSharedRootUsesTraversableLocationOutsidePrivateHome(t *testing.T) {
+	t.Setenv("LUMI_HOME", filepath.Join(t.TempDir(), "private-home"))
+	root, err := SharedRoot("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && filepath.Dir(root) != "/tmp" {
+		t.Fatalf("SharedRoot() = %q, want direct child of /tmp", root)
+	}
+	if !strings.HasPrefix(filepath.Base(root), "lumi-pi-acp-bridge-") {
+		t.Fatalf("SharedRoot() = %q, want publisher-scoped bridge name", root)
 	}
 }
 

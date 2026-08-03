@@ -69,6 +69,8 @@ fi
 export LUMI_HOME="$script_dir/lumi-home"
 export LUMI_PORT="${LUMI_E2E_PORT:-3004}"
 export LUMI_WECOM_REQUESTER_CONFIG="$runtime_policy"
+export LUMI_REQUESTER_CONTEXT_ROOT="$script_dir/secure-runtime/requester-context"
+export LUMI_REQUESTER_CONTEXT_READER_GID="2003"
 
 exec "$lumi_bin" wecom run \
   --config "$config_path" \

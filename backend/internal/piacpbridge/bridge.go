@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pengmide/lumi/internal/fssecure"
 	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
@@ -75,6 +76,14 @@ func Signature() string {
 // runtime directory and returns its entrypoint. Files are installed with
 // atomic renames so concurrent Lumi processes cannot observe partial content.
 func Materialize() (string, error) {
+	return materializePrivate(lumipaths.Path("runtime", "pi-acp-bridge"))
+}
+
+func materializePrivate(root string) (string, error) {
+	return materialize(root, 0o700, 0o600, nil, false)
+}
+
+func materialize(root string, dirMode, fileMode os.FileMode, gid *uint32, strict bool) (string, error) {
 	if _, err := Version(); err != nil {
 		return "", err
 	}
@@ -82,30 +91,45 @@ func Materialize() (string, error) {
 		return "", fmt.Errorf("embedded PI ACP bridge bundle is empty")
 	}
 
-	root := lumipaths.Path("runtime", "pi-acp-bridge")
 	dir := filepath.Join(root, Signature())
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("create PI ACP bridge runtime: %w", err)
-	}
-	if err := os.Chmod(root, 0o700); err != nil {
-		return "", fmt.Errorf("secure PI ACP bridge runtime root: %w", err)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return "", fmt.Errorf("secure PI ACP bridge runtime: %w", err)
+	if strict {
+		for _, path := range []string{root, dir} {
+			if err := fssecure.EnsureDirectory(path, dirMode, gid); err != nil {
+				return "", fmt.Errorf("prepare shared PI ACP bridge runtime: %w", err)
+			}
+		}
+	} else {
+		if err := os.MkdirAll(dir, dirMode); err != nil {
+			return "", fmt.Errorf("create PI ACP bridge runtime: %w", err)
+		}
+		for _, path := range []string{root, dir} {
+			if err := os.Chmod(path, dirMode); err != nil {
+				return "", fmt.Errorf("secure PI ACP bridge runtime %q: %w", path, err)
+			}
+		}
 	}
 
 	entrypoint := filepath.Join(dir, "index.js")
-	if err := writeAtomicContent(entrypoint, bundle, 0o600); err != nil {
-		return "", fmt.Errorf("materialize PI ACP bridge bundle: %w", err)
+	assets := []struct {
+		name    string
+		content []byte
+	}{
+		{name: "index.js", content: bundle},
+		{name: "package.json", content: packageMetadata},
+		{name: "LICENSE", content: bridgeLicense},
+		{name: "THIRD_PARTY_NOTICES.md", content: thirdPartyNotices},
 	}
-	if err := writeAtomicContent(filepath.Join(dir, "package.json"), packageMetadata, 0o600); err != nil {
-		return "", fmt.Errorf("materialize PI ACP bridge metadata: %w", err)
-	}
-	if err := writeAtomicContent(filepath.Join(dir, "LICENSE"), bridgeLicense, 0o600); err != nil {
-		return "", fmt.Errorf("materialize PI ACP bridge license: %w", err)
-	}
-	if err := writeAtomicContent(filepath.Join(dir, "THIRD_PARTY_NOTICES.md"), thirdPartyNotices, 0o600); err != nil {
-		return "", fmt.Errorf("materialize PI ACP bridge third-party notices: %w", err)
+	for _, asset := range assets {
+		path := filepath.Join(dir, asset.name)
+		var err error
+		if strict {
+			err = writeSharedAtomicContent(path, asset.content, fileMode, gid)
+		} else {
+			err = writeAtomicContent(path, asset.content, fileMode)
+		}
+		if err != nil {
+			return "", fmt.Errorf("materialize PI ACP bridge asset %s: %w", asset.name, err)
+		}
 	}
 	return entrypoint, nil
 }
