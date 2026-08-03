@@ -365,7 +365,11 @@ func (r *Runner) getOrStartAgent(agentID, workspacePath string) (*agent.Process,
 			return nil, err
 		}
 		runtimeEnv[requestercontext.EnvRequesterContextDir] = bridge.Dir()
-		proc = agent.NewProcess(mergeAgentEnv(agentCfg, runtimeEnv))
+		mergedAgentCfg := mergeAgentEnv(agentCfg, runtimeEnv)
+		if err := prepareAgentRuntime(mergedAgentCfg); err != nil {
+			return nil, err
+		}
+		proc = agent.NewProcess(mergedAgentCfg)
 		r.agents[agentID] = proc
 	}
 

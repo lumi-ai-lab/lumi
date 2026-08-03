@@ -3,7 +3,7 @@ import * as readline from 'node:readline'
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getPiCommand, shouldUseShellForPiCommand } from './command.js'
+import { getPiCommand, inspectPiSpawn, piSpawnEnvironmentSummary, shouldUseShellForPiCommand } from './command.js'
 
 export class PiRpcSpawnError extends Error {
   /** Underlying spawn error code, e.g. ENOENT, EACCES */
@@ -197,7 +197,7 @@ export class PiRpcProcess {
       })
     } catch (cause) {
       systemPromptFile?.cleanup()
-      throw new PiRpcSpawnError(`Could not start pi (command: ${cmd}).`, { cause })
+      throw new PiRpcSpawnError('Could not start pi.', { cause })
     }
 
     // Ensure spawn failures (e.g. ENOENT when pi isn't installed) are surfaced as a
@@ -223,18 +223,29 @@ export class PiRpcProcess {
     } catch (e: any) {
       systemPromptFile?.cleanup()
       const code = typeof e?.code === 'string' ? e.code : undefined
+      const inspection = inspectPiSpawn(cmd, params.cwd)
+      const summary = piSpawnEnvironmentSummary(inspection)
       if (code === 'ENOENT') {
-        throw new PiRpcSpawnError(
-          `Could not start pi: executable not found (command: ${cmd}). Pi needs to be installed before it can run in ACP clients. Install it via \`npm install -g @earendil-works/pi-coding-agent\` or ensure \`pi\` is on your PATH. Then try again.`,
-          { code, cause: e }
-        )
+        if (inspection.commandAvailable && !inspection.cwdAvailable) {
+          throw new PiRpcSpawnError(`Could not start pi: working directory unavailable (${summary}).`, {
+            code,
+            cause: e
+          })
+        }
+        if (!inspection.commandAvailable && inspection.cwdAvailable) {
+          throw new PiRpcSpawnError(
+            `Could not start pi: executable not found (${summary}). Pi needs to be installed before it can run in ACP clients. Install it via \`npm install -g @earendil-works/pi-coding-agent\` or ensure \`pi\` is on your PATH. Then try again.`,
+            { code, cause: e }
+          )
+        }
+        throw new PiRpcSpawnError(`Could not start pi: spawn target unavailable (${summary}).`, { code, cause: e })
       }
 
       if (code === 'EACCES') {
-        throw new PiRpcSpawnError(`Could not start pi: permission denied (command: ${cmd}).`, { code, cause: e })
+        throw new PiRpcSpawnError(`Could not start pi: permission denied (${summary}).`, { code, cause: e })
       }
 
-      throw new PiRpcSpawnError(`Could not start pi (command: ${cmd}).`, { code, cause: e })
+      throw new PiRpcSpawnError(`Could not start pi (${summary}).`, { code, cause: e })
     }
 
     child.stderr.on('data', () => {

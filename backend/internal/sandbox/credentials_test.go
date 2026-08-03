@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/piruntime"
 	sandboxdocker "github.com/pengmide/lumi/internal/sandbox/docker"
 )
 
@@ -281,6 +282,71 @@ func TestResolveCredentialMountsSkipsPiHomeWithoutPiDir(t *testing.T) {
 
 	if mount := findCredentialMount(mounts, "/root/.pi"); mount != nil {
 		t.Fatalf("pi home mount = %#v, want nil", mount)
+	}
+}
+
+func TestResolveCredentialMountsUsesReadOnlyRunAsPiCredentialSource(t *testing.T) {
+	home := t.TempDir()
+	runtimeDir := t.TempDir()
+	piDir := filepath.Join(home, ".pi", "agent")
+	if err := os.MkdirAll(piDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(piDir, "auth.json"), []byte(`{"token":"test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	uid, gid := uint32(2001), uint32(2002)
+	agents := []config.AgentConfig{{
+		ID: "pi", Command: "npx", Args: []string{"-y", config.PiACPPackageSpec},
+		RunAsUID: &uid, RunAsGID: &gid,
+	}}
+
+	mounts := resolveCredentialMountsFromHomeForAgents(home, runtimeDir, agents)
+	piMount := findCredentialMount(mounts, piruntime.SandboxCredentialSource)
+	if piMount == nil || !piMount.ReadOnly {
+		t.Fatalf("run-as Pi mount = %#v", piMount)
+	}
+	if findCredentialMount(mounts, piruntime.SandboxHome) != nil {
+		t.Fatal("run-as Pi writable HOME is still a host bind mount")
+	}
+	if findCredentialMount(mounts, "/root/.pi") != nil {
+		t.Fatal("run-as Pi retained the legacy /root/.pi mount")
+	}
+	data, err := os.ReadFile(filepath.Join(piMount.Source, ".pi", "agent", "auth.json"))
+	if err != nil || string(data) != `{"token":"test"}` {
+		t.Fatalf("run-as Pi credential copy = %q, err=%v", data, err)
+	}
+	if info, err := os.Stat(filepath.Join(piMount.Source, ".pi", "agent", "sessions")); err != nil || !info.IsDir() {
+		t.Fatalf("run-as Pi sessions directory missing: %v", err)
+	}
+
+	configured := configureSandboxRunAsPiAgents(agents)
+	if configured[0].Env["HOME"] != piruntime.SandboxHome || configured[0].Env[piruntime.EnvPiAgentDir] != piruntime.SandboxAgentDir {
+		t.Fatalf("run-as Pi env = %#v", configured[0].Env)
+	}
+	if configured[0].Env[piruntime.EnvPiCredentialSource] != piruntime.SandboxCredentialSource {
+		t.Fatalf("run-as Pi credential source = %q", configured[0].Env[piruntime.EnvPiCredentialSource])
+	}
+	if configured[0].Env[piruntime.EnvPiCommand] != piruntime.SandboxPiCommand {
+		t.Fatalf("run-as Pi command = %q", configured[0].Env[piruntime.EnvPiCommand])
+	}
+	if agents[0].Env != nil {
+		t.Fatalf("original agent env mutated: %#v", agents[0].Env)
+	}
+}
+
+func TestConfigureSandboxRunAsPiPreservesCustomCommandAndLegacyAgents(t *testing.T) {
+	uid, gid := uint32(2001), uint32(2002)
+	agents := []config.AgentConfig{
+		{ID: "pi", Command: "npx", Args: []string{"-y", config.PiACPPackageSpec}, RunAsUID: &uid, RunAsGID: &gid, Env: map[string]string{piruntime.EnvPiCommand: "/custom/pi"}},
+		{ID: "custom", Command: "custom-acp", Env: map[string]string{"HOME": "/custom/home"}},
+	}
+	configured := configureSandboxRunAsPiAgents(agents)
+	if configured[0].Env[piruntime.EnvPiCommand] != "/custom/pi" {
+		t.Fatalf("custom Pi command = %q", configured[0].Env[piruntime.EnvPiCommand])
+	}
+	if configured[1].Env["HOME"] != "/custom/home" {
+		t.Fatalf("custom agent env changed: %#v", configured[1].Env)
 	}
 }
 

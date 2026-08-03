@@ -13276,8 +13276,8 @@ var Connection = class {
     this.requestHandler = requestHandler;
     this.notificationHandler = notificationHandler;
     this.stream = stream2;
-    this.closedPromise = new Promise((resolve4) => {
-      this.abortController.signal.addEventListener("abort", () => resolve4());
+    this.closedPromise = new Promise((resolve5) => {
+      this.abortController.signal.addEventListener("abort", () => resolve5());
     });
     void this.receive();
   }
@@ -13447,11 +13447,11 @@ var Connection = class {
       return rejectedPromise(this.closedReason());
     }
     const id = this.nextRequestId++;
-    const responsePromise = new Promise((resolve4, reject) => {
+    const responsePromise = new Promise((resolve5, reject) => {
       this.pendingResponses.set(id, {
         resolve: (response) => {
           try {
-            resolve4(mapResponse ? mapResponse(response) : response);
+            resolve5(mapResponse ? mapResponse(response) : response);
           } catch (error40) {
             reject(error40);
           }
@@ -13598,7 +13598,7 @@ function terminalAuthLaunchSpec() {
 
 // src/acp/session.ts
 import { readFileSync as readFileSync3 } from "fs";
-import { isAbsolute, resolve as resolvePath } from "path";
+import { isAbsolute as isAbsolute2, resolve as resolvePath } from "path";
 
 // src/pi-rpc/process.ts
 import { spawn } from "child_process";
@@ -13608,12 +13608,54 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 // src/pi-rpc/command.ts
+import { constants, accessSync, statSync } from "fs";
 import { platform } from "os";
+import { delimiter, isAbsolute, resolve, sep } from "path";
 function defaultPiCommand() {
   return platform() === "win32" ? "pi.cmd" : "pi";
 }
 function getPiCommand(override) {
   return override ?? defaultPiCommand();
+}
+function isAccessibleDirectory(path) {
+  try {
+    if (!statSync(path).isDirectory()) return false;
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function isExecutable(path) {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, platform() === "win32" ? constants.F_OK : constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function inspectPiSpawn(command, cwd, env = process.env) {
+  const pathEntries = env.PATH ? env.PATH.split(delimiter).filter(Boolean).length : 0;
+  const cwdAvailable = isAccessibleDirectory(cwd);
+  let commandAvailable = false;
+  if (isAbsolute(command) || command.includes(sep) || command.includes("/")) {
+    commandAvailable = isExecutable(isAbsolute(command) ? command : resolve(cwd, command));
+  } else if (env.PATH) {
+    commandAvailable = env.PATH.split(delimiter).some((entry) => {
+      const base = !entry ? cwd : isAbsolute(entry) ? entry : resolve(cwd, entry);
+      return isExecutable(resolve(base, command));
+    });
+  }
+  return {
+    commandAvailable,
+    cwdAvailable,
+    pathEntries,
+    homeSet: Boolean(env.HOME?.trim())
+  };
+}
+function piSpawnEnvironmentSummary(inspection) {
+  return `command available=${inspection.commandAvailable}, cwd available=${inspection.cwdAvailable}, PATH entries=${inspection.pathEntries}, HOME set=${inspection.homeSet}`;
 }
 function shouldUseShellForPiCommand(cmd) {
   if (platform() !== "win32") return false;
@@ -13731,13 +13773,13 @@ var PiRpcProcess = class _PiRpcProcess {
       });
     } catch (cause) {
       systemPromptFile?.cleanup();
-      throw new PiRpcSpawnError(`Could not start pi (command: ${cmd}).`, { cause });
+      throw new PiRpcSpawnError("Could not start pi.", { cause });
     }
     try {
-      await new Promise((resolve4, reject) => {
+      await new Promise((resolve5, reject) => {
         const onSpawn = () => {
           cleanup();
-          resolve4();
+          resolve5();
         };
         const onError = (err) => {
           cleanup();
@@ -13753,16 +13795,27 @@ var PiRpcProcess = class _PiRpcProcess {
     } catch (e) {
       systemPromptFile?.cleanup();
       const code = typeof e?.code === "string" ? e.code : void 0;
+      const inspection = inspectPiSpawn(cmd, params.cwd);
+      const summary = piSpawnEnvironmentSummary(inspection);
       if (code === "ENOENT") {
-        throw new PiRpcSpawnError(
-          `Could not start pi: executable not found (command: ${cmd}). Pi needs to be installed before it can run in ACP clients. Install it via \`npm install -g @earendil-works/pi-coding-agent\` or ensure \`pi\` is on your PATH. Then try again.`,
-          { code, cause: e }
-        );
+        if (inspection.commandAvailable && !inspection.cwdAvailable) {
+          throw new PiRpcSpawnError(`Could not start pi: working directory unavailable (${summary}).`, {
+            code,
+            cause: e
+          });
+        }
+        if (!inspection.commandAvailable && inspection.cwdAvailable) {
+          throw new PiRpcSpawnError(
+            `Could not start pi: executable not found (${summary}). Pi needs to be installed before it can run in ACP clients. Install it via \`npm install -g @earendil-works/pi-coding-agent\` or ensure \`pi\` is on your PATH. Then try again.`,
+            { code, cause: e }
+          );
+        }
+        throw new PiRpcSpawnError(`Could not start pi: spawn target unavailable (${summary}).`, { code, cause: e });
       }
       if (code === "EACCES") {
-        throw new PiRpcSpawnError(`Could not start pi: permission denied (command: ${cmd}).`, { code, cause: e });
+        throw new PiRpcSpawnError(`Could not start pi: permission denied (${summary}).`, { code, cause: e });
       }
-      throw new PiRpcSpawnError(`Could not start pi (command: ${cmd}).`, { code, cause: e });
+      throw new PiRpcSpawnError(`Could not start pi (${summary}).`, { code, cause: e });
     }
     child.stderr.on("data", () => {
     });
@@ -13891,8 +13944,8 @@ var PiRpcProcess = class _PiRpcProcess {
     const withId = { ...cmd, id };
     const line = `${JSON.stringify(withId)}
 `;
-    return new Promise((resolve4, reject) => {
-      this.pending.set(id, { resolve: resolve4, reject });
+    return new Promise((resolve5, reject) => {
+      this.pending.set(id, { resolve: resolve5, reject });
       void this.writeLine(line).catch((error40) => {
         this.pending.delete(id);
         reject(error40);
@@ -13900,7 +13953,7 @@ var PiRpcProcess = class _PiRpcProcess {
     });
   }
   writeLine(line) {
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       if (this.terminalError) {
         reject(this.terminalError);
         return;
@@ -13911,7 +13964,7 @@ var PiRpcProcess = class _PiRpcProcess {
             reject(error40);
             return;
           }
-          resolve4();
+          resolve5();
         });
       } catch (error40) {
         reject(error40);
@@ -14094,7 +14147,7 @@ var SessionStore = class {
 // src/acp/slash-commands.ts
 import { existsSync, readdirSync, readFileSync as readFileSync2 } from "fs";
 import { homedir as homedir2 } from "os";
-import { join as join3, resolve } from "path";
+import { join as join3, resolve as resolve2 } from "path";
 function parseFrontmatter(content) {
   const frontmatter = {};
   if (!content.startsWith("---")) return { frontmatter, content };
@@ -14151,7 +14204,7 @@ function loadCommandsFromDir(dir, source, subdir = "") {
 function loadSlashCommands(cwd) {
   const commands = [];
   const userDir = join3(homedir2(), ".pi", "agent", "prompts");
-  const projectDir = resolve(cwd, ".pi", "prompts");
+  const projectDir = resolve2(cwd, ".pi", "prompts");
   commands.push(...loadCommandsFromDir(userDir, "user"));
   commands.push(...loadCommandsFromDir(projectDir, "project"));
   return commands;
@@ -14364,7 +14417,7 @@ function getEditOldTexts(args) {
 function toToolCallLocations(args, cwd, line) {
   const path = getToolPath(args);
   if (!path) return void 0;
-  const resolvedPath = isAbsolute(path) ? path : resolvePath(cwd, path);
+  const resolvedPath = isAbsolute2(path) ? path : resolvePath(cwd, path);
   return [{ path: resolvedPath, ...typeof line === "number" ? { line } : {} }];
 }
 var SessionManager = class {
@@ -14527,8 +14580,8 @@ var PiAcpSession = class {
   }
   async prompt(message, images = []) {
     const expandedMessage = expandSlashCommand(message, this.fileCommands);
-    const turnPromise = new Promise((resolve4, reject) => {
-      const queued = { message: expandedMessage, images, resolve: resolve4, reject };
+    const turnPromise = new Promise((resolve5, reject) => {
+      const queued = { message: expandedMessage, images, resolve: resolve5, reject };
       if (this.pendingTurn) {
         this.turnQueue.push(queued);
         this.emit({
@@ -14744,7 +14797,7 @@ var PiAcpSession = class {
           const p = getToolPath(args);
           if (p) {
             try {
-              const abs = isAbsolute(p) ? p : resolvePath(this.cwd, p);
+              const abs = isAbsolute2(p) ? p : resolvePath(this.cwd, p);
               snapshotOldText = readFileSync3(abs, "utf8");
               this.fileSnapshots.set(toolCallId, { path: p, oldText: snapshotOldText });
               if (toolName === "edit") {
@@ -14822,7 +14875,7 @@ var PiAcpSession = class {
         let hasStructuredDiff = false;
         if (!isError && snapshot) {
           try {
-            const abs = isAbsolute(snapshot.path) ? snapshot.path : resolvePath(this.cwd, snapshot.path);
+            const abs = isAbsolute2(snapshot.path) ? snapshot.path : resolvePath(this.cwd, snapshot.path);
             const newText = readFileSync3(abs, "utf8");
             if (snapshot.oldText === null || newText !== snapshot.oldText) {
               hasStructuredDiff = true;
@@ -15070,13 +15123,13 @@ function toToolKind(toolName) {
 }
 
 // src/acp/pi-sessions.ts
-import { readdirSync as readdirSync2, readFileSync as readFileSync4, statSync, openSync, readSync, closeSync, existsSync as existsSync2 } from "fs";
+import { readdirSync as readdirSync2, readFileSync as readFileSync4, statSync as statSync2, openSync, readSync, closeSync, existsSync as existsSync2 } from "fs";
 import { homedir as homedir3 } from "os";
-import { join as join4, resolve as resolve2, isAbsolute as isAbsolute2 } from "path";
+import { join as join4, resolve as resolve3, isAbsolute as isAbsolute3 } from "path";
 var DEFAULT_TAIL_BYTES = 256 * 1024;
 var DEFAULT_HEAD_BYTES = 64 * 1024;
 function getPiAgentDir() {
-  return process.env.PI_CODING_AGENT_DIR ? resolve2(process.env.PI_CODING_AGENT_DIR) : join4(homedir3(), ".pi", "agent");
+  return process.env.PI_CODING_AGENT_DIR ? resolve3(process.env.PI_CODING_AGENT_DIR) : join4(homedir3(), ".pi", "agent");
 }
 function readSessionDirFromSettings(agentDir) {
   const settingsPath = join4(agentDir, "settings.json");
@@ -15087,7 +15140,7 @@ function readSessionDirFromSettings(agentDir) {
     if (!data || typeof data !== "object" || Array.isArray(data)) return null;
     const sessionDir = data.sessionDir;
     if (typeof sessionDir !== "string" || !sessionDir.trim()) return null;
-    return isAbsolute2(sessionDir) ? sessionDir : resolve2(agentDir, sessionDir);
+    return isAbsolute3(sessionDir) ? sessionDir : resolve3(agentDir, sessionDir);
   } catch {
     return null;
   }
@@ -15129,7 +15182,7 @@ function readFirstLine(path) {
   }
 }
 function readTail(path, tailBytes = DEFAULT_TAIL_BYTES) {
-  const st = statSync(path);
+  const st = statSync2(path);
   const start = Math.max(0, st.size - tailBytes);
   const len = st.size - start;
   const fd = openSync(path, "r");
@@ -15294,7 +15347,7 @@ function listPiSessions() {
     }
     if (!updatedAt) {
       try {
-        updatedAt = statSync(file2).mtime.toISOString();
+        updatedAt = statSync2(file2).mtime.toISOString();
       } catch {
         updatedAt = null;
       }
@@ -15389,7 +15442,7 @@ ${r.text}`;
 // src/acp/pi-settings.ts
 import { existsSync as existsSync3, readFileSync as readFileSync5 } from "fs";
 import { homedir as homedir4 } from "os";
-import { join as join5, resolve as resolve3 } from "path";
+import { join as join5, resolve as resolve4 } from "path";
 function isObject2(x) {
   return Boolean(x) && typeof x === "object" && !Array.isArray(x);
 }
@@ -15414,13 +15467,13 @@ function readJsonFile(path) {
 }
 function getMergedSettings(cwd) {
   const globalSettingsPath = join5(getAgentDir(), "settings.json");
-  const projectSettingsPath = resolve3(cwd, ".pi", "settings.json");
+  const projectSettingsPath = resolve4(cwd, ".pi", "settings.json");
   const global = readJsonFile(globalSettingsPath);
   const project = readJsonFile(projectSettingsPath);
   return deepMerge(global, project);
 }
 function getAgentDir() {
-  return process.env.PI_CODING_AGENT_DIR ? resolve3(process.env.PI_CODING_AGENT_DIR) : join5(homedir4(), ".pi", "agent");
+  return process.env.PI_CODING_AGENT_DIR ? resolve4(process.env.PI_CODING_AGENT_DIR) : join5(homedir4(), ".pi", "agent");
 }
 function getEnableSkillCommands(cwd) {
   const merged = getMergedSettings(cwd);
@@ -15470,8 +15523,8 @@ function toAvailableCommandsFromPiGetCommands(data, opts) {
 }
 
 // src/acp/agent.ts
-import { isAbsolute as isAbsolute3 } from "path";
-import { existsSync as existsSync4, readFileSync as readFileSync6, realpathSync, readdirSync as readdirSync3, statSync as statSync2, unlinkSync } from "fs";
+import { isAbsolute as isAbsolute4 } from "path";
+import { existsSync as existsSync4, readFileSync as readFileSync6, realpathSync, readdirSync as readdirSync3, statSync as statSync3, unlinkSync } from "fs";
 import { join as join6, dirname as dirname2, basename } from "path";
 import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
@@ -15676,7 +15729,7 @@ var PiAcpAgent = class {
     };
   }
   async newSession(params) {
-    if (!isAbsolute3(params.cwd)) {
+    if (!isAbsolute4(params.cwd)) {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
     }
     this.lastSessionCwd = params.cwd;
@@ -16192,7 +16245,7 @@ ${JSON.stringify(stats, null, 2)}`;
     return { sessions, nextCursor, _meta: {} };
   }
   async loadSession(params) {
-    if (!isAbsolute3(params.cwd)) {
+    if (!isAbsolute4(params.cwd)) {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
     }
     this.sessions.close(params.sessionId);
@@ -16616,7 +16669,7 @@ function buildStartupInfo(opts) {
       for (const e of readdirSync3(root)) {
         const p = join6(root, e);
         try {
-          const st = statSync2(p);
+          const st = statSync3(p);
           if (st.isFile() && e.toLowerCase().endsWith(".md")) {
             skillsItems.push(p);
           }
@@ -16637,7 +16690,7 @@ function buildStartupInfo(opts) {
           const p = join6(dir, name);
           let st;
           try {
-            st = statSync2(p);
+            st = statSync3(p);
           } catch {
             continue;
           }
@@ -16725,8 +16778,7 @@ if (process.argv.includes("--terminal-login")) {
   });
   if (res.error && res.error.code === "ENOENT") {
     process.stderr.write(
-      `pi-acp: could not start pi (command not found: ${cmd}). Install it via \`npm install -g @earendil-works/pi-coding-agent\` or ensure \`pi\` is on your PATH.
-`
+      "pi-acp: could not start pi (executable not found). Install it via `npm install -g @earendil-works/pi-coding-agent` or ensure `pi` is on your PATH.\n"
     );
     process.exit(1);
   }
@@ -16734,15 +16786,15 @@ if (process.argv.includes("--terminal-login")) {
 }
 var input = new WritableStream({
   write(chunk) {
-    return new Promise((resolve4) => {
-      if (process.stdout.destroyed || !process.stdout.writable) return resolve4();
+    return new Promise((resolve5) => {
+      if (process.stdout.destroyed || !process.stdout.writable) return resolve5();
       try {
         process.stdout.write(chunk, (err) => {
           void err;
-          resolve4();
+          resolve5();
         });
       } catch {
-        resolve4();
+        resolve5();
       }
     });
   }
