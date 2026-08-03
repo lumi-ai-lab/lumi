@@ -20,9 +20,8 @@ func TestRunCronJobRejectsBeforeRunnerWhenRequesterPolicyEnabled(t *testing.T) {
 	runner := &requesterPolicyCountingRunner{}
 	service := newTestService(t, runner)
 	policyPath := writeRequesterPolicyFile(t, enabledRequesterPolicyJSON(
-		`["qdm.cmr.query"]`,
-		`["CN18"]`,
-		`["12"]`,
+		`["com.example.reports.read"]`,
+		`{"com.example.reports":{"tenantIds":["tenant-a"]}}`,
 	))
 	if err := service.configStore.Save(requesterPolicyServiceConfig("default", policyPath)); err != nil {
 		t.Fatalf("Save(config) error = %v", err)
@@ -57,9 +56,8 @@ func TestRunCronJobKeepsRejectingWhenRunningSnapshotIsStrictAfterConfigClear(t *
 	runner := &requesterPolicyCountingRunner{}
 	service := newTestService(t, runner)
 	policyPath := writeRequesterPolicyFile(t, enabledRequesterPolicyJSON(
-		`["qdm.cmr.query"]`,
-		`["CN18"]`,
-		`["12"]`,
+		`["com.example.reports.read"]`,
+		`{"com.example.reports":{"tenantIds":["tenant-a"]}}`,
 	))
 	policy, err := LoadRequesterPolicy(policyPath, "bot-1")
 	if err != nil {
@@ -257,7 +255,7 @@ func requesterPolicyServiceConfig(workspaceID, policyPath string) Config {
 }
 
 func requesterPolicyJSONForUser(userID string) string {
-	return `{"version":1,"botId":"bot-1","users":[{"userId":"` + userID + `","displayName":"` + userID + `","enabled":true,"capabilities":["qdm.cmr.query"],"scope":{"manageAreaIds":["CN18"],"categoryLevel1Ids":["12"]}}]}`
+	return `{"version":2,"botId":"bot-1","users":[{"userId":"` + userID + `","displayName":"` + userID + `","enabled":true,"authorization":{"capabilities":["com.example.reports.read"],"claims":{"com.example.reports":{"tenantIds":["tenant-a"]}}}}]}`
 }
 
 func writeRequesterPolicyAt(t *testing.T, path, raw string) {

@@ -176,7 +176,7 @@ func (bridge *FileBridge) Write(sessionID string, requester Context) (string, Cl
 
 	issuedAt := bridge.now().UTC()
 	envelope := Envelope{
-		Version:          CurrentVersion,
+		Version:          CurrentEnvelopeVersion,
 		WorkspaceID:      bridge.workspaceID,
 		AgentID:          bridge.agentID,
 		SessionID:        sessionID,

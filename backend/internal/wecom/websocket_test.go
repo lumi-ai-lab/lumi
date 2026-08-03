@@ -198,9 +198,8 @@ func TestHandleMsgCallbackAuthorizedRequesterPropagatesContext(t *testing.T) {
 	if requester.Audience.ChatID != "chat-1" || requester.Audience.ChatType != "group" {
 		t.Fatalf("requester audience = %+v", requester.Audience)
 	}
-	if strings.Join(requester.Authorization.Capabilities, ",") != "qdm.cmr.query,qdm.sql.select" ||
-		strings.Join(requester.Authorization.Scope.ManageAreaIDs, ",") != "CN18" ||
-		strings.Join(requester.Authorization.Scope.CategoryLevel1IDs, ",") != "12,13" {
+	if strings.Join(requester.Authorization.Capabilities, ",") != "com.example.reports.read,com.example.reports.export" ||
+		strings.Join(claimStringValues(t, requester.Authorization.Claims, "com.example.reports", "tenantIds"), ",") != "tenant-a,tenant-b" {
 		t.Fatalf("requester authorization = %+v", requester.Authorization)
 	}
 
@@ -208,7 +207,7 @@ func TestHandleMsgCallbackAuthorizedRequesterPropagatesContext(t *testing.T) {
 	waitForProcessedMessageForTest(t, rt, "msg-authorized")
 }
 
-func TestHandleMsgCallbackKeepsRequesterScopesSeparateAcrossUsers(t *testing.T) {
+func TestHandleMsgCallbackKeepsRequesterClaimsSeparateAcrossUsers(t *testing.T) {
 	runner := &capturingChatRunner{inputs: make(chan ChatRunInput, 2)}
 	service := newTestService(t, runner)
 	rt := newWebSocketRuntime(service, requesterWebSocketConfigForTest(), loadWebSocketRequesterPolicyForTest(t))
@@ -238,10 +237,10 @@ func TestHandleMsgCallbackKeepsRequesterScopesSeparateAcrossUsers(t *testing.T) 
 	if u1 == nil || u2 == nil {
 		t.Fatalf("captured requester users = %v, want u1 and u2", byUser)
 	}
-	if u1.RequestID != "msg-u1" || strings.Join(u1.Authorization.Scope.ManageAreaIDs, ",") != "CN18" {
+	if u1.RequestID != "msg-u1" || strings.Join(claimStringValues(t, u1.Authorization.Claims, "com.example.reports", "tenantIds"), ",") != "tenant-a,tenant-b" {
 		t.Fatalf("u1 requester context = %+v", u1)
 	}
-	if u2.RequestID != "msg-u2" || strings.Join(u2.Authorization.Scope.ManageAreaIDs, ",") != "CN99" {
+	if u2.RequestID != "msg-u2" || strings.Join(claimStringValues(t, u2.Authorization.Claims, "com.example.inventory", "warehouseIds"), ",") != "warehouse-b" {
 		t.Fatalf("u2 requester context = %+v", u2)
 	}
 	if byUser["u1"].ConversationID == byUser["u2"].ConversationID {
@@ -734,29 +733,32 @@ func requesterWebSocketConfigForTest() Config {
 func loadWebSocketRequesterPolicyForTest(t *testing.T) *RequesterPolicy {
 	t.Helper()
 	const raw = `{
-  "version": 1,
+  "version": 2,
   "botId": "bot-1",
   "users": [
     {
       "userId": "u1",
       "displayName": "U1",
       "enabled": true,
-      "capabilities": ["qdm.cmr.query", "qdm.sql.select"],
-      "scope": {"manageAreaIds": ["CN18"], "categoryLevel1Ids": ["12", "13"]}
+      "authorization": {
+        "capabilities": ["com.example.reports.read", "com.example.reports.export"],
+        "claims": {"com.example.reports":{"tenantIds":["tenant-a", "tenant-b"]}}
+      }
     },
     {
       "userId": "disabled-user",
       "displayName": "Disabled",
       "enabled": false,
-      "capabilities": [],
-      "scope": {"manageAreaIds": [], "categoryLevel1Ids": []}
+      "authorization": {"capabilities": [], "claims": {}}
     },
     {
       "userId": "u2",
       "displayName": "U2",
       "enabled": true,
-      "capabilities": ["qdm.indicators.query"],
-      "scope": {"manageAreaIds": ["CN99"], "categoryLevel1Ids": ["88"]}
+      "authorization": {
+        "capabilities": ["com.example.inventory.read"],
+        "claims": {"com.example.inventory":{"warehouseIds":["warehouse-b"]}}
+      }
     }
   ]
 }`

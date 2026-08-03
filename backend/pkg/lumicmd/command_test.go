@@ -235,7 +235,7 @@ func TestWeComRunRequesterConfigFlagOverridesEnvironment(t *testing.T) {
 	workspace := createCLIConfigWithAgent(t, home)
 	writePolicy := func(name, userID string) string {
 		path := filepath.Join(home, name)
-		raw := fmt.Sprintf(`{"version":1,"botId":"bot-123","users":[{"userId":%q,"displayName":"User","enabled":true,"capabilities":["qdm.cmr.query"],"scope":{"manageAreaIds":["CN18"],"categoryLevel1Ids":["12"]}}]}`, userID)
+		raw := fmt.Sprintf(`{"version":2,"botId":"bot-123","users":[{"userId":%q,"displayName":"User","enabled":true,"authorization":{"capabilities":["com.example.reports.read"],"claims":{"com.example.reports":{"tenantIds":["tenant-a"]}}}}]}`, userID)
 		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 			t.Fatalf("WriteFile(policy) error = %v", err)
 		}

@@ -1,20 +1,22 @@
 {
-  "version": 1,
+  "version": 2,
   "botId": "bot-demo-001",
   "users": [
     {
       "userId": "user-demo-001",
       "displayName": "张三（模拟用户）",
       "enabled": true,
-      "capabilities": [
-        "qdm.cas.token",
-        "qdm.cmr.query",
-        "qdm.indicators.query",
-        "qdm.sql.select"
-      ],
-      "scope": {
-        "manageAreaIds": ["CN18"],
-        "categoryLevel1Ids": ["12", "13"]
+      "authorization": {
+        "capabilities": [
+          "com.example.reports.read",
+          "com.example.reports.export"
+        ],
+        "claims": {
+          "com.example.reports": {
+            "schemaVersion": 1,
+            "tenantIds": ["tenant-a", "tenant-b"]
+          }
+        }
       }
     }
   ]

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -117,7 +116,7 @@ func TestFileBridgeWriteAndCleanup(t *testing.T) {
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	if envelope.Version != CurrentVersion || envelope.WorkspaceID != "workspace-1" || envelope.AgentID != "claude" || envelope.SessionID != "session-1" {
+	if envelope.Version != CurrentEnvelopeVersion || envelope.RequesterContext.Version != CurrentContextVersion || envelope.WorkspaceID != "workspace-1" || envelope.AgentID != "claude" || envelope.SessionID != "session-1" {
 		t.Fatalf("envelope identity = %#v", envelope)
 	}
 	if !envelope.IssuedAt.Equal(fixed) {
@@ -126,8 +125,16 @@ func TestFileBridgeWriteAndCleanup(t *testing.T) {
 	if want := fixed.Add(DefaultTTL); !envelope.ExpiresAt.Equal(want) {
 		t.Errorf("ExpiresAt = %s, want %s", envelope.ExpiresAt, want)
 	}
-	if !reflect.DeepEqual(envelope.RequesterContext, testContext()) {
-		t.Errorf("RequesterContext = %#v, want %#v", envelope.RequesterContext, testContext())
+	gotContextJSON, err := json.Marshal(envelope.RequesterContext)
+	if err != nil {
+		t.Fatalf("json.Marshal(envelope RequesterContext) error = %v", err)
+	}
+	wantContextJSON, err := json.Marshal(testContext())
+	if err != nil {
+		t.Fatalf("json.Marshal(want RequesterContext) error = %v", err)
+	}
+	if string(gotContextJSON) != string(wantContextJSON) {
+		t.Errorf("RequesterContext JSON = %s, want %s", gotContextJSON, wantContextJSON)
 	}
 
 	entries, err := os.ReadDir(bridge.Dir())

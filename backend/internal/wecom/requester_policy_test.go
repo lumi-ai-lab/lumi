@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,25 +15,29 @@ import (
 
 func TestLoadRequesterPolicyBuildsImmutableContexts(t *testing.T) {
 	raw := `{
-  "version": 1,
+  "version": 2,
   "botId": " bot-demo-001 ",
   "users": [
     {
       "userId": " user-demo-001 ",
       "displayName": " 张三 ",
       "enabled": true,
-      "capabilities": [" qdm.cmr.query ", "qdm.sql.select"],
-      "scope": {
-        "manageAreaIds": [" CN18 "],
-        "categoryLevel1Ids": [" 12 ", "13"]
+      "authorization": {
+        "capabilities": [" com.example.reports.read ", "com.example.reports.export"],
+        "claims": {
+          "com.example.reports": {
+            "schemaVersion": 1,
+            "tenantIds": ["tenant-a", "tenant-b"],
+            "domainOwnedField": true
+          }
+        }
       }
     },
     {
       "userId": "disabled-user",
       "displayName": "Disabled",
       "enabled": false,
-      "capabilities": [],
-      "scope": {"manageAreaIds": [], "categoryLevel1Ids": []}
+      "authorization": {"capabilities": [], "claims": {}}
     }
   ]
 }`
@@ -57,7 +62,7 @@ func TestLoadRequesterPolicyBuildsImmutableContexts(t *testing.T) {
 	if !ok {
 		t.Fatal("BuildContext(enabled) ok = false")
 	}
-	if ctx.Version != requestercontext.CurrentVersion || ctx.RequestID != "msg-1" || ctx.PolicyRevision != wantRevision {
+	if ctx.Version != requestercontext.CurrentContextVersion || ctx.RequestID != "msg-1" || ctx.PolicyRevision != wantRevision {
 		t.Fatalf("context header = %+v", ctx)
 	}
 	if ctx.Principal.Channel != "wecom" || ctx.Principal.BotID != "bot-demo-001" ||
@@ -67,16 +72,18 @@ func TestLoadRequesterPolicyBuildsImmutableContexts(t *testing.T) {
 	if ctx.Audience.ChatID != "chat-1" || ctx.Audience.ChatType != "group" {
 		t.Fatalf("context audience = %+v", ctx.Audience)
 	}
-	if strings.Join(ctx.Authorization.Capabilities, ",") != "qdm.cmr.query,qdm.sql.select" ||
-		strings.Join(ctx.Authorization.Scope.ManageAreaIDs, ",") != "CN18" ||
-		strings.Join(ctx.Authorization.Scope.CategoryLevel1IDs, ",") != "12,13" {
-		t.Fatalf("context authorization = %+v", ctx.Authorization)
+	if strings.Join(ctx.Authorization.Capabilities, ",") != "com.example.reports.read,com.example.reports.export" {
+		t.Fatalf("context capabilities = %+v", ctx.Authorization.Capabilities)
+	}
+	claim := decodeClaimObject(t, ctx.Authorization.Claims["com.example.reports"])
+	if claim["schemaVersion"] != float64(1) || claim["domainOwnedField"] != true {
+		t.Fatalf("context claim = %#v", claim)
 	}
 
-	ctx.Authorization.Capabilities[0] = "mutated"
-	ctx.Authorization.Scope.ManageAreaIDs[0] = "mutated"
+	ctx.Authorization.Capabilities[0] = "com.example.changed.read"
+	ctx.Authorization.Claims["com.example.reports"][0] = 'X'
 	again, ok := policy.BuildContext("user-demo-001", "msg-2", "chat-1", "group")
-	if !ok || again.Authorization.Capabilities[0] != "qdm.cmr.query" || again.Authorization.Scope.ManageAreaIDs[0] != "CN18" {
+	if !ok || again.Authorization.Capabilities[0] != "com.example.reports.read" || again.Authorization.Claims["com.example.reports"][0] != '{' {
 		t.Fatalf("policy snapshot was mutated: %+v", again)
 	}
 	if _, ok := policy.BuildContext("USER-DEMO-001", "", "", ""); ok {
@@ -87,6 +94,34 @@ func TestLoadRequesterPolicyBuildsImmutableContexts(t *testing.T) {
 	}
 }
 
+func TestLoadRequesterPolicyNormalizesMissingClaimsToObject(t *testing.T) {
+	raw := `{
+      "version": 2,
+      "botId": "bot-1",
+      "users": [{
+        "userId": "u1",
+        "displayName": "No Claims",
+        "enabled": true,
+        "authorization": {"capabilities": ["com.example.status.read"]}
+      }]
+    }`
+	policy, err := LoadRequesterPolicy(writeRequesterPolicyFile(t, raw), "bot-1")
+	if err != nil {
+		t.Fatalf("LoadRequesterPolicy() error = %v", err)
+	}
+	ctx, ok := policy.BuildContext("u1", "msg-1", "chat-1", "group")
+	if !ok {
+		t.Fatal("BuildContext() ok = false")
+	}
+	data, err := json.Marshal(ctx.Authorization)
+	if err != nil {
+		t.Fatalf("json.Marshal(Authorization) error = %v", err)
+	}
+	if string(data) != `{"capabilities":["com.example.status.read"],"claims":{}}` {
+		t.Fatalf("authorization JSON = %s", data)
+	}
+}
+
 func TestLoadRequesterPolicyRejectsInvalidDocuments(t *testing.T) {
 	tests := []struct {
 		name string
@@ -94,21 +129,23 @@ func TestLoadRequesterPolicyRejectsInvalidDocuments(t *testing.T) {
 		bot  string
 		want string
 	}{
-		{name: "unknown top-level field", raw: `{"version":1,"botId":"bot-1","users":[],"extra":true}`, bot: "bot-1", want: "unknown field"},
-		{name: "unknown nested field", raw: `{"version":1,"botId":"bot-1","users":[{"userId":"u1","displayName":"U","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"categoryLevel1Ids":[],"extra":true}}]}`, bot: "bot-1", want: "unknown field"},
-		{name: "multiple values", raw: `{"version":1,"botId":"bot-1","users":[]} {}`, bot: "bot-1", want: "multiple JSON values"},
-		{name: "wrong version", raw: `{"version":2,"botId":"bot-1","users":[]}`, bot: "bot-1", want: "version must be 1"},
-		{name: "empty bot", raw: `{"version":1,"botId":" ","users":[]}`, want: "botId is required"},
-		{name: "bot mismatch", raw: `{"version":1,"botId":"bot-2","users":[]}`, bot: "bot-1", want: "does not match"},
-		{name: "empty user", raw: `{"version":1,"botId":"bot-1","users":[{"userId":" ","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"categoryLevel1Ids":[]}}]}`, bot: "bot-1", want: "userId is required"},
-		{name: "duplicate user after trim", raw: `{"version":1,"botId":"bot-1","users":[{"userId":"u1","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"categoryLevel1Ids":[]}},{"userId":" u1 ","enabled":false,"capabilities":[],"scope":{"manageAreaIds":[],"categoryLevel1Ids":[]}}]}`, bot: "bot-1", want: "duplicate userId"},
-		{name: "unknown capability", raw: enabledRequesterPolicyJSON(`["qdm.unknown"]`, `["CN18"]`, `["12"]`), bot: "bot-1", want: "unknown capability"},
-		{name: "duplicate capability after trim", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"," qdm.cmr.query "]`, `["CN18"]`, `["12"]`), bot: "bot-1", want: "duplicate capability"},
-		{name: "enabled without capabilities", raw: enabledRequesterPolicyJSON(`[]`, `["CN18"]`, `["12"]`), bot: "bot-1", want: "at least one capability"},
-		{name: "enabled without manage areas", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `[]`, `["12"]`), bot: "bot-1", want: "at least one manageAreaId"},
-		{name: "enabled without categories", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"]`, `[]`), bot: "bot-1", want: "at least one categoryLevel1Id"},
-		{name: "empty scope value", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `[" "]`, `["12"]`), bot: "bot-1", want: "must not be empty"},
-		{name: "duplicate scope value after trim", raw: enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"," CN18 "]`, `["12"]`), bot: "bot-1", want: "duplicate value"},
+		{name: "unknown top-level field", raw: `{"version":2,"botId":"bot-1","users":[],"extra":true}`, bot: "bot-1", want: "unknown field"},
+		{name: "unknown user field", raw: `{"version":2,"botId":"bot-1","users":[{"userId":"u1","enabled":false,"authorization":{"capabilities":[],"claims":{}},"extra":true}]}`, bot: "bot-1", want: "unknown field"},
+		{name: "unknown authorization field", raw: `{"version":2,"botId":"bot-1","users":[{"userId":"u1","enabled":false,"authorization":{"capabilities":[],"claims":{},"scope":{}}}]}`, bot: "bot-1", want: "unknown field"},
+		{name: "multiple values", raw: `{"version":2,"botId":"bot-1","users":[]} {}`, bot: "bot-1", want: "multiple JSON values"},
+		{name: "legacy version", raw: `{"version":1,"botId":"bot-1","users":[]}`, bot: "bot-1", want: "version must be 2"},
+		{name: "empty bot", raw: `{"version":2,"botId":" ","users":[]}`, want: "botId is required"},
+		{name: "bot mismatch", raw: `{"version":2,"botId":"bot-2","users":[]}`, bot: "bot-1", want: "does not match"},
+		{name: "empty user", raw: `{"version":2,"botId":"bot-1","users":[{"userId":" ","enabled":false,"authorization":{"capabilities":[],"claims":{}}}]}`, bot: "bot-1", want: "userId is required"},
+		{name: "duplicate user after trim", raw: `{"version":2,"botId":"bot-1","users":[{"userId":"u1","enabled":false,"authorization":{"capabilities":[],"claims":{}}},{"userId":" u1 ","enabled":false,"authorization":{"capabilities":[],"claims":{}}}]}`, bot: "bot-1", want: "duplicate userId"},
+		{name: "capability without namespace", raw: enabledRequesterPolicyJSON(`["reports-read"]`, `{}`), bot: "bot-1", want: "invalid namespaced capability"},
+		{name: "uppercase capability", raw: enabledRequesterPolicyJSON(`["Com.Example.Read"]`, `{}`), bot: "bot-1", want: "invalid namespaced capability"},
+		{name: "duplicate capability after trim", raw: enabledRequesterPolicyJSON(`["com.example.read"," com.example.read "]`, `{}`), bot: "bot-1", want: "duplicate capability"},
+		{name: "enabled without capabilities", raw: enabledRequesterPolicyJSON(`[]`, `{"com.example.reports":{}}`), bot: "bot-1", want: "at least one capability"},
+		{name: "claim namespace without dot", raw: enabledRequesterPolicyJSON(`["com.example.read"]`, `{"reports":{}}`), bot: "bot-1", want: "invalid namespace"},
+		{name: "claim namespace with whitespace", raw: enabledRequesterPolicyJSON(`["com.example.read"]`, `{" com.example.reports ":{}}`), bot: "bot-1", want: "invalid namespace"},
+		{name: "array claim", raw: enabledRequesterPolicyJSON(`["com.example.read"]`, `{"com.example.reports":[]}`), bot: "bot-1", want: "must be a JSON object"},
+		{name: "null claim", raw: enabledRequesterPolicyJSON(`["com.example.read"]`, `{"com.example.reports":null}`), bot: "bot-1", want: "must be a JSON object"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -122,7 +159,7 @@ func TestLoadRequesterPolicyRejectsInvalidDocuments(t *testing.T) {
 
 func TestServiceValidatesRequesterPolicyForSaveAndRuntime(t *testing.T) {
 	service := newTestService(t, dummyRunner{})
-	validPath := writeRequesterPolicyFile(t, enabledRequesterPolicyJSON(`["qdm.cmr.query"]`, `["CN18"]`, `["12"]`))
+	validPath := writeRequesterPolicyFile(t, enabledRequesterPolicyJSON(`["com.example.reports.read"]`, `{"com.example.reports":{"tenantIds":["tenant-a"]}}`))
 	cfg := Config{
 		Mode:                "websocket",
 		BotID:               "bot-1",
@@ -152,8 +189,35 @@ func TestServiceValidatesRequesterPolicyForSaveAndRuntime(t *testing.T) {
 	}
 }
 
-func enabledRequesterPolicyJSON(capabilities, manageAreas, categories string) string {
-	return `{"version":1,"botId":"bot-1","users":[{"userId":"u1","displayName":"U1","enabled":true,"capabilities":` + capabilities + `,"scope":{"manageAreaIds":` + manageAreas + `,"categoryLevel1Ids":` + categories + `}}]}`
+func enabledRequesterPolicyJSON(capabilities, claims string) string {
+	return `{"version":2,"botId":"bot-1","users":[{"userId":"u1","displayName":"U1","enabled":true,"authorization":{"capabilities":` + capabilities + `,"claims":` + claims + `}}]}`
+}
+
+func decodeClaimObject(t *testing.T, raw json.RawMessage) map[string]any {
+	t.Helper()
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("json.Unmarshal(claim) error = %v, raw = %s", err, raw)
+	}
+	return result
+}
+
+func claimStringValues(t *testing.T, claims requestercontext.Claims, namespace, field string) []string {
+	t.Helper()
+	claim := decodeClaimObject(t, claims[namespace])
+	values, ok := claim[field].([]any)
+	if !ok {
+		t.Fatalf("claim %q field %q = %#v, want array", namespace, field, claim[field])
+	}
+	result := make([]string, len(values))
+	for i, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			t.Fatalf("claim %q field %q value[%d] = %#v, want string", namespace, field, i, value)
+		}
+		result[i] = text
+	}
+	return result
 }
 
 func writeRequesterPolicyFile(t *testing.T, raw string) string {
