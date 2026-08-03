@@ -13,30 +13,29 @@ import (
 	"github.com/pengmide/lumi/internal/requestercontext"
 )
 
-const requesterPolicyVersion = 1
+const requesterPolicyVersion = 2
 
 type requesterPolicyDocument struct {
 	Version int                   `json:"version"`
-	BotID   string                `json:"botId"`
+	BotID   string                `json:"botId,omitempty"`
 	Users   []requesterPolicyUser `json:"users"`
 }
 
 type requesterPolicyUser struct {
-	UserID       string               `json:"userId"`
-	DisplayName  string               `json:"displayName"`
-	Enabled      bool                 `json:"enabled"`
-	Capabilities []string             `json:"capabilities"`
-	Scope        requesterPolicyScope `json:"scope"`
+	UserID        string                       `json:"userId"`
+	DisplayName   string                       `json:"displayName"`
+	Enabled       bool                         `json:"enabled"`
+	Authorization requesterPolicyAuthorization `json:"authorization"`
 }
 
-type requesterPolicyScope struct {
-	ManageAreaIDs     []string `json:"manageAreaIds"`
-	CategoryLevel1IDs []string `json:"categoryLevel1Ids"`
+type requesterPolicyAuthorization struct {
+	Capabilities []string                `json:"capabilities"`
+	Claims       requestercontext.Claims `json:"claims"`
 }
 
 // RequesterPolicy is an immutable snapshot of a validated requester policy.
 // It only retains enabled users. Returned requester contexts contain cloned
-// slices, so callers cannot mutate the snapshot through a resolved context.
+// collections, so callers cannot mutate the snapshot through a resolved context.
 type RequesterPolicy struct {
 	botID      string
 	revision   string
@@ -45,11 +44,17 @@ type RequesterPolicy struct {
 }
 
 // LoadRequesterPolicy loads and validates one strict JSON policy document.
-// When expectedBotID is non-empty, the document must target that exact bot ID.
-func LoadRequesterPolicy(path, expectedBotID string) (*RequesterPolicy, error) {
+// botId is an optional audience constraint: when both the document and runtime
+// BotIDs are non-empty, they must match. The runtime BotID remains the source of
+// truth for RequesterContext principals.
+func LoadRequesterPolicy(path, runtimeBotID string) (*RequesterPolicy, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, errors.New("requester config path is required")
+	}
+	runtimeBotID = strings.TrimSpace(runtimeBotID)
+	if runtimeBotID == "" {
+		return nil, errors.New("runtime bot id is required")
 	}
 
 	data, err := os.ReadFile(path)
@@ -71,12 +76,12 @@ func LoadRequesterPolicy(path, expectedBotID string) (*RequesterPolicy, error) {
 		return nil, fmt.Errorf("decode requester config: %w", err)
 	}
 
-	if err := normalizeAndValidateRequesterPolicy(&document, expectedBotID); err != nil {
+	if err := normalizeAndValidateRequesterPolicy(&document, runtimeBotID); err != nil {
 		return nil, err
 	}
 	hash := sha256.Sum256(data)
 	policy := &RequesterPolicy{
-		botID:    document.BotID,
+		botID:    runtimeBotID,
 		revision: "sha256:" + hex.EncodeToString(hash[:]),
 		enabled:  make(map[string]requesterPolicyUser),
 	}
@@ -90,107 +95,13 @@ func LoadRequesterPolicy(path, expectedBotID string) (*RequesterPolicy, error) {
 	return policy, nil
 }
 
-func normalizeAndValidateRequesterPolicy(document *requesterPolicyDocument, expectedBotID string) error {
-	if document.Version != requesterPolicyVersion {
-		return fmt.Errorf("requester config version must be %d", requesterPolicyVersion)
-	}
-	document.BotID = strings.TrimSpace(document.BotID)
-	if document.BotID == "" {
-		return errors.New("requester config botId is required")
-	}
-	if expected := strings.TrimSpace(expectedBotID); expected != "" && document.BotID != expected {
-		return fmt.Errorf("requester config botId %q does not match configured botId %q", document.BotID, expected)
-	}
-
-	seenUserIDs := make(map[string]struct{}, len(document.Users))
-	for i := range document.Users {
-		user := &document.Users[i]
-		user.UserID = strings.TrimSpace(user.UserID)
-		user.DisplayName = strings.TrimSpace(user.DisplayName)
-		if user.UserID == "" {
-			return fmt.Errorf("requester config users[%d].userId is required", i)
-		}
-		if _, exists := seenUserIDs[user.UserID]; exists {
-			return fmt.Errorf("requester config contains duplicate userId %q", user.UserID)
-		}
-		seenUserIDs[user.UserID] = struct{}{}
-
-		capabilities, err := normalizeCapabilities(user.Capabilities, i)
-		if err != nil {
-			return err
-		}
-		user.Capabilities = capabilities
-
-		manageAreaIDs, err := normalizeScopeValues(user.Scope.ManageAreaIDs, i, "manageAreaIds")
-		if err != nil {
-			return err
-		}
-		user.Scope.ManageAreaIDs = manageAreaIDs
-		categoryLevel1IDs, err := normalizeScopeValues(user.Scope.CategoryLevel1IDs, i, "categoryLevel1Ids")
-		if err != nil {
-			return err
-		}
-		user.Scope.CategoryLevel1IDs = categoryLevel1IDs
-
-		if user.Enabled {
-			if len(user.Capabilities) == 0 {
-				return fmt.Errorf("requester config enabled user %q must have at least one capability", user.UserID)
-			}
-			if len(user.Scope.ManageAreaIDs) == 0 {
-				return fmt.Errorf("requester config enabled user %q must have at least one manageAreaId", user.UserID)
-			}
-			if len(user.Scope.CategoryLevel1IDs) == 0 {
-				return fmt.Errorf("requester config enabled user %q must have at least one categoryLevel1Id", user.UserID)
-			}
-		}
-	}
-	return nil
-}
-
-func normalizeCapabilities(values []string, userIndex int) ([]string, error) {
-	allowed := map[string]struct{}{
-		requestercontext.CapabilityCASToken:        {},
-		requestercontext.CapabilityCMRQuery:        {},
-		requestercontext.CapabilityIndicatorsQuery: {},
-		requestercontext.CapabilitySQLSelect:       {},
-	}
-	result := make([]string, len(values))
-	seen := make(map[string]struct{}, len(values))
-	for i, value := range values {
-		value = strings.TrimSpace(value)
-		if _, ok := allowed[value]; !ok {
-			return nil, fmt.Errorf("requester config users[%d].capabilities[%d] contains unknown capability %q", userIndex, i, value)
-		}
-		if _, exists := seen[value]; exists {
-			return nil, fmt.Errorf("requester config users[%d] contains duplicate capability %q", userIndex, value)
-		}
-		seen[value] = struct{}{}
-		result[i] = value
-	}
-	return result, nil
-}
-
-func normalizeScopeValues(values []string, userIndex int, field string) ([]string, error) {
-	result := make([]string, len(values))
-	seen := make(map[string]struct{}, len(values))
-	for i, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return nil, fmt.Errorf("requester config users[%d].scope.%s[%d] must not be empty", userIndex, field, i)
-		}
-		if _, exists := seen[value]; exists {
-			return nil, fmt.Errorf("requester config users[%d].scope.%s contains duplicate value %q", userIndex, field, value)
-		}
-		seen[value] = struct{}{}
-		result[i] = value
-	}
-	return result, nil
-}
-
 func cloneRequesterPolicyUser(user requesterPolicyUser) requesterPolicyUser {
-	user.Capabilities = append([]string(nil), user.Capabilities...)
-	user.Scope.ManageAreaIDs = append([]string(nil), user.Scope.ManageAreaIDs...)
-	user.Scope.CategoryLevel1IDs = append([]string(nil), user.Scope.CategoryLevel1IDs...)
+	cloned := requestercontext.Authorization{
+		Capabilities: user.Authorization.Capabilities,
+		Claims:       user.Authorization.Claims,
+	}.Clone()
+	user.Authorization.Capabilities = cloned.Capabilities
+	user.Authorization.Claims = cloned.Claims
 	return user
 }
 
@@ -205,7 +116,7 @@ func (p *RequesterPolicy) BuildContext(userID, requestID, chatID, chatType strin
 		return nil, false
 	}
 	ctx := &requestercontext.Context{
-		Version:        requestercontext.CurrentVersion,
+		Version:        requestercontext.CurrentContextVersion,
 		RequestID:      strings.TrimSpace(requestID),
 		PolicyRevision: p.revision,
 		Principal: requestercontext.Principal{
@@ -219,12 +130,9 @@ func (p *RequesterPolicy) BuildContext(userID, requestID, chatID, chatType strin
 			ChatType: strings.TrimSpace(chatType),
 		},
 		Authorization: requestercontext.Authorization{
-			Capabilities: append([]string(nil), user.Capabilities...),
-			Scope: requestercontext.Scope{
-				ManageAreaIDs:     append([]string(nil), user.Scope.ManageAreaIDs...),
-				CategoryLevel1IDs: append([]string(nil), user.Scope.CategoryLevel1IDs...),
-			},
-		},
+			Capabilities: user.Authorization.Capabilities,
+			Claims:       user.Authorization.Claims,
+		}.Clone(),
 	}
 	return ctx, true
 }

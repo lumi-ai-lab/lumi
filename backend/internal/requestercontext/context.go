@@ -2,18 +2,19 @@
 // context propagated from an IM channel to an ACP agent.
 package requestercontext
 
+import "encoding/json"
+
 const (
-	// CurrentVersion is the current requester context and envelope schema version.
-	CurrentVersion = 1
+	// CurrentContextVersion is the requester context schema version.
+	CurrentContextVersion = 2
+
+	// CurrentEnvelopeVersion is the on-disk envelope schema version. The
+	// requester context nested inside the envelope is versioned independently.
+	CurrentEnvelopeVersion = 1
 
 	// EnvRequesterContextDir points agents and hooks at the directory containing
 	// session-scoped requester context files.
 	EnvRequesterContextDir = "LUMI_REQUESTER_CONTEXT_DIR"
-
-	CapabilityCASToken        = "qdm.cas.token"
-	CapabilityCMRQuery        = "qdm.cmr.query"
-	CapabilityIndicatorsQuery = "qdm.indicators.query"
-	CapabilitySQLSelect       = "qdm.sql.select"
 )
 
 // Context describes the authenticated requester and the authorization snapshot
@@ -44,13 +45,30 @@ type Audience struct {
 // Authorization is the immutable authorization snapshot for a request.
 type Authorization struct {
 	Capabilities []string `json:"capabilities"`
-	Scope        Scope    `json:"scope"`
+	Claims       Claims   `json:"claims"`
 }
 
-// Scope contains the business-data dimensions allowed for the requester.
-type Scope struct {
-	ManageAreaIDs     []string `json:"manageAreaIds"`
-	CategoryLevel1IDs []string `json:"categoryLevel1Ids"`
+// Claims contains opaque, namespace-scoped authorization data. Lumi preserves
+// each JSON object without interpreting its domain-specific fields.
+type Claims map[string]json.RawMessage
+
+// Clone returns an independent authorization value with non-nil collections.
+func (authorization Authorization) Clone() Authorization {
+	capabilities := make([]string, len(authorization.Capabilities))
+	copy(capabilities, authorization.Capabilities)
+	return Authorization{
+		Capabilities: capabilities,
+		Claims:       authorization.Claims.Clone(),
+	}
+}
+
+// Clone returns an independent copy of every opaque claim payload.
+func (claims Claims) Clone() Claims {
+	cloned := make(Claims, len(claims))
+	for namespace, payload := range claims {
+		cloned[namespace] = append(json.RawMessage(nil), payload...)
+	}
+	return cloned
 }
 
 // PromptMeta builds the ACP prompt _meta value for a requester context.

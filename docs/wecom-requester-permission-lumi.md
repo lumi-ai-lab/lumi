@@ -1,282 +1,248 @@
-# Lumi 企业微信提问人权限：第一阶段实现说明
+# Lumi 企业微信提问人授权上下文实现说明
 
-> 本文只描述 Lumi 本轮要实现的内容。整体边界见[第一阶段整体方案](./wecom-requester-permission-architecture.md)。
->
-> 当前状态：Lumi 侧第一阶段代码已实现；Harness 侧强制过滤仍属于后续工作。
+> 本文描述 Lumi 负责的身份识别、Policy v2 加载和 RequesterContext v2 传递。领域 capability/claims 的解释与权限实施不属于 Lumi Core。
 
-## 1. 本轮结果
+## 1. 功能概览
 
 ```text
 企业微信回调 body.from.userid
               |
-       +------+------+
-       |             |
-  超管创建机器人   非超管创建机器人
-       |             |
-       v             v
-明文 canonical    密文 open_userid
-    UserID            |
-       |              v
-       v         本轮停止：不转换
-+-----------------------------+
-| Lumi                        |
-| 严格配置校验                |
-| 用户查询与拒绝              |
-| 构造 RequesterContext       |
-| Local / Sandbox 逐轮传递    |
-+--------------+--------------+
-               |
-               v
-        Claude/Codex/Qwen/Pi
-       可定位本轮权限上下文
-               |
-               v
-       Harness 后续读取并强制过滤
+              v
+       Requester Policy v2
+       精确身份匹配与快照
+              |
+              v
+      RequesterContext v2
+       /                 \
+      v                   v
+ Local Agent        Sandbox Agent
+      \                   /
+       v                 v
+       Domain Consumer 校验并执行
 ```
 
-企业微信真实群聊联调已验证，企业超级管理员创建的机器人会直接返回明文 UserID。本轮部署以此为前提：Lumi 不把 UserID 转成用户名，也不把密文 `open_userid` 转成明文 UserID。鉴权键是明文 UserID，`displayName` 从 JSON 配置读取且只用于展示。
+Lumi 不安装、发现或执行领域 CLI，也不定义领域模型。
 
-上述分支是部署前需要确认的企业微信行为，并非 Lumi 在运行时根据 BotID、UserID 长度或格式判断机器人创建者身份。
+## 2. 启用方式
 
-```text
-超级管理员创建机器人
-          |
-          v
-body.from.userid = 明文 UserID
-          |
-          v
-严格权限配置 -> RequesterContext
+命令行：
+
+```bash
+lumi wecom run \
+  --workspace /absolute/workspace \
+  --agent claude \
+  --requester-config /absolute/config/wecom-requesters.json
 ```
 
-非超级管理员创建的机器人需要调用企业微信官方 `POST /cgi-bin/batch/openuserid_to_userid` 接口；该能力不在本轮实现范围内。详见[企业微信提问人权限整体方案](./wecom-requester-permission-architecture.md#2-userid-从哪里来)。
+也可以使用环境变量：
 
-## 2. 启动与配置加载
-
-```text
---requester-config PATH
-          |
-          | 若未提供
-          v
-LUMI_WECOM_REQUESTER_CONFIG
-          |
-          v
-严格解析 JSON -> 不可变权限快照 -> 建立 WeCom WebSocket
+```bash
+LUMI_WECOM_REQUESTER_CONFIG=/absolute/config/wecom-requesters.json
 ```
 
-- 新增 `lumi wecom run --requester-config <absolute-path>`，flag 优先于环境变量。
-- 配置路径非空即进入严格模式；未设置时不改变现有 `allowFrom` 行为。
-- 严格模式忽略 `allowFrom`，任何配置错误均阻止服务启动。
-- 只接受 `version: 1` 和四个 capability：
+- `--requester-config` 优先于环境变量。
+- 配置路径非空即进入严格 requester policy 模式。
+- 未配置 requester policy 时，保留原有 `allowFrom` 行为。
+- Policy 文件应放在 Agent workspace 外；Sandbox 配置会拒绝 workspace 内或经符号链接落入 workspace 的路径。
 
-```text
-qdm.cas.token
-qdm.cmr.query
-qdm.indicators.query
-qdm.sql.select
-```
-
-- UserID 首尾去空白后大小写敏感匹配；拒绝空值和重复值。
-- 启用用户必须至少有一个 capability，并配置非空 `manageAreaIds` 与 `categoryLevel1Ids`。
-- 运行时授权快照只在 `Service.Start()` 加载；保存配置、状态检查和连接测试会单独校验文件，但不会热更新正在运行的快照。修改后重启生效。
-- 权限文件应位于 Harness workspace 外；Sandbox 只接收本轮上下文，不接收完整配置。
-
-示例配置：[`examples/wecom-requesters.demo.json`](./examples/wecom-requesters.demo.json)。
-
-## 3. 回调处理顺序
-
-授权检查必须移到附件下载之前：
-
-```text
-handleMsgCallback
-      |
-      v
-校验 msgid / from.userid / aibotid
-      |
-      v
-校验 aibotid == cfg.BotID
-      |
-      v
-lookup(trim(from.userid))
-      |
-      +-----------------------+
-      |                       |
- unknown / disabled         enabled
-      |                       |
-      v                       v
-统一拒绝并标记处理      构造 RequesterContext
-      |                       |
-      |                       v
-      |                下载附件/处理命令
-      |                       |
-      |                       v
-      +-- 不调用 Runner      ChatRunner
-```
-
-固定行为：
-
-- 未配置与停用用户统一回复：`你暂未开通该机器人的使用权限，请联系管理员。`
-- 缺少关键身份字段或 Bot ID 不匹配时丢弃并记录错误，不向不可信目标回复。
-- 未授权消息不得下载附件、处理 IM 命令或调用 `ChatRunner`。
-- `body.msgid` 是上下文 `requestId`；`headers.req_id` 继续仅用于回复关联。
-- 严格模式拒绝 WeCom cron Agent 查询，防止合成 `target.UserID` 绕过真实回调身份。
-
-## 4. 结构化传递链路
-
-为公共输入和任务载荷增加可选 `RequesterContext`，完整路径为：
-
-```text
-WeComInboundMessage.RequesterContext
-                 |
-                 v
-ChatRunInput.RequesterContext
-                 |
-       +---------+---------+
-       |                   |
-       v                   v
-Local ChatRunner       Sandbox imRunInput
-                           |
-                           v
-                TaskExecutePayload.requesterContext
-       |                   |
-       +---------+---------+
-                 |
-                 v
-        device-executor / Agent runtime
-```
-
-`RequesterContext` 包含：
-
-```text
-version
-requestId                <- body.msgid
-policyRevision           <- 权限配置内容摘要
-principal
-  channel                = wecom
-  botId                  = cfg.BotID
-  canonicalUserId        = trim(body.from.userid)  // 超管创建机器人时为明文
-  displayName            = 权限配置
-audience
-  chatId / chatType      = 企业微信回调
-authorization
-  capabilities           = 权限配置
-  scope
-    manageAreaIds
-    categoryLevel1Ids
-```
-
-每条新消息重新查询不可变配置快照并构造上下文。现有 conversation key 不修改；在超级管理员创建机器人的部署前提下，raw UserID 就是 canonical UserID。同一消息的 continuation 复用该消息快照。
-
-## 5. Agent 双通道
-
-```text
-RequesterContext
-       |
-       +----------------------------+
-       |                            |
-       v                            v
-ACP session/prompt              Session JSON
-_meta.lumi.                     sha256(sessionId).json
-requesterContext
-       |                            |
-       +-------------+--------------+
-                     v
-          Agent Hook / extension 可定位
-```
-
-### 标准通道
-
-每一次 `session/prompt` 都写入：
+## 3. Policy v2 示例
 
 ```json
 {
-  "_meta": {
-    "lumi": {
-      "requesterContext": {}
+  "version": 2,
+  "users": [
+    {
+      "userId": "user-demo-001",
+      "displayName": "示例用户",
+      "enabled": true,
+      "authorization": {
+        "capabilities": ["com.example.reports.read"],
+        "claims": {
+          "com.example.reports": {
+            "schemaVersion": 1,
+            "tenantIds": ["tenant-a"]
+          }
+        }
+      }
+    },
+    {
+      "userId": "disabled-user",
+      "displayName": "停用用户",
+      "enabled": false,
+      "authorization": {
+        "capabilities": [],
+        "claims": {}
+      }
+    }
+  ]
+}
+```
+
+完整示例见 [wecom-requesters.demo.json](./examples/wecom-requesters.demo.json)。
+
+### 通用校验规则
+
+- Policy 版本必须为 `2`，不自动转换 v1。
+- `botId` 是可选的 audience 约束；省略或留空时 Policy 可被多个机器人复用，非空时必须与当前企业微信机器人一致。
+- RequesterContext 中的 BotID 始终来自 Lumi 运行时配置，而不是 Policy。
+- UserID 去除首尾空白后非空、唯一、大小写敏感。
+- 启用用户至少包含一个 capability；停用用户可以使用空授权。
+- capability 和 claim namespace 必须为小写点分标识，可使用数字、`_` 和 `-`：
+
+```text
+^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$
+```
+
+- capability 会去除首尾空白并拒绝重复，输入顺序保持不变。
+- claim namespace 不做空白归一化，不合法时直接拒绝。
+- 每个 claim namespace 的值必须为 JSON object。
+- claim object 内部完全 opaque，Lumi 不拒绝其中的领域字段。
+- Policy、用户及 `authorization` 层仍使用严格 JSON 解码并拒绝未知字段。
+
+### Schema 职责边界
+
+- `version`、`users`、`userId` 和可选 `botId` 属于企业微信 Policy 适配层。
+- `authorization.capabilities` 与 `authorization.claims` 的容器结构属于 Lumi 通用授权协议。
+- capability 的具体名称、claim namespace 以及 claim 内部 `schemaVersion` 和字段全部由业务消费端拥有。
+- 下游消费端只接收当前用户的 RequesterContext，不读取完整 Policy 用户清单。
+- 新业务只需定义 namespaced capability、版本化 claim schema 和 fail-closed 消费端，不需要修改 Lumi Core。
+
+完整字段归属表、财务领域示例和跨 IM 渠道边界见 [企业微信提问人授权上下文架构](./wecom-requester-permission-architecture.md)。
+
+## 4. 加载与生效时机
+
+```text
+Save / Test Connection   单独校验 policy 文件
+Service.Start            读取并建立不可变快照
+Runtime callback         只查询当前快照
+Policy file changed      不自动热加载
+Service restart          建立新快照
+```
+
+加载失败、版本错误、非空 BotID 约束不匹配或通用结构非法时，服务拒绝启动或保存配置，不回退到 `allowFrom`。
+
+Policy revision 使用原始文件内容的 SHA-256。仅改变 JSON 排版也会产生新的 revision，便于确认运行时加载的确切文件版本。
+
+## 5. 回调身份处理
+
+启用严格 policy 后，回调必须满足：
+
+- `msgid` 非空；
+- `from.userid` 非空；
+- `aibotid` 非空且等于配置 BotID；
+- UserID 存在于启动快照且 `enabled=true`。
+
+任一条件失败时，请求在附件下载和 Agent 调用之前被拒绝。
+
+Lumi 使用企业微信提供的 UserID 原值作为 canonical identity，只去除首尾空白，不做大小写转换、用户名映射或格式猜测。
+
+## 6. RequesterContext v2
+
+授权请求构造如下 Context：
+
+```json
+{
+  "version": 2,
+  "requestId": "msg-demo-001",
+  "policyRevision": "sha256:...",
+  "principal": {
+    "channel": "wecom",
+    "botId": "bot-demo-001",
+    "canonicalUserId": "user-demo-001",
+    "displayName": "示例用户"
+  },
+  "audience": {
+    "chatId": "chat-demo-001",
+    "chatType": "group"
+  },
+  "authorization": {
+    "capabilities": ["com.example.reports.read"],
+    "claims": {
+      "com.example.reports": {
+        "schemaVersion": 1,
+        "tenantIds": ["tenant-a"]
+      }
     }
   }
 }
 ```
 
-不能只在 `session/new` 或 System Prompt 中设置一次，否则复用 Session 时权限可能陈旧。
+实现使用 `json.RawMessage` 保存每个 namespace 的 claim object，并在保存快照及构造 Context 时深拷贝。Lumi 不将其解码为业务 Go struct。
 
-### Session JSON 兼容通道
+## 7. Local 传递
 
-在每次 prompt 前写入：
-
-```text
-<LUMI_REQUESTER_CONTEXT_DIR>/<sha256(acp-session-id)>.json
-```
-
-文件外层契约：
-
-```json
-{
-  "version": 1,
-  "workspaceId": "cli-sandbox-demo",
-  "agentId": "claude",
-  "sessionId": "acp-session-id",
-  "issuedAt": "2026-07-29T10:00:00+08:00",
-  "expiresAt": "2026-07-29T10:30:00+08:00",
-  "requesterContext": {}
-}
-```
-
-生命周期：
-
-- Local 目录为 `$LUMI_HOME/runtime/requester-context/<pid>/agents/<agent-id>/`；同一 Agent 跨 Workspace 复用该稳定目录，JSON 内仍记录真实 `workspaceId`。
-- Sandbox 目录为 `/lumi/runtime/requester-context/`。
-- 环境变量只暴露目录路径，不直接保存 UserID 或权限。
-- prompt 前采用临时文件加 rename 原子写入；目录 `0700`、文件 `0600`。
-- prompt 完成、失败或取消后删除；unknown-session 恢复时删除旧文件并为新 Session 重写。
-- 严格模式写入失败即中止，不退化为仅 `_meta`。
-
-Claude、Codex、Qwen、Pi 都使用这份统一输出契约，但这不等于四个 Agent 已经端到端执行权限。各 adapter 的 Session ID 对齐和 Hook/extension 读取需要版本锁定与 smoke test；Harness 本轮不修改。
-
-## 6. 失败策略
+每轮请求通过 ACP metadata 传递：
 
 ```text
-配置加载失败 ----------------------> 服务不启动
-身份字段缺失 / Bot ID 不匹配 -----> 丢弃并记录
-用户未知 / 停用 ------------------> 统一拒绝
-上下文传递或 Session 文件失败 ----> 本次查询失败
-Sandbox unknown-session ----------> 切换新 Session 并重写上下文
+session/prompt
+  _meta
+    lumi
+      requesterContext
 ```
 
-所有严格模式路径均 fail closed，不允许回落为“无上下文继续查询”。
+同时写入逐 Session 文件信封，供不读取 ACP `_meta` 的 Hook 或 Harness 使用。Agent 通过以下环境变量定位目录：
 
-## 7. 测试与验收
+```bash
+LUMI_REQUESTER_CONTEXT_DIR=/private/runtime/path
+```
+
+文件名由 ACP Session ID 的 SHA-256 生成，文件权限为 `0600`，目录权限为 `0700`，写入使用临时文件和原子 rename。
+
+## 8. Sandbox 传递
 
 ```text
-配置层
-  [x] 合法配置加载
-  [x] 未知字段、错误版本、重复 UserID、未知 capability 拒绝
-  [x] flag / env / flag 优先级正确
-
-WeCom 入口
-  [x] 已授权用户继续执行
-  [x] 未知或停用用户在附件下载前拒绝
-  [x] 空 msgid/UserID/aibotid 和 Bot ID 不匹配不执行 Runner
-  [x] legacy allowFrom 模式行为不变
-  [x] 严格模式 WeCom cron Agent 查询被拒绝
-  [x] 真实群聊验证超管创建机器人返回明文 UserID
-
-传递层
-  [x] Local prompt 的 _meta 与 Session JSON 使用同一 RequesterContext
-  [x] Sandbox task payload 完整携带 requesterContext
-  [x] unknown-session 恢复时为新 Session 重写上下文
-  [x] 两个 UserID 使用各自会话且不会串用权限范围
-  [x] prompt 返回或报错后清理 Session 文件
-
-兼容层
-  [ ] Claude / Codex / Qwen / Pi 分别完成 Session 定位 smoke test
+Host WeCom callback
+        |
+        v
+TaskExecutePayload.requesterContext
+        |
+        v
+device-executor
+        +--> ACP _meta
+        +--> session-scoped file envelope
 ```
 
-## 8. 本轮不做
+- Task 只包含本轮 Context，不包含完整 policy 文件。
+- Context 在 Host、device-executor 和领域 consumer 之间必须保持 v2。
+- 已存在的 Sandbox 镜像不会自动更新；升级本协议后必须重新构建镜像并重建或重启 Sandbox。
 
-- 不调用企业微信通讯录，也不获取 Access Token。
-- 不做非超级管理员创建机器人所返回的密文 `open_userid` 到明文 UserID 的转换。
-- 不建设权限服务、配置热加载或动态入离职同步。
-- 不修改 Harness，不在 Lumi 中生成 CMR/Indicators/SQL 的最终过滤参数。
-- 不把 unsigned Session JSON 当作安全凭证。
+## 9. 文件生命周期
 
-特别是 SQL：`qdm.sql.select` 只是一项 capability。生产环境仍必须由 Harness 查询代理、SQL AST 校验或数据库 RLS 实施不可绕过的区域/品类限制。
+- 文件信封版本为 `1`，内部 `requesterContext.version` 为 `2`。
+- 默认 TTL 为 30 分钟。
+- Local 文件位于 `$LUMI_HOME/runtime/requester-context/<pid>/agents/<agent-id>/`。PID namespace 隔离共享同一 `LUMI_HOME` 的 Lumi 进程，也防止新进程读取崩溃进程遗留的授权文件；同一进程内 Agent 跨 Workspace 复用该目录，信封仍记录真实 `workspaceId`。
+- 正常完成、取消和错误路径都会执行清理。
+- 同一 Session 写入新 Context 后，旧 cleanup 不会删除新文件。
+- 消费端必须校验 TTL、Envelope 版本、Context 版本、WorkspaceID、AgentID 和 SessionID。
+
+## 10. 领域消费端契约
+
+Lumi 传递的是声明，不是最终权限执行结果。消费端必须：
+
+1. 检查 Context v2。
+2. 精确检查自己要求的 capability。
+3. 解析自己拥有的 namespace。
+4. 校验 namespace 内的 schema 版本和全部业务约束。
+5. 将用户请求与授权范围求交集。
+6. 在可信服务或数据源侧强制执行。
+7. 对缺失、未知或非法数据 fail closed。
+
+Lumi 不提供 capability 注册表、领域 validator 注入点或外部 validator 命令。领域逻辑应随 Skill、MCP、Harness、查询代理或 Sandbox 镜像独立发布。
+
+## 11. 升级与回滚
+
+本版本是 breaking change：
+
+- Policy v1 会被明确拒绝。
+- RequesterContext v1 consumer 必须先升级。
+- Policy、Lumi、device-executor 与领域 consumer 应协调发布。
+- 回滚二进制时必须同步回滚 policy 和 consumer。
+
+建议上线前分别验证：
+
+- 合法用户的 Local 请求；
+- 合法用户的 Sandbox 请求；
+- 未知、停用用户以及 Policy BotID 约束不匹配的提前拒绝；
+- 空 claims capability；
+- 多 namespace claims；
+- consumer 对缺失或错误 claim schema 的 fail-closed 行为。

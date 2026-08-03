@@ -3,12 +3,13 @@ package requestercontext
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
 func testContext() Context {
 	return Context{
-		Version:        CurrentVersion,
+		Version:        CurrentContextVersion,
 		RequestID:      "wecom-message-1",
 		PolicyRevision: "sha256:policy",
 		Principal: Principal{
@@ -23,14 +24,11 @@ func testContext() Context {
 		},
 		Authorization: Authorization{
 			Capabilities: []string{
-				CapabilityCASToken,
-				CapabilityCMRQuery,
-				CapabilityIndicatorsQuery,
-				CapabilitySQLSelect,
+				"com.example.reports.read",
+				"com.example.reports.export",
 			},
-			Scope: Scope{
-				ManageAreaIDs:     []string{"CN18"},
-				CategoryLevel1IDs: []string{"12", "13"},
+			Claims: Claims{
+				"com.example.reports": json.RawMessage(`{"schemaVersion":1,"tenantIds":["tenant-a"]}`),
 			},
 		},
 	}
@@ -59,19 +57,77 @@ func TestContextJSONContract(t *testing.T) {
 		}
 	}
 	authorization := got["authorization"].(map[string]any)
-	scope := authorization["scope"].(map[string]any)
-	for _, key := range []string{"manageAreaIds", "categoryLevel1Ids"} {
-		if _, ok := scope[key]; !ok {
-			t.Errorf("scope JSON missing %q", key)
-		}
+	if _, ok := authorization["scope"]; ok {
+		t.Fatal("authorization JSON unexpectedly contains legacy scope")
+	}
+	claims, ok := authorization["claims"].(map[string]any)
+	if !ok {
+		t.Fatalf("authorization claims = %#v, want object", authorization["claims"])
+	}
+	if _, ok := claims["com.example.reports"].(map[string]any); !ok {
+		t.Fatalf("namespaced claim = %#v, want object", claims["com.example.reports"])
 	}
 }
 
-func TestCapabilityValues(t *testing.T) {
-	got := []string{CapabilityCASToken, CapabilityCMRQuery, CapabilityIndicatorsQuery, CapabilitySQLSelect}
-	want := []string{"qdm.cas.token", "qdm.cmr.query", "qdm.indicators.query", "qdm.sql.select"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("capabilities = %#v, want %#v", got, want)
+func TestAuthorizationCloneIsIndependentAndNormalizesEmptyCollections(t *testing.T) {
+	original := testContext().Authorization
+	cloned := original.Clone()
+	cloned.Capabilities[0] = "com.example.changed.read"
+	cloned.Claims["com.example.reports"][0] = 'X'
+	if original.Capabilities[0] != "com.example.reports.read" || original.Claims["com.example.reports"][0] != '{' {
+		t.Fatalf("Clone() mutated original authorization: %#v", original)
+	}
+
+	empty := (Authorization{}).Clone()
+	data, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("json.Marshal(empty Clone()) error = %v", err)
+	}
+	if string(data) != `{"capabilities":[],"claims":{}}` {
+		t.Fatalf("empty authorization JSON = %s", data)
+	}
+}
+
+func TestNormalizeAuthorizationValidatesOnlyGenericStructure(t *testing.T) {
+	original := Authorization{
+		Capabilities: []string{" com.example.reports.read ", "org.example.audit.export"},
+		Claims: Claims{
+			"com.example.reports": json.RawMessage(`{"domainOwnedField":true}`),
+			"org.example.audit":   json.RawMessage(` {"levels":["summary"]} `),
+		},
+	}
+	normalized, err := NormalizeAuthorization(original)
+	if err != nil {
+		t.Fatalf("NormalizeAuthorization() error = %v", err)
+	}
+	if normalized.Capabilities[0] != "com.example.reports.read" || len(normalized.Claims) != 2 {
+		t.Fatalf("normalized authorization = %#v", normalized)
+	}
+	normalized.Claims["com.example.reports"][0] = 'X'
+	if original.Claims["com.example.reports"][0] != '{' {
+		t.Fatal("NormalizeAuthorization() did not clone claim payload")
+	}
+}
+
+func TestNormalizeAuthorizationRejectsInvalidGenericStructure(t *testing.T) {
+	tests := []struct {
+		name          string
+		authorization Authorization
+		want          string
+	}{
+		{name: "capability without namespace", authorization: Authorization{Capabilities: []string{"reports-read"}}, want: "invalid namespaced capability"},
+		{name: "duplicate capability", authorization: Authorization{Capabilities: []string{"com.example.read", " com.example.read "}}, want: "duplicate capability"},
+		{name: "invalid claim namespace", authorization: Authorization{Claims: Claims{"reports": json.RawMessage(`{}`)}}, want: "invalid namespace"},
+		{name: "non-object claim", authorization: Authorization{Claims: Claims{"com.example.reports": json.RawMessage(`[]`)}}, want: "must be a JSON object"},
+		{name: "invalid JSON claim", authorization: Authorization{Claims: Claims{"com.example.reports": json.RawMessage(`{"broken":`)}}, want: "must be a JSON object"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NormalizeAuthorization(tt.authorization)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("NormalizeAuthorization() error = %v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }
 

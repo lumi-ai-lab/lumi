@@ -199,7 +199,7 @@ func TestExecutorRequesterContextBridgeUsesDefaultWorkspace(t *testing.T) {
 
 func bridgeTestRequesterContext() requestercontext.Context {
 	return requestercontext.Context{
-		Version:        requestercontext.CurrentVersion,
+		Version:        requestercontext.CurrentContextVersion,
 		RequestID:      "wecom-message-1",
 		PolicyRevision: "sha256:test-policy",
 		Principal: requestercontext.Principal{
@@ -210,10 +210,9 @@ func bridgeTestRequesterContext() requestercontext.Context {
 		},
 		Audience: requestercontext.Audience{ChatID: "chat-1", ChatType: "group"},
 		Authorization: requestercontext.Authorization{
-			Capabilities: []string{requestercontext.CapabilityCMRQuery},
-			Scope: requestercontext.Scope{
-				ManageAreaIDs:     []string{"CN18"},
-				CategoryLevel1IDs: []string{"12"},
+			Capabilities: []string{"com.example.reports.read"},
+			Claims: requestercontext.Claims{
+				"com.example.reports": json.RawMessage(`{"tenantIds":["tenant-a"]}`),
 			},
 		},
 	}

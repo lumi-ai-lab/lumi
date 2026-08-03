@@ -333,7 +333,7 @@ func TestHandleDeviceChatQueuesDifferentConversationsOnSameDevice(t *testing.T) 
 func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 	server := newTestAPIServer(t)
 	requester := &requestercontext.Context{
-		Version:        requestercontext.CurrentVersion,
+		Version:        requestercontext.CurrentContextVersion,
 		RequestID:      "wecom-msg-001",
 		PolicyRevision: "sha256:test-policy",
 		Principal: requestercontext.Principal{
@@ -348,14 +348,11 @@ func TestRunWeComChatRoutesSandboxWorkspaceToDeviceTask(t *testing.T) {
 		},
 		Authorization: requestercontext.Authorization{
 			Capabilities: []string{
-				requestercontext.CapabilityCASToken,
-				requestercontext.CapabilityCMRQuery,
-				requestercontext.CapabilityIndicatorsQuery,
-				requestercontext.CapabilitySQLSelect,
+				"com.example.reports.read",
+				"com.example.reports.export",
 			},
-			Scope: requestercontext.Scope{
-				ManageAreaIDs:     []string{"CN18"},
-				CategoryLevel1IDs: []string{"12", "13"},
+			Claims: requestercontext.Claims{
+				"com.example.reports": json.RawMessage(`{"tenantIds":["tenant-a","tenant-b"]}`),
 			},
 		},
 	}

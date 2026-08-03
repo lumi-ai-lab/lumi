@@ -12,7 +12,7 @@ import (
 	"github.com/pengmide/lumi/internal/wecom"
 )
 
-func TestLocalRequesterContextBridgeDirMatchesInjectedAgentEnv(t *testing.T) {
+func TestLocalRequesterContextBridgeUsesProcessNamespaceAndMatchesInjectedAgentEnv(t *testing.T) {
 	lumiHome := filepath.Join(t.TempDir(), "lumi-home")
 	t.Setenv("LUMI_HOME", lumiHome)
 

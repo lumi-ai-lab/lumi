@@ -265,7 +265,7 @@ func TestPrepareRunValidatesAndSavesAbsoluteRequesterConfigPath(t *testing.T) {
 	state.HasAgents = true
 
 	policyPath := filepath.Join(t.TempDir(), "requesters.json")
-	policy := `{"version":1,"botId":"bot-123","users":[{"userId":"u1","displayName":"U1","enabled":true,"capabilities":["qdm.cmr.query"],"scope":{"manageAreaIds":["CN18"],"categoryLevel1Ids":["12"]}}]}`
+	policy := `{"version":2,"users":[{"userId":"u1","displayName":"U1","enabled":true,"authorization":{"capabilities":["com.example.reports.read"],"claims":{"com.example.reports":{"tenantIds":["tenant-a"]}}}}]}`
 	if err := os.WriteFile(policyPath, []byte(policy), 0o600); err != nil {
 		t.Fatalf("WriteFile(policy) error = %v", err)
 	}
@@ -322,7 +322,7 @@ func TestPrepareRunRejectsRequesterConfigBeforeSavingWeComConfig(t *testing.T) {
 	state.HasAgents = true
 
 	policyPath := filepath.Join(t.TempDir(), "requesters.json")
-	if err := os.WriteFile(policyPath, []byte(`{"version":1,"botId":"different-bot","users":[]}`), 0o600); err != nil {
+	if err := os.WriteFile(policyPath, []byte(`{"version":2,"botId":"different-bot","users":[]}`), 0o600); err != nil {
 		t.Fatalf("WriteFile(policy) error = %v", err)
 	}
 	_, _, err = PrepareRun(state, RunOptions{

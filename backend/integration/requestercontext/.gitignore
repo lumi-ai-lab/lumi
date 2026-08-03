@@ -1,0 +1,7 @@
+# Private runtime inputs and generated artifacts for the manual Sandbox E2E run.
+runtime.env
+lumi
+lumi-home/
+logs/
+policy/*.runtime.json
+workspace/requester-context-consumer
