@@ -2,7 +2,9 @@ package api
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/lumipaths"
@@ -12,7 +14,7 @@ import (
 const localRequesterContextDirectoryScope = "agents"
 
 func localRequesterContextBridge(workspaceID, agentID string) (*requestercontext.FileBridge, error) {
-	root := lumipaths.Path("runtime", "requester-context")
+	root := lumipaths.Path("runtime", "requester-context", strconv.Itoa(os.Getpid()))
 	return requestercontext.NewFileBridgeInScope(root, localRequesterContextDirectoryScope, workspaceID, agentID)
 }
 

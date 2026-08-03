@@ -210,6 +210,7 @@ device-executor
 
 - 文件信封版本为 `1`，内部 `requesterContext.version` 为 `2`。
 - 默认 TTL 为 30 分钟。
+- Local 文件位于 `$LUMI_HOME/runtime/requester-context/<pid>/agents/<agent-id>/`。PID namespace 隔离共享同一 `LUMI_HOME` 的 Lumi 进程，也防止新进程读取崩溃进程遗留的授权文件；同一进程内 Agent 跨 Workspace 复用该目录，信封仍记录真实 `workspaceId`。
 - 正常完成、取消和错误路径都会执行清理。
 - 同一 Session 写入新 Context 后，旧 cleanup 不会删除新文件。
 - 消费端必须校验 TTL、Envelope 版本、Context 版本、WorkspaceID、AgentID 和 SessionID。

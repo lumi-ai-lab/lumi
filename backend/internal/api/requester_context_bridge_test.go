@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/pengmide/lumi/internal/config"
@@ -11,7 +12,7 @@ import (
 	"github.com/pengmide/lumi/internal/wecom"
 )
 
-func TestLocalRequesterContextBridgeDirMatchesInjectedAgentEnv(t *testing.T) {
+func TestLocalRequesterContextBridgeUsesProcessNamespaceAndMatchesInjectedAgentEnv(t *testing.T) {
 	lumiHome := filepath.Join(t.TempDir(), "lumi-home")
 	t.Setenv("LUMI_HOME", lumiHome)
 
@@ -37,7 +38,7 @@ func TestLocalRequesterContextBridgeDirMatchesInjectedAgentEnv(t *testing.T) {
 	if got != bridge.Dir() {
 		t.Fatalf("agent %s = %q, bridge.Dir() = %q", requestercontext.EnvRequesterContextDir, got, bridge.Dir())
 	}
-	want := filepath.Join(lumiHome, "runtime", "requester-context", localRequesterContextDirectoryScope, "claude")
+	want := filepath.Join(lumiHome, "runtime", "requester-context", strconv.Itoa(os.Getpid()), localRequesterContextDirectoryScope, "claude")
 	if bridge.Dir() != want {
 		t.Fatalf("bridge.Dir() = %q, want %q", bridge.Dir(), want)
 	}
