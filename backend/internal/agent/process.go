@@ -215,7 +215,10 @@ func (p *Process) Start() error {
 		}
 	}
 
-	configureCommand(cmd)
+	if err := configureCommand(cmd, p.config); err != nil {
+		p.setStatus(StatusError)
+		return err
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

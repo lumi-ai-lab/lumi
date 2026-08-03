@@ -115,6 +115,18 @@ func (c *Config) mergeAgents(existing map[string]any) []map[string]any {
 		if agent.SessionMode != "" {
 			merged["sessionMode"] = agent.SessionMode
 		}
+		delete(merged, "runAsUid")
+		if agent.RunAsUID != nil {
+			merged["runAsUid"] = *agent.RunAsUID
+		}
+		delete(merged, "runAsGid")
+		if agent.RunAsGID != nil {
+			merged["runAsGid"] = *agent.RunAsGID
+		}
+		delete(merged, "supplementaryGids")
+		if len(agent.SupplementaryGIDs) > 0 {
+			merged["supplementaryGids"] = agent.SupplementaryGIDs
+		}
 
 		result = append(result, merged)
 	}

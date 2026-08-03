@@ -253,6 +253,7 @@ func TestNewFileBridgeRejectsInvalidOptions(t *testing.T) {
 		{name: "zero TTL", option: WithTTL(0)},
 		{name: "negative TTL", option: WithTTL(-time.Second)},
 		{name: "nil clock", option: WithClock(nil)},
+		{name: "root reader GID", option: WithReaderGID(0)},
 		{name: "nil option", option: nil},
 	}
 	for _, tt := range tests {

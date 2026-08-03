@@ -354,22 +354,35 @@ func (r *wecomChatRuntime) ensureInitialized(agentID string, workspaceID string,
 		r.agentInitializations = make(map[string]*wecomAgentInitialization)
 	}
 	if r.initialized[agentID] {
+		bindingErr := validateLocalRequesterContextEnv(r.config, workspaceID, agentID)
 		r.mu.Unlock()
+		if bindingErr != nil {
+			return r.emitError(sink, bindingErr.Error())
+		}
 		return nil
 	}
 	if initialization := r.agentInitializations[agentID]; initialization != nil {
+		bindingErr := validateLocalRequesterContextEnv(r.config, workspaceID, agentID)
 		r.mu.Unlock()
+		if bindingErr != nil {
+			return r.emitError(sink, bindingErr.Error())
+		}
 		<-initialization.done
 		if initialization.err != nil {
 			return r.emitError(sink, initialization.err.Error())
 		}
 		return nil
 	}
+	if err := injectLocalRequesterContextEnv(r.config, workspaceID, agentID); err != nil {
+		r.mu.Unlock()
+		return r.emitError(sink, err.Error())
+	}
+	injectLumiAgentEnv(r.config, agentID, lumiAPIBaseForWorkspace(r.config, workspaceID), workspaceID, workspacePath)
 	initialization := &wecomAgentInitialization{done: make(chan struct{})}
 	r.agentInitializations[agentID] = initialization
 	r.mu.Unlock()
 
-	initializeErr := r.initializeAgent(agentID, workspaceID, workspacePath, sink)
+	initializeErr := r.initializeAgent(agentID, sink)
 	r.mu.Lock()
 	initialization.err = initializeErr
 	if initializeErr == nil {
@@ -384,18 +397,13 @@ func (r *wecomChatRuntime) ensureInitialized(agentID string, workspaceID string,
 	return nil
 }
 
-func (r *wecomChatRuntime) initializeAgent(agentID string, workspaceID string, workspacePath string, sink wecom.ChatEventSink) error {
-	if err := injectLocalRequesterContextEnv(r.config, workspaceID, agentID); err != nil {
-		return err
-	}
-
+func (r *wecomChatRuntime) initializeAgent(agentID string, sink wecom.ChatEventSink) error {
 	if err := sink.Emit(wecom.ChatEvent{
 		Name: "status",
 		Data: map[string]string{"message": fmt.Sprintf("Initializing %s...", agentID)},
 	}); err != nil {
 		return err
 	}
-	injectLumiAgentEnv(r.config, agentID, lumiAPIBaseForWorkspace(r.config, workspaceID), workspaceID, workspacePath)
 	if _, err := r.agents.Request(agentID, "initialize", map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{

@@ -347,6 +347,18 @@ func (r *Runner) getOrStartAgent(agentID, workspacePath string) (*agent.Process,
 		if agentCfg == nil {
 			return nil, fmt.Errorf("agent not found: %s", agentID)
 		}
+		settings, err := requestercontext.RuntimeSettingsFromEnv(executorRequesterContextRoot())
+		if err != nil {
+			return nil, err
+		}
+		if settings.Secure() && agentCfg.ID == "pi" {
+			if err := agentCfg.ValidateRunAsIdentity(); err != nil || agentCfg.RunAsUID == nil {
+				return nil, fmt.Errorf("secured pi agent requires a complete non-root run-as identity")
+			}
+			if !agentCfg.HasRunAsGroup(*settings.ReaderGID) {
+				return nil, fmt.Errorf("secured pi agent does not receive requester context reader GID %d", *settings.ReaderGID)
+			}
+		}
 		runtimeEnv := buildLumiRuntimeEnv(r.client.server, r.cfg)
 		bridge, err := r.requesterContextBridge(agentID)
 		if err != nil {

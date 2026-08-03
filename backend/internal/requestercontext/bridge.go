@@ -43,6 +43,9 @@ type FileBridge struct {
 	agentID     string
 	ttl         time.Duration
 	now         func() time.Time
+	dirMode     os.FileMode
+	fileMode    os.FileMode
+	readerGID   *uint32
 }
 
 // FileBridgeOption customizes a FileBridge.
@@ -67,6 +70,21 @@ func WithClock(now func() time.Time) FileBridgeOption {
 			return fmt.Errorf("requester context clock must not be nil")
 		}
 		bridge.now = now
+		return nil
+	}
+}
+
+// WithReaderGID grants one deployment-managed group traversal access to the
+// context directory and read access to context files. The publisher remains
+// the owner; numeric IDs are supplied by deployment configuration.
+func WithReaderGID(gid uint32) FileBridgeOption {
+	return func(bridge *FileBridge) error {
+		if gid == 0 {
+			return fmt.Errorf("requester context reader GID must not be root")
+		}
+		bridge.readerGID = &gid
+		bridge.dirMode = 0o710
+		bridge.fileMode = 0o640
 		return nil
 	}
 }
@@ -103,6 +121,8 @@ func newFileBridge(baseRoot, directoryScope, workspaceID, agentID string, option
 		agentID:     agentID,
 		ttl:         DefaultTTL,
 		now:         time.Now,
+		dirMode:     0o700,
+		fileMode:    0o600,
 	}
 	for _, option := range options {
 		if option == nil {
@@ -170,7 +190,7 @@ func (bridge *FileBridge) Write(sessionID string, requester Context) (string, Cl
 	if err != nil {
 		return "", nil, err
 	}
-	if err := bridge.ensurePrivateDir(); err != nil {
+	if err := bridge.ensureDir(); err != nil {
 		return "", nil, err
 	}
 
@@ -203,9 +223,13 @@ func (bridge *FileBridge) Write(sessionID string, requester Context) (string, Cl
 		}
 	}()
 
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := temporary.Chmod(bridge.fileMode); err != nil {
 		_ = temporary.Close()
 		return "", nil, fmt.Errorf("set requester context temporary file permissions: %w", err)
+	}
+	if err := setFileGroup(temporaryPath, bridge.readerGID); err != nil {
+		_ = temporary.Close()
+		return "", nil, fmt.Errorf("set requester context temporary file group: %w", err)
 	}
 	if _, err := temporary.Write(data); err != nil {
 		_ = temporary.Close()
@@ -218,7 +242,7 @@ func (bridge *FileBridge) Write(sessionID string, requester Context) (string, Cl
 	if err := temporary.Close(); err != nil {
 		return "", nil, fmt.Errorf("close requester context temporary file: %w", err)
 	}
-	writtenInfo, err := publishRequesterContextFile(temporaryPath, path)
+	writtenInfo, err := bridge.publishRequesterContextFile(temporaryPath, path)
 	if err != nil {
 		return "", nil, err
 	}
@@ -249,16 +273,20 @@ func (bridge *FileBridge) Write(sessionID string, requester Context) (string, Cl
 	return path, cleanup, nil
 }
 
-func publishRequesterContextFile(temporaryPath, path string) (os.FileInfo, error) {
+func (bridge *FileBridge) publishRequesterContextFile(temporaryPath, path string) (os.FileInfo, error) {
 	fileBridgePathMu.Lock()
 	defer fileBridgePathMu.Unlock()
 
 	if err := os.Rename(temporaryPath, path); err != nil {
 		return nil, fmt.Errorf("publish requester context file: %w", err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := os.Chmod(path, bridge.fileMode); err != nil {
 		_ = os.Remove(path)
 		return nil, fmt.Errorf("set requester context file permissions: %w", err)
+	}
+	if err := setFileGroup(path, bridge.readerGID); err != nil {
+		_ = os.Remove(path)
+		return nil, fmt.Errorf("set requester context file group: %w", err)
 	}
 	writtenInfo, err := os.Stat(path)
 	if err != nil {
@@ -268,17 +296,35 @@ func publishRequesterContextFile(temporaryPath, path string) (os.FileInfo, error
 	return writtenInfo, nil
 }
 
-func (bridge *FileBridge) ensurePrivateDir() error {
+func (bridge *FileBridge) ensureDir() error {
 	workspaceDir := filepath.Dir(bridge.dir)
-	for _, dir := range []string{workspaceDir, bridge.dir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+	contextRoot := filepath.Dir(workspaceDir)
+	for _, dir := range []string{contextRoot, workspaceDir, bridge.dir} {
+		if err := os.MkdirAll(dir, bridge.dirMode); err != nil {
 			return fmt.Errorf("create requester context directory %q: %w", dir, err)
 		}
-		if err := os.Chmod(dir, 0o700); err != nil {
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return fmt.Errorf("inspect requester context directory %q: %w", dir, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("requester context directory %q must be a real directory", dir)
+		}
+		if err := os.Chmod(dir, bridge.dirMode); err != nil {
 			return fmt.Errorf("set requester context directory permissions %q: %w", dir, err)
+		}
+		if err := setFileGroup(dir, bridge.readerGID); err != nil {
+			return fmt.Errorf("set requester context directory group %q: %w", dir, err)
 		}
 	}
 	return nil
+}
+
+func setFileGroup(path string, gid *uint32) error {
+	if gid == nil {
+		return nil
+	}
+	return os.Chown(path, -1, int(*gid))
 }
 
 func validatePathSegment(label, value string) error {

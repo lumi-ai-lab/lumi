@@ -38,14 +38,17 @@ type WorkspaceConfig struct {
 
 // AgentConfig defines an ACP agent
 type AgentConfig struct {
-	ID             string            `json:"id"`
-	Name           string            `json:"name"`
-	Command        string            `json:"command"`
-	Args           []string          `json:"args,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	Prestart       bool              `json:"prestart,omitempty"`
-	PermissionMode string            `json:"permissionMode,omitempty"`
-	SessionMode    string            `json:"sessionMode,omitempty"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Command           string            `json:"command"`
+	Args              []string          `json:"args,omitempty"`
+	Env               map[string]string `json:"env,omitempty"`
+	Prestart          bool              `json:"prestart,omitempty"`
+	PermissionMode    string            `json:"permissionMode,omitempty"`
+	SessionMode       string            `json:"sessionMode,omitempty"`
+	RunAsUID          *uint32           `json:"runAsUid,omitempty"`
+	RunAsGID          *uint32           `json:"runAsGid,omitempty"`
+	SupplementaryGIDs []uint32          `json:"supplementaryGids,omitempty"`
 }
 
 // RoutingConfig defines routing rules
@@ -315,6 +318,9 @@ func (c *Config) Validate() error {
 		if agent.ID == "" || agent.Command == "" {
 			return errors.New("agent must have id and command")
 		}
+		if err := agent.ValidateRunAsIdentity(); err != nil {
+			return fmt.Errorf("invalid run-as identity for agent %s: %w", agent.ID, err)
+		}
 		if ids[agent.ID] {
 			return fmt.Errorf("duplicate agent id: %s", agent.ID)
 		}
@@ -326,6 +332,50 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// ValidateRunAsIdentity validates the optional operating-system identity used
+// to launch an agent. An absent identity preserves the current-user behavior.
+func (a AgentConfig) ValidateRunAsIdentity() error {
+	if (a.RunAsUID == nil) != (a.RunAsGID == nil) {
+		return errors.New("runAsUid and runAsGid must be configured together")
+	}
+	if a.RunAsUID == nil {
+		if len(a.SupplementaryGIDs) > 0 {
+			return errors.New("supplementaryGids requires runAsUid and runAsGid")
+		}
+		return nil
+	}
+	if *a.RunAsUID == 0 {
+		return errors.New("runAsUid must not be root")
+	}
+	if *a.RunAsGID == 0 {
+		return errors.New("runAsGid must not be root")
+	}
+
+	seen := map[uint32]struct{}{*a.RunAsGID: {}}
+	for _, gid := range a.SupplementaryGIDs {
+		if gid == 0 {
+			return errors.New("supplementaryGids must not contain the root group")
+		}
+		if _, exists := seen[gid]; exists {
+			return fmt.Errorf("supplementaryGids contains duplicate GID %d", gid)
+		}
+		seen[gid] = struct{}{}
+	}
+	return nil
+}
+
+// HasRunAsGroup reports whether the configured child identity receives gid as
+// either its primary or one of its exact supplementary groups.
+func (a AgentConfig) HasRunAsGroup(gid uint32) bool {
+	if a.RunAsGID == nil {
+		return false
+	}
+	if *a.RunAsGID == gid {
+		return true
+	}
+	return slices.Contains(a.SupplementaryGIDs, gid)
 }
 
 // FindAgent returns agent config by ID

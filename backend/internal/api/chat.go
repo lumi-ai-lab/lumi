@@ -435,13 +435,13 @@ func collectFileMentions(message string, router interface{ HasAgent(string) bool
 
 func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 	s.applyPreparedAgentSwitch(ctx.Prepared)
+	if err := injectLocalRequesterContextEnv(s.config, ctx.Prepared.WorkspaceID, ctx.Prepared.AgentID); err != nil {
+		ctx.setError(err)
+		ctx.SendEvent("error", map[string]string{"message": err.Error()})
+		return
+	}
 	if !s.initialized[ctx.Prepared.AgentID] {
 		ctx.SendEvent("status", map[string]string{"message": fmt.Sprintf("Initializing %s...", ctx.Prepared.AgentID)})
-		if err := injectLocalRequesterContextEnv(s.config, ctx.Prepared.WorkspaceID, ctx.Prepared.AgentID); err != nil {
-			ctx.setError(err)
-			ctx.SendEvent("error", map[string]string{"message": err.Error()})
-			return
-		}
 		injectLumiAgentEnv(s.config, ctx.Prepared.AgentID, s.apiBaseForWorkspace(ctx.Prepared.WorkspaceID), ctx.Prepared.WorkspaceID, ctx.Prepared.WorkspacePath)
 		if err := s.initializeAgent(ctx.Prepared.AgentID); err != nil {
 			ctx.setError(err)

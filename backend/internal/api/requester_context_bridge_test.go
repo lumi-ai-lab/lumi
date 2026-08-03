@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/pengmide/lumi/internal/config"
@@ -57,6 +58,73 @@ func TestLocalRequesterContextBridgeIsStableAcrossWorkspaces(t *testing.T) {
 	}
 	if first.Dir() != second.Dir() {
 		t.Fatalf("bridge dirs differ across workspaces: %q != %q", first.Dir(), second.Dir())
+	}
+}
+
+func TestSecureLocalRequesterContextBindsPiToOneWorkspace(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "requester-context")
+	t.Setenv(requestercontext.EnvRequesterContextRoot, root)
+	t.Setenv(requestercontext.EnvRequesterContextReaderGID, "2003")
+	uid := uint32(2001)
+	primaryGID := uint32(2002)
+	cfg := &config.Config{Agents: []config.AgentConfig{{
+		ID:                "pi",
+		RunAsUID:          &uid,
+		RunAsGID:          &primaryGID,
+		SupplementaryGIDs: []uint32{2003},
+	}}}
+
+	if err := injectLocalRequesterContextEnv(cfg, "workspace-a", "pi"); err != nil {
+		t.Fatalf("injectLocalRequesterContextEnv() error = %v", err)
+	}
+	want := filepath.Join(root, "workspace-a", "pi")
+	if got := cfg.FindAgent("pi").Env[requestercontext.EnvRequesterContextDir]; got != want {
+		t.Fatalf("requester context dir = %q, want %q", got, want)
+	}
+	bridge, err := localRequesterContextBridge("workspace-a", "pi")
+	if err != nil {
+		t.Fatalf("localRequesterContextBridge() error = %v", err)
+	}
+	if bridge.Dir() != want {
+		t.Fatalf("bridge.Dir() = %q, want %q", bridge.Dir(), want)
+	}
+	if err := injectLocalRequesterContextEnv(cfg, "workspace-b", "pi"); err == nil {
+		t.Fatal("cross-workspace secured Pi binding was accepted")
+	}
+}
+
+func TestSecureLocalRequesterContextRequiresPiReaderIdentity(t *testing.T) {
+	t.Setenv(requestercontext.EnvRequesterContextRoot, filepath.Join(t.TempDir(), "requester-context"))
+	t.Setenv(requestercontext.EnvRequesterContextReaderGID, "2003")
+	uid := uint32(2001)
+	primaryGID := uint32(2002)
+
+	tests := []config.AgentConfig{
+		{ID: "pi"},
+		{ID: "pi", RunAsUID: &uid, RunAsGID: &primaryGID},
+	}
+	for _, agentCfg := range tests {
+		t.Run(agentCfg.ID+strings.Join(agentCfg.Args, "-"), func(t *testing.T) {
+			cfg := &config.Config{Agents: []config.AgentConfig{agentCfg}}
+			if err := injectLocalRequesterContextEnv(cfg, "workspace-a", agentCfg.ID); err == nil {
+				t.Fatal("injectLocalRequesterContextEnv() error = nil")
+			}
+		})
+	}
+}
+
+func TestSecurePiSettingsPreserveLegacyPathForOtherAgents(t *testing.T) {
+	lumiHome := filepath.Join(t.TempDir(), "lumi-home")
+	t.Setenv("LUMI_HOME", lumiHome)
+	t.Setenv(requestercontext.EnvRequesterContextRoot, filepath.Join(t.TempDir(), "secure-requester-context"))
+	t.Setenv(requestercontext.EnvRequesterContextReaderGID, "2003")
+	cfg := &config.Config{Agents: []config.AgentConfig{{ID: "claude"}}}
+	if err := injectLocalRequesterContextEnv(cfg, "workspace-a", "claude"); err != nil {
+		t.Fatalf("injectLocalRequesterContextEnv() error = %v", err)
+	}
+	want := filepath.Join(lumiHome, "runtime", "requester-context", strconv.Itoa(os.Getpid()), localRequesterContextDirectoryScope, "claude")
+	if got := cfg.FindAgent("claude").Env[requestercontext.EnvRequesterContextDir]; got != want {
+		t.Fatalf("non-Pi requester context dir = %q, want legacy %q", got, want)
 	}
 }
 

@@ -289,7 +289,9 @@ WeCom -> Policy -> Context
 
 - Local Agent 和 Sandbox Agent 接收相同的 Context v2。
 - Sandbox task payload 只携带当前请求的 Context，不携带完整 policy 文件。
-- 文件桥接使用私有目录、原子写入、TTL 和逐 Session 清理。
+- 文件桥接使用原子写入、TTL 和逐 Session 清理。默认兼容模式使用
+  `0700/0600` 私有权限；Linux 安全部署同时配置稳定 root 与 reader GID
+  后，使用 `<root>/<workspace>/<agent>` 和精确的 `0710/0640` 权限。
 - ACP `_meta` 的字段位置不变，只有 RequesterContext 内部 schema 升级为 v2。
 
 ## 8. 消费端安全要求
@@ -311,6 +313,15 @@ RequesterContext 到达 Agent
 ```
 
 Prompt、Skill 文本或 Agent 自律不能代替服务端权限控制。
+
+Linux 安全部署还必须让 Lumi publisher 与 Pi 使用不同 UID，以非 root
+`runAsUid`/`runAsGid` 启动 Pi，并把专用 reader GID 配置为 Pi 的 primary
+或 supplementary group。降权 UID/GID 和 reader GID 均由部署解析，不在
+Lumi 中硬编码。Lumi 会清空 Pi 从 publisher 继承的 supplementary groups，
+并拒绝一个 Pi 进程跨 Workspace 复用。负责启动 Pi 的 Lumi 进程或受控
+launcher 必须具备设置 UID、GID 和 supplementary groups 的系统权限。
+非 Pi Agent 继续使用原有进程私有路径与 `0700/0600`，不进入这条 Harness
+授权链。
 
 ## 9. v1 到 v2 迁移
 

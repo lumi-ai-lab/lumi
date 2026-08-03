@@ -70,6 +70,25 @@ func TestSandboxRequesterContextBridgeDirMatchesAgentEnv(t *testing.T) {
 	}
 }
 
+func TestSecuredExecutorRejectsAgentWithoutReaderIdentity(t *testing.T) {
+	t.Setenv(requestercontext.EnvRequesterContextRoot, filepath.Join(t.TempDir(), "requester-context"))
+	t.Setenv(requestercontext.EnvRequesterContextReaderGID, "2003")
+	cfg := &ExecutorConfig{
+		Workspace:   t.TempDir(),
+		WorkspaceID: "workspace-1",
+		Agents: []config.AgentConfig{{
+			ID:      "pi",
+			Name:    "PI",
+			Command: "unused",
+		}},
+		DefaultAgent: "pi",
+	}
+	runner := NewClient("http://example.test", "token", cfg).runner
+	if _, err := runner.getOrStartAgent("pi", cfg.Workspace); err == nil || !strings.Contains(err.Error(), "run-as identity") {
+		t.Fatalf("getOrStartAgent() error = %v, want run-as identity error", err)
+	}
+}
+
 func TestSandboxPromptPublishesMetaAndSessionFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ACP process uses a POSIX shell")

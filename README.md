@@ -358,6 +358,7 @@ export CLAUDE_CODE_EXECUTABLE=/opt/nodejs/bin/claude
 - 高级用户也可以把 Qwen 改为全局 CLI 启动：`"command": "qwen", "args": ["--acp"]`。若本机缺少 `qwen`，setup 会提示执行 `npm install -g @qwen-code/qwen-code`。
 - PI 通过上游原版 `pi-acp@0.0.33` 接入，并需要本机或远程设备可运行 PI `>=0.80.4`。setup 固定安装 `@earendil-works/pi-coding-agent@0.83.0`；新版 adapter 会在切回已关闭的逻辑 Session 时按需恢复历史，不再需要 Lumi 修改第三方 `dist/index.js`。sandbox 镜像使用 Node 22.22.2，满足当前 PI 的 Node `>=22.19.0` 要求；sandbox 会把宿主 `~/.pi` 复制为可写 runtime 目录并挂载到容器 `/root/.pi`。
 - 当前 `pi-acp` 会接收 ACP `mcpServers` 但不会把它们接入 PI，因此 Lumi MCP SSOT 暂不对 PI 生效；PI skills 会通过 `~/.pi/agent/skills`、`<workspace>/.pi/skills` 生效。
+- Linux 安全部署可为 Pi 配置可选的 `runAsUid`、`runAsGid` 和 `supplementaryGids`。UID/GID 必须由部署解析，`runAsUid`/`runAsGid` 必须成对出现且都不能为 root，Pi UID 还必须不同于 Lumi publisher UID；配置后子进程只获得声明的 supplementary groups。配合成对设置 `LUMI_REQUESTER_CONTEXT_ROOT=/run/lumi/requester-context` 与 `LUMI_REQUESTER_CONTEXT_READER_GID=<专用组 GID>`，RequesterContext 会写入 `<root>/<workspace>/pi`，context root、Workspace 和 Pi 目录及文件分别为 `0710`、`0640`。reader GID 必须出现在 Pi 的 primary 或 supplementary groups 中；安全模式下一个 Pi 进程不能跨 Workspace 复用。启动方需要具备设置 UID/GID/groups 的系统权限；Windows 不支持配置 run-as identity。
 - 如果在 Linux 服务器上使用 `@agentclientprotocol/claude-agent-acp@0.30.0`，并且系统的 `glibc` 版本不足以运行 SDK 自带的 native `claude` binary，需要在启动前设置 `CLAUDE_CODE_EXECUTABLE` 指向系统中可用的 `claude` 可执行文件。
 
 `publicServerURL` 是可选项。配置后，远程设备配对命令会优先使用这个地址；未配置时，系统会自动尝试使用当前服务机器的局域网 IP，而不是默认写成 `localhost`。

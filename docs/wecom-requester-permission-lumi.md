@@ -186,7 +186,19 @@ session/prompt
 LUMI_REQUESTER_CONTEXT_DIR=/private/runtime/path
 ```
 
-文件名由 ACP Session ID 的 SHA-256 生成，文件权限为 `0600`，目录权限为 `0700`，写入使用临时文件和原子 rename。
+文件名由 ACP Session ID 的 SHA-256 生成，写入使用临时文件和原子 rename。默认兼容模式下文件权限为 `0600`、目录权限为 `0700`。
+
+Linux 授权部署必须同时设置：
+
+```bash
+LUMI_REQUESTER_CONTEXT_ROOT=/run/lumi/requester-context
+LUMI_REQUESTER_CONTEXT_READER_GID=<部署解析出的专用组 GID>
+```
+
+两项必须成对出现；只配置一项会 fail closed。启用后目录改为
+`<root>/<workspace>/<agent>`，publisher 保持文件 owner，专用 reader group
+作为 group owner，目录和文件分别严格使用 `0710` 与 `0640`。Lumi 配置中
+的 Pi `runAsGid` 或 `supplementaryGids` 必须包含同一个 reader GID。
 
 ## 8. Sandbox 传递
 
@@ -210,7 +222,9 @@ device-executor
 
 - 文件信封版本为 `1`，内部 `requesterContext.version` 为 `2`。
 - 默认 TTL 为 30 分钟。
-- Local 文件位于 `$LUMI_HOME/runtime/requester-context/<pid>/agents/<agent-id>/`。PID namespace 隔离共享同一 `LUMI_HOME` 的 Lumi 进程，也防止新进程读取崩溃进程遗留的授权文件；同一进程内 Agent 跨 Workspace 复用该目录，信封仍记录真实 `workspaceId`。
+- 默认兼容模式下，Local 文件位于 `$LUMI_HOME/runtime/requester-context/<pid>/agents/<agent-id>/`。PID namespace 隔离共享同一 `LUMI_HOME` 的 Lumi 进程，也防止新进程读取崩溃进程遗留的授权文件；同一进程内 Agent 跨 Workspace 复用该目录，信封仍记录真实 `workspaceId`。
+- Linux 安全部署模式下，Local 与 device-executor 都使用稳定的 `<root>/<workspace>/<agent>`；一个已启动的降权 Pi 只能绑定一个 Workspace，尝试跨 Workspace 复用会被拒绝。
+- 安全部署设置只改变 Pi 的 Harness 授权路径；非 Pi Agent 保持默认兼容模式，不会因此获得 Harness 授权能力。
 - 正常完成、取消和错误路径都会执行清理。
 - 同一 Session 写入新 Context 后，旧 cleanup 不会删除新文件。
 - 消费端必须校验 TTL、Envelope 版本、Context 版本、WorkspaceID、AgentID 和 SessionID。
