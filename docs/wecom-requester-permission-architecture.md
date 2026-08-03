@@ -105,6 +105,110 @@ Policy v2 将身份字段和授权字段分开：
 
 claim object 由 namespace 所属消费端拥有。消费端应在对象内维护自己的 schema 版本，并拒绝缺失、未知版本或不合法的数据。
 
+### 3.3 Schema 所有权与扩展边界
+
+Policy v2 同时包含渠道身份、Lumi 通用授权和领域授权三层信息。三层必须分开演进：
+
+| 层次 | 所有者 | 职责 |
+| --- | --- | --- |
+| 渠道身份层 | 企业微信适配器 | 从回调中识别 Bot、User 和会话，并把 UserID 映射到 Policy 用户 |
+| 通用授权层 | Lumi Core | 定义 `authorization.capabilities` 与 `authorization.claims` 外壳，建立不可变快照并安全传递 |
+| 领域授权层 | namespace 所属业务 | 定义 capability 含义、claim schema、范围求交和最终权限实施 |
+
+字段级归属如下：
+
+| 字段 | 所有者 | 其他业务是否需要修改 |
+| --- | --- | --- |
+| `version` | Lumi 的 WeCom Policy 契约 | 不修改；当前固定为 `2` |
+| `botId` | 企业微信适配器 | 可省略；仅在需要将 Policy 绑定到特定 Bot 时填写 |
+| `users` | 企业微信适配器 | 复用结构并配置本项目用户 |
+| `userId` | 企业微信适配器 | 填写精确的 `body.from.userid` |
+| `displayName` | Policy 维护者 | 仅用于展示和审计，不参与鉴权 |
+| `enabled` | Policy 适配器 | 显式控制用户是否可生成 RequesterContext |
+| `authorization` | Lumi Core | 不修改结构 |
+| `capabilities` 数组 | Lumi Core | 不修改容器结构；数组中的名称和含义由业务定义 |
+| `claims` object | Lumi Core | 不修改容器结构；namespace 和 payload 由业务定义 |
+| `qdm.cmr.query` | QDM | 其他业务替换为自己的 namespaced capability |
+| `qdm.scope` | QDM | 其他业务替换为自己拥有的 claim namespace |
+| `qdm.scope.schemaVersion` 及内部字段 | QDM | 完全替换为自己的 schema，并由自己的消费端校验 |
+
+因此，Lumi 通用协议只约束下面的外壳：
+
+```json
+{
+  "authorization": {
+    "capabilities": ["<domain capability>"],
+    "claims": {
+      "<domain namespace>": {
+        "<domain-owned schema>": "..."
+      }
+    }
+  }
+}
+```
+
+Lumi 会校验 capability 和 namespace 的名称格式、重复项以及 claim 必须为 JSON object，但不会建立 capability 注册表，也不会解释 namespace 内部字段。claim 内的 `schemaVersion` 属于业务协议，与顶层 Policy `version`、RequesterContext `version` 和 File Envelope `version` 均独立。
+
+Policy 文件的身份外壳当前由 WeCom 适配器实现。如果另一个项目仍通过企业微信接入，可以直接复用 `users[].userId` 等外层结构；如果接入其他 IM 渠道，渠道身份 Policy 可以不同，但最终必须映射到相同的 `Principal`、`Audience` 和 `Authorization` 通用 Context。
+
+### 3.4 其他领域接入示例
+
+例如财务领域可以在不修改 Lumi 的情况下定义自己的授权协议：
+
+```json
+{
+  "version": 2,
+  "users": [
+    {
+      "userId": "finance-user-001",
+      "displayName": "财务用户",
+      "enabled": true,
+      "authorization": {
+        "capabilities": [
+          "finance.invoice.read",
+          "finance.invoice.export"
+        ],
+        "claims": {
+          "finance.scope": {
+            "schemaVersion": 1,
+            "legalEntityIds": ["entity-a"],
+            "currencyCodes": ["CNY"]
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+该领域需要自行负责：
+
+1. 定义 `finance.invoice.*` capability 的准确语义。
+2. 拥有 `finance.scope` namespace 及其版本化 schema。
+3. 在消费端严格校验 schema、必填字段和未知字段。
+4. 将实际请求的法人、币种等范围与 claim 求交集。
+5. 在查询代理、服务端 ACL 或数据源侧执行最终授权结果。
+6. 为允许、缺 capability、缺 claim、未知版本和越权范围补充 fail-closed 测试。
+
+Lumi 不需要为新增财务 capability 或 claim 重新发布。
+
+### 3.5 Policy 维护者与消费端关注点
+
+Policy 维护者负责完整用户清单；领域消费端不应读取或获得完整 Policy，只接收当前请求者的 Context：
+
+```text
+完整 Policy
+    |
+    | Lumi 按渠道身份解析当前用户
+    v
+单个 RequesterContext
+    |
+    v
+领域消费端校验自己的 capability 与 claim
+```
+
+领域消费端需要关注 RequesterContext/Envelope 版本和绑定信息、自己要求的 capability、自己拥有的 claim namespace 及其内部 schema。它不需要了解其他用户，也不应解析不属于自己的 namespace。
+
 ## 4. 不可变策略快照
 
 Policy 在 WebSocket 建立前加载：

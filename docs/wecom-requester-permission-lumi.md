@@ -99,6 +99,16 @@ LUMI_WECOM_REQUESTER_CONFIG=/absolute/config/wecom-requesters.json
 - claim object 内部完全 opaque，Lumi 不拒绝其中的领域字段。
 - Policy、用户及 `authorization` 层仍使用严格 JSON 解码并拒绝未知字段。
 
+### Schema 职责边界
+
+- `version`、`users`、`userId` 和可选 `botId` 属于企业微信 Policy 适配层。
+- `authorization.capabilities` 与 `authorization.claims` 的容器结构属于 Lumi 通用授权协议。
+- capability 的具体名称、claim namespace 以及 claim 内部 `schemaVersion` 和字段全部由业务消费端拥有。
+- 下游消费端只接收当前用户的 RequesterContext，不读取完整 Policy 用户清单。
+- 新业务只需定义 namespaced capability、版本化 claim schema 和 fail-closed 消费端，不需要修改 Lumi Core。
+
+完整字段归属表、财务领域示例和跨 IM 渠道边界见 [企业微信提问人授权上下文架构](./wecom-requester-permission-architecture.md)。
+
 ## 4. 加载与生效时机
 
 ```text
