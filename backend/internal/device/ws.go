@@ -15,6 +15,11 @@ func (r *Registry) HandleWebSocket(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if !r.beginLifecycleWork() {
+		http.Error(w, "Device registry is shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	defer r.lifecycleWG.Done()
 
 	conn, err := websocket.Accept(w, req, &websocket.AcceptOptions{
 		OriginPatterns: []string{"*"},

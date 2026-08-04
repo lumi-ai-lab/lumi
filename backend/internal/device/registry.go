@@ -92,6 +92,11 @@ type Registry struct {
 	store  *Store
 	secret string
 
+	lifecycleMu sync.Mutex
+	lifecycleWG sync.WaitGroup
+	closed      bool
+	stopCh      chan struct{}
+
 	mu                 sync.RWMutex
 	taskCond           *sync.Cond
 	onDeviceReset      func(string)
@@ -121,6 +126,7 @@ func NewRegistry(store *Store, secret string) (*Registry, error) {
 	registry := &Registry{
 		store:             store,
 		secret:            secret,
+		stopCh:            make(chan struct{}),
 		devices:           make(map[string]*Device),
 		conns:             make(map[string]*Connection),
 		tasks:             make(map[string]*TaskRun),
@@ -141,7 +147,11 @@ func NewRegistry(store *Store, secret string) (*Registry, error) {
 		return nil, err
 	}
 
-	go registry.monitorHeartbeats()
+	registry.lifecycleWG.Add(1)
+	go func() {
+		defer registry.lifecycleWG.Done()
+		registry.monitorHeartbeats()
+	}()
 	return registry, nil
 }
 
@@ -204,6 +214,10 @@ func (r *Registry) GetDevice(id string) (Device, bool) {
 }
 
 func (r *Registry) RegisterDevice(conn *Connection, payload DeviceRegisterPayload) (Device, error) {
+	if !r.beginLifecycleWork() {
+		return Device{}, errors.New("device registry is closed")
+	}
+	defer r.lifecycleWG.Done()
 	if strings.TrimSpace(payload.DeviceID) == "" {
 		return Device{}, errors.New("deviceId is required")
 	}
@@ -264,8 +278,11 @@ func (r *Registry) RegisterDevice(conn *Connection, payload DeviceRegisterPayloa
 	if notifyReset && resetHook != nil {
 		resetHook(payload.DeviceID)
 	}
-	if registeredHook != nil {
-		go registeredHook(payload.DeviceID)
+	if registeredHook != nil && r.beginLifecycleWork() {
+		go func() {
+			defer r.lifecycleWG.Done()
+			registeredHook(payload.DeviceID)
+		}()
 	}
 	return cloned, nil
 }
@@ -953,7 +970,13 @@ func (r *Registry) monitorHeartbeats() {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case <-ticker.C:
+		}
+
 		now := time.Now().UnixMilli()
 		var stale []string
 
@@ -972,6 +995,49 @@ func (r *Registry) monitorHeartbeats() {
 			r.MarkDisconnected(id, "heartbeat timeout")
 		}
 	}
+}
+
+func (r *Registry) beginLifecycleWork() bool {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	if r.closed {
+		return false
+	}
+	r.lifecycleWG.Add(1)
+	return true
+}
+
+func (r *Registry) isClosed() bool {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	return r.closed
+}
+
+// Shutdown stops background work, closes active connections, and waits until
+// WebSocket handlers and registration hooks can no longer touch the store.
+func (r *Registry) Shutdown() {
+	if r == nil {
+		return
+	}
+
+	r.lifecycleMu.Lock()
+	if !r.closed {
+		r.closed = true
+		close(r.stopCh)
+	}
+	r.lifecycleMu.Unlock()
+
+	r.mu.RLock()
+	connections := make([]*Connection, 0, len(r.conns))
+	for _, conn := range r.conns {
+		connections = append(connections, conn)
+	}
+	r.mu.RUnlock()
+	for _, conn := range connections {
+		conn.Close("device registry shutdown")
+	}
+
+	r.lifecycleWG.Wait()
 }
 
 func (r *Registry) persistLocked() error {

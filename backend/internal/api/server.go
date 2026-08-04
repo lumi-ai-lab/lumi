@@ -329,6 +329,12 @@ func (s *Server) Shutdown() error {
 			}
 			return nil
 		}},
+		{name: "Stopping device registry...", run: func() error {
+			if s.devices != nil {
+				s.devices.Shutdown()
+			}
+			return nil
+		}},
 	}
 
 	fmt.Fprintln(os.Stderr, "\n⏳ Shutdown")

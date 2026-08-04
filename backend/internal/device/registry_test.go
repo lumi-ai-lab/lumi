@@ -18,6 +18,7 @@ func newTestRegistry(t *testing.T) *Registry {
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
 	}
+	t.Cleanup(registry.Shutdown)
 	return registry
 }
 
@@ -86,6 +87,56 @@ func TestNewRegistryMarksPersistedDevicesOffline(t *testing.T) {
 	}
 	if device.Status != StatusOffline {
 		t.Fatalf("device.Status = %q, want %q", device.Status, StatusOffline)
+	}
+}
+
+func TestShutdownWaitsForRegistrationHookAndRejectsNewDevices(t *testing.T) {
+	registry := newTestRegistry(t)
+	hookStarted := make(chan struct{})
+	releaseHook := make(chan struct{})
+	registry.SetDeviceRegisteredHook(func(string) {
+		close(hookStarted)
+		<-releaseHook
+	})
+
+	if _, err := registry.RegisterDevice(newTestConnection(), DeviceRegisterPayload{
+		DeviceID: "dev-1",
+		Name:     "Office Mac",
+	}); err != nil {
+		t.Fatalf("RegisterDevice() error = %v", err)
+	}
+	<-hookStarted
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		registry.Shutdown()
+		close(shutdownDone)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for !registry.isClosed() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !registry.isClosed() {
+		t.Fatal("registry did not enter closed state")
+	}
+	select {
+	case <-shutdownDone:
+		t.Fatal("Shutdown() returned before registration hook completed")
+	default:
+	}
+
+	close(releaseHook)
+	select {
+	case <-shutdownDone:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown() did not return after registration hook completed")
+	}
+
+	if _, err := registry.RegisterDevice(newTestConnection(), DeviceRegisterPayload{
+		DeviceID: "dev-2",
+		Name:     "Office Mac",
+	}); err == nil {
+		t.Fatal("RegisterDevice() after Shutdown() error = nil")
 	}
 }
 
