@@ -30,13 +30,6 @@ func (r *Runner) requesterContextBridge(agentID string) (*requestercontext.FileB
 		workspaceID = strings.TrimSpace(r.cfg.WorkspaceID)
 	}
 	defaultRoot := executorRequesterContextRoot()
-	settings, err := requestercontext.RuntimeSettingsFromEnv(defaultRoot)
-	if err != nil {
-		return nil, err
-	}
-	if settings.Secure() && agentID == "pi" {
-		return requestercontext.NewFileBridge(settings.Root, workspaceID, agentID, settings.BridgeOptions()...)
-	}
 	return requestercontext.NewFileBridge(defaultRoot, workspaceID, agentID)
 }
 

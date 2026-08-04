@@ -15,6 +15,10 @@ const (
 	// EnvRequesterContextDir points agents and hooks at the directory containing
 	// session-scoped requester context files.
 	EnvRequesterContextDir = "LUMI_REQUESTER_CONTEXT_DIR"
+	// Deprecated deployment variables retained only so older callers can clear
+	// them safely. Lumi no longer reads either value.
+	EnvRequesterContextRoot      = "LUMI_REQUESTER_CONTEXT_ROOT"
+	EnvRequesterContextReaderGID = "LUMI_REQUESTER_CONTEXT_READER_GID"
 )
 
 // Context describes the authenticated requester and the authorization snapshot

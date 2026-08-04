@@ -186,19 +186,10 @@ session/prompt
 LUMI_REQUESTER_CONTEXT_DIR=/private/runtime/path
 ```
 
-文件名由 ACP Session ID 的 SHA-256 生成，写入使用临时文件和原子 rename。默认兼容模式下文件权限为 `0600`、目录权限为 `0700`。
-
-Linux 授权部署必须同时设置：
-
-```bash
-LUMI_REQUESTER_CONTEXT_ROOT=/run/lumi/requester-context
-LUMI_REQUESTER_CONTEXT_READER_GID=<部署解析出的专用组 GID>
-```
-
-两项必须成对出现；只配置一项会 fail closed。启用后目录改为
-`<root>/<workspace>/<agent>`，publisher 保持文件 owner，专用 reader group
-作为 group owner，目录和文件分别严格使用 `0710` 与 `0640`。Lumi 配置中
-的 Pi `runAsGid` 或 `supplementaryGids` 必须包含同一个 reader GID。
+文件名由 ACP Session ID 的 SHA-256 生成，写入使用临时文件和原子 rename。
+目录和文件分别使用 `0755` 与 `0644`，无需部署额外的 root、UID/GID、
+reader group 或固定 requester-context 根目录。当前 MVP 信任 Lumi 发布的
+JSON，不把本地文件 owner/mode 当作授权凭据。
 
 ## 8. Sandbox 传递
 

@@ -2,8 +2,6 @@ package docker
 
 import (
 	"context"
-	"fmt"
-	"strconv"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -12,16 +10,17 @@ import (
 )
 
 type ContainerSpec struct {
-	Name                      string
-	Image                     string
-	WorkspacePath             string
-	ConfigHostPath            string
-	RuntimeHostPath           string
-	BackendURL                string
-	Token                     string
-	Labels                    map[string]string
-	ExtraHosts                []string
-	CredentialMounts          []CredentialMount
+	Name             string
+	Image            string
+	WorkspacePath    string
+	ConfigHostPath   string
+	RuntimeHostPath  string
+	BackendURL       string
+	Token            string
+	Labels           map[string]string
+	ExtraHosts       []string
+	CredentialMounts []CredentialMount
+	// Deprecated and ignored. Requester context now uses the ordinary runtime.
 	RequesterContextRoot      string
 	RequesterContextReaderGID *uint32
 }
@@ -105,24 +104,7 @@ func containerEnvironment(spec ContainerSpec) ([]string, error) {
 		"NPM_CONFIG_CACHE=/lumi/runtime/npm-cache",
 		"PATH=/lumi/runtime/npm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}
-	rootSet := spec.RequesterContextRoot != ""
-	gidSet := spec.RequesterContextReaderGID != nil
-	if rootSet != gidSet {
-		return nil, fmt.Errorf("sandbox requester-context root and reader GID must be configured together")
-	}
-	if !rootSet {
-		return env, nil
-	}
-	if spec.RequesterContextRoot != "/lumi/runtime/requester-context" {
-		return nil, fmt.Errorf("sandbox requester-context root must be /lumi/runtime/requester-context")
-	}
-	if *spec.RequesterContextReaderGID == 0 {
-		return nil, fmt.Errorf("sandbox requester-context reader GID must not be root")
-	}
-	return append(env,
-		"LUMI_REQUESTER_CONTEXT_ROOT="+spec.RequesterContextRoot,
-		"LUMI_REQUESTER_CONTEXT_READER_GID="+strconv.FormatUint(uint64(*spec.RequesterContextReaderGID), 10),
-	), nil
+	return env, nil
 }
 
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {

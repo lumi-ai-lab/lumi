@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/pengmide/lumi/internal/fssecure"
 )
 
 const DefaultTTL = 30 * time.Minute
@@ -47,7 +45,6 @@ type FileBridge struct {
 	now         func() time.Time
 	dirMode     os.FileMode
 	fileMode    os.FileMode
-	readerGID   *uint32
 }
 
 // FileBridgeOption customizes a FileBridge.
@@ -72,21 +69,6 @@ func WithClock(now func() time.Time) FileBridgeOption {
 			return fmt.Errorf("requester context clock must not be nil")
 		}
 		bridge.now = now
-		return nil
-	}
-}
-
-// WithReaderGID grants one deployment-managed group traversal access to the
-// context directory and read access to context files. The publisher remains
-// the owner; numeric IDs are supplied by deployment configuration.
-func WithReaderGID(gid uint32) FileBridgeOption {
-	return func(bridge *FileBridge) error {
-		if gid == 0 {
-			return fmt.Errorf("requester context reader GID must not be root")
-		}
-		bridge.readerGID = &gid
-		bridge.dirMode = 0o710
-		bridge.fileMode = 0o640
 		return nil
 	}
 }
@@ -123,8 +105,8 @@ func newFileBridge(baseRoot, directoryScope, workspaceID, agentID string, option
 		agentID:     agentID,
 		ttl:         DefaultTTL,
 		now:         time.Now,
-		dirMode:     0o700,
-		fileMode:    0o600,
+		dirMode:     0o755,
+		fileMode:    0o644,
 	}
 	for _, option := range options {
 		if option == nil {
@@ -229,10 +211,6 @@ func (bridge *FileBridge) Write(sessionID string, requester Context) (string, Cl
 		_ = temporary.Close()
 		return "", nil, fmt.Errorf("set requester context temporary file permissions: %w", err)
 	}
-	if err := setFileGroup(temporaryPath, bridge.readerGID); err != nil {
-		_ = temporary.Close()
-		return "", nil, fmt.Errorf("set requester context temporary file group: %w", err)
-	}
 	if _, err := temporary.Write(data); err != nil {
 		_ = temporary.Close()
 		return "", nil, fmt.Errorf("write requester context temporary file: %w", err)
@@ -286,10 +264,6 @@ func (bridge *FileBridge) publishRequesterContextFile(temporaryPath, path string
 		_ = os.Remove(path)
 		return nil, fmt.Errorf("set requester context file permissions: %w", err)
 	}
-	if err := setFileGroup(path, bridge.readerGID); err != nil {
-		_ = os.Remove(path)
-		return nil, fmt.Errorf("set requester context file group: %w", err)
-	}
 	writtenInfo, err := os.Stat(path)
 	if err != nil {
 		_ = os.Remove(path)
@@ -302,12 +276,6 @@ func (bridge *FileBridge) ensureDir() error {
 	workspaceDir := filepath.Dir(bridge.dir)
 	contextRoot := filepath.Dir(workspaceDir)
 	for _, dir := range []string{contextRoot, workspaceDir, bridge.dir} {
-		if bridge.readerGID != nil {
-			if err := fssecure.EnsureDirectory(dir, bridge.dirMode, bridge.readerGID); err != nil {
-				return fmt.Errorf("prepare requester context directory: %w", err)
-			}
-			continue
-		}
 		if err := os.MkdirAll(dir, bridge.dirMode); err != nil {
 			return fmt.Errorf("create private requester context directory %q: %w", dir, err)
 		}
@@ -323,10 +291,6 @@ func (bridge *FileBridge) ensureDir() error {
 		}
 	}
 	return nil
-}
-
-func setFileGroup(path string, gid *uint32) error {
-	return fssecure.SetGroup(path, gid)
 }
 
 func validatePathSegment(label, value string) error {

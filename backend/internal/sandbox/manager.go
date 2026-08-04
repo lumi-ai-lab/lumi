@@ -310,12 +310,6 @@ func (m *Manager) Warmup(ctx context.Context, opts EnsureOptions) RuntimeState {
 
 func (m *Manager) doEnsure(ctx context.Context, opts EnsureOptions) (RuntimeState, *RuntimeError) {
 	workspace := opts.Workspace
-	requesterContextSettings, settingsErr := resolveRequesterContextContainerSettings(m.config, workspace)
-	if settingsErr != nil {
-		runtimeErr := wrapRuntimeError(CodeUnknown, settingsErr)
-		m.failWorkspace(workspace, runtimeErr, StageStartingContainer)
-		return m.Status(workspace), runtimeErr
-	}
 	target, targetErr := m.resolveBackendTarget(opts.BackendURL)
 	if targetErr != nil {
 		m.failWorkspace(workspace, targetErr, "")
@@ -375,18 +369,16 @@ func (m *Manager) doEnsure(ctx context.Context, opts EnsureOptions) (RuntimeStat
 
 	_ = m.docker.StopRemoveContainer(ctx, record.ContainerName)
 	containerID, err := m.docker.CreateContainer(ctx, sandboxdocker.ContainerSpec{
-		Name:                      record.ContainerName,
-		Image:                     record.Image,
-		WorkspacePath:             record.HostPath,
-		ConfigHostPath:            configPath,
-		RuntimeHostPath:           runtimeHostPath,
-		BackendURL:                target.URL,
-		Token:                     m.devices.Secret(),
-		Labels:                    sandboxdocker.BuildLabels(workspace.ID, record.DeviceID),
-		ExtraHosts:                target.ExtraHosts,
-		CredentialMounts:          credentialMounts,
-		RequesterContextRoot:      requesterContextSettings.Root,
-		RequesterContextReaderGID: requesterContextSettings.ReaderGID,
+		Name:             record.ContainerName,
+		Image:            record.Image,
+		WorkspacePath:    record.HostPath,
+		ConfigHostPath:   configPath,
+		RuntimeHostPath:  runtimeHostPath,
+		BackendURL:       target.URL,
+		Token:            m.devices.Secret(),
+		Labels:           sandboxdocker.BuildLabels(workspace.ID, record.DeviceID),
+		ExtraHosts:       target.ExtraHosts,
+		CredentialMounts: credentialMounts,
 	})
 	if err != nil {
 		runtimeErr := normalizeDockerError(err)

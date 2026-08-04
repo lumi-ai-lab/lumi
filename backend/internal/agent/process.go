@@ -12,7 +12,6 @@ import (
 	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 	"github.com/pengmide/lumi/internal/piacpbridge"
-	"github.com/pengmide/lumi/internal/requestercontext"
 	"github.com/pengmide/lumi/internal/sessioninstruction"
 )
 
@@ -274,11 +273,7 @@ func processCommand(cfg *config.AgentConfig) (string, []string, error) {
 	if cfg.RunAsUID == nil {
 		entrypoint, err = piacpbridge.Materialize()
 	} else {
-		settings, settingsErr := requestercontext.RuntimeSettingsFromEnv("")
-		if settingsErr != nil {
-			return "", nil, settingsErr
-		}
-		root, rootErr := piacpbridge.SharedRoot(settings.Root)
+		root, rootErr := piacpbridge.SharedRoot("")
 		if rootErr != nil {
 			return "", nil, rootErr
 		}

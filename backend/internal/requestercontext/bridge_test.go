@@ -97,15 +97,15 @@ func TestFileBridgeWriteAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Stat(dir) error = %v", err)
 	}
-	if got := dirInfo.Mode().Perm(); got != 0o700 {
-		t.Errorf("directory mode = %o, want 700", got)
+	if got := dirInfo.Mode().Perm(); got != 0o755 {
+		t.Errorf("directory mode = %o, want 755", got)
 	}
 	fileInfo, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("os.Stat(file) error = %v", err)
 	}
-	if got := fileInfo.Mode().Perm(); got != 0o600 {
-		t.Errorf("file mode = %o, want 600", got)
+	if got := fileInfo.Mode().Perm(); got != 0o644 {
+		t.Errorf("file mode = %o, want 644", got)
 	}
 
 	data, err := os.ReadFile(path)
@@ -253,7 +253,6 @@ func TestNewFileBridgeRejectsInvalidOptions(t *testing.T) {
 		{name: "zero TTL", option: WithTTL(0)},
 		{name: "negative TTL", option: WithTTL(-time.Second)},
 		{name: "nil clock", option: WithClock(nil)},
-		{name: "root reader GID", option: WithReaderGID(0)},
 		{name: "nil option", option: nil},
 	}
 	for _, tt := range tests {
@@ -275,7 +274,7 @@ func TestFileBridgeWriteRejectsEmptySession(t *testing.T) {
 	}
 }
 
-func TestPrivateFileBridgePreservesLegacyModeRepair(t *testing.T) {
+func TestFileBridgeUsesReadableDirectoryMode(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Chmod(root, 0o755); err != nil {
 		t.Fatal(err)
@@ -293,8 +292,8 @@ func TestPrivateFileBridgePreservesLegacyModeRepair(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Mode().Perm() != 0o700 {
-		t.Fatalf("legacy private root mode = %o, want 700", after.Mode().Perm())
+	if after.Mode().Perm() != 0o755 {
+		t.Fatalf("requester context root mode = %o, want 755", after.Mode().Perm())
 	}
 }
 

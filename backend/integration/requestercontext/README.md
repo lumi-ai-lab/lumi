@@ -13,7 +13,8 @@ The committed policy is bot-agnostic and uses a placeholder UserID. Render a run
 
 `render-runtime-policy.mjs` renders that private copy from environment variables. `start-sandbox-e2e.sh` reads a private `runtime.env`, keeps credentials out of the repository, and starts a PI-only Sandbox instance.
 
-The committed Sandbox agent fixture runs PI as numeric UID/GID `2001:2002` with requester-context reader group `2003`. The launcher enables the paired host security settings; Sandbox manager maps the host root to `/lumi/runtime/requester-context` while preserving reader GID `2003`.
+The committed Sandbox fixture uses the ordinary `/lumi/runtime/requester-context`
+directory. No deployment UID/GID or reader-group mapping is required.
 
 ## Build
 
@@ -75,7 +76,7 @@ Copy the binary into the sandbox workspace and ask PI to execute it while handli
   --category-level1-id category-demo
 ```
 
-The consumer reads `LUMI_REQUESTER_CONTEXT_DIR` and `LUMI_WORKSPACE_ID` from the PI process environment. The caller must also pass the exact, untrimmed ACP session ID through `--session-id`; the consumer hashes that raw value and opens only the corresponding envelope. It never enumerates the `0710` Agent directory.
+The consumer reads `LUMI_REQUESTER_CONTEXT_DIR` and `LUMI_WORKSPACE_ID` from the PI process environment. The caller must also pass the exact, untrimmed ACP session ID through `--session-id`; the consumer hashes that raw value and opens only the corresponding envelope. It never enumerates the Agent directory.
 
 The selected envelope is validated for:
 

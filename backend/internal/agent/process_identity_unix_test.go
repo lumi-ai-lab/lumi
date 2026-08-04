@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/pengmide/lumi/internal/config"
-	"github.com/pengmide/lumi/internal/requestercontext"
+	"github.com/pengmide/lumi/internal/piacpbridge"
 )
 
 func TestConfigureCommandSetsExactRunAsIdentity(t *testing.T) {
@@ -37,14 +36,10 @@ func TestConfigureCommandSetsExactRunAsIdentity(t *testing.T) {
 }
 
 func TestProcessCommandMaterializesSharedBridgeForRunAsPI(t *testing.T) {
-	parent := t.TempDir()
-	requesterRoot := filepath.Join(parent, "requester-context")
 	readerGID := uint32(os.Getgid())
 	if readerGID == 0 {
 		readerGID = 62202
 	}
-	t.Setenv(requestercontext.EnvRequesterContextRoot, requesterRoot)
-	t.Setenv(requestercontext.EnvRequesterContextReaderGID, fmt.Sprint(readerGID))
 	uid := distinctProcessTestUID()
 	cfg := &config.AgentConfig{
 		ID:       "pi",
@@ -60,7 +55,10 @@ func TestProcessCommandMaterializesSharedBridgeForRunAsPI(t *testing.T) {
 	if command != "node" || len(args) != 1 {
 		t.Fatalf("processCommand() = %q %#v", command, args)
 	}
-	wantRoot := filepath.Join(parent, "pi-acp-bridge")
+	wantRoot, err := piacpbridge.SharedRoot("")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.HasPrefix(args[0], wantRoot+string(filepath.Separator)) {
 		t.Fatalf("shared bridge path = %q, want beneath %q", args[0], wantRoot)
 	}
