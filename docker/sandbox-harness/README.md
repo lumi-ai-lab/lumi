@@ -97,6 +97,19 @@ grep -A6 '^authz:' /workspace/config/harness-config.yaml
 # 期望 allow_local_blob: false
 ```
 
+## Host auth 链路冒烟（本机 Docker，不连服务器）
+
+验证 pi-acp / pi-coding-agent 补丁锚点、harness 在 `host _auth` 下注入 `--auth-blob`、
+未绑定时 **block**（而不是让 CLI 报 `--auth-blob is required`）、以及信封 sessionId 敏感性：
+
+```bash
+./docker/sandbox-harness/smoke-host-auth.sh
+# 或: IMAGE_TAG=lumi-harness-auth:latest ./docker/sandbox-harness/smoke-host-auth.sh
+```
+
+成功时应打印 `SMOKE PASS`，且 **RPC / AG / SESSION / PI** 计数均 ≥ 1。
+生产排障时勿只看 `AG`/`EV`：若 **RPC=0**，`command.hostAuth` 不会进入 `session.prompt`，扩展永远收不到 `_auth`。
+
 ## 安全
 
 - 构建用 token 仅 BuildKit secret，不进镜像层  

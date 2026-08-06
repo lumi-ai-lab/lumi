@@ -75,9 +75,11 @@ func installSetupDependencies(status setupcheck.SetupStatus) error {
 	}
 
 	signature := setupSignature(status)
+	// Bootstrap short-circuit must still re-ensure hostAuth patches: an older deploy
+	// could leave marker+runner only (RPC missing) while status.Ready stays true.
 	if status.Ready && bootstrapManifestReady(signature) {
 		fmt.Println("Device setup dependencies already installed.")
-		return nil
+		return ensureHostAuthPatches(status, false /* installIfMissing */)
 	}
 
 	seen := map[string]struct{}{}
@@ -99,57 +101,103 @@ func installSetupDependencies(status setupcheck.SetupStatus) error {
 		}
 	}
 
-	opts := acppatch.RuntimeOptions{Log: func(message string) {
-		fmt.Printf("  %s\n", message)
-	}}
+	if err := ensureHostAuthPatches(status, true /* installIfMissing */); err != nil {
+		return err
+	}
+
 	for _, item := range status.ACPPackages {
-		if item.Package == "" {
+		if item.Package == "" || item.Status == "ready" {
 			continue
+		}
+		if acppatch.IsTargetPiACP(item.Package) {
+			continue // handled by ensureHostAuthPatches
 		}
 		if _, ok := seen[item.Package]; ok {
 			continue
 		}
 		seen[item.Package] = struct{}{}
-		if acppatch.IsTargetPiACP(item.Package) {
-			// Always ensure hostAuth patches even when package already reports ready.
-			fmt.Printf("Ensuring ACP dependency: %s (package: %s)\n", firstNonEmpty(item.Name, item.Package), item.Package)
-			if item.Status != "ready" {
-				if _, err := acppatch.InstallAndPatch(opts); err != nil {
-					return err
-				}
-			} else if _, err := acppatch.EnsurePiACPPatched(opts); err != nil {
-				// Re-apply if marker/dist drifted.
-				if _, err2 := acppatch.InstallAndPatch(opts); err2 != nil {
-					return err2
-				}
-			}
-			// Companion pin: pi-coding-agent must surface hostAuth on context events.
-			if _, err := acppatch.EnsurePiCodingAgentHostAuthPatched(opts); err != nil {
-				if installErr := npmInstallGlobal(acppatch.PiCodingAgentPackageSpec); installErr != nil {
-					return fmt.Errorf("pi-acp patched but pi-coding-agent hostAuth patch failed: %v (install: %v)", err, installErr)
-				}
-				if _, err2 := acppatch.EnsurePiCodingAgentHostAuthPatched(opts); err2 != nil {
-					return err2
-				}
-			}
-			continue
-		}
-		if item.Status == "ready" {
-			continue
-		}
 		fmt.Printf("Installing ACP dependency: %s (package: %s)\n", firstNonEmpty(item.Name, item.Package), item.Package)
 		if err := npmInstallGlobal(item.Package); err != nil {
 			return err
 		}
 	}
 
-	if status.Ready {
-		return writeBootstrapManifest(signature)
+	return writeBootstrapManifest(signature)
+}
+
+// ensureHostAuthPatches applies pi-acp + pi-coding-agent hostAuth patches.
+// installIfMissing allows npm install when packages are absent; otherwise only
+// in-process/file patches are applied on already-installed packages.
+func ensureHostAuthPatches(status setupcheck.SetupStatus, installIfMissing bool) error {
+	opts := acppatch.RuntimeOptions{Log: func(message string) {
+		fmt.Printf("  %s\n", message)
+	}}
+
+	needPiStack := false
+	piACPReady := false
+	for _, item := range status.ACPPackages {
+		if acppatch.IsTargetPiACP(item.Package) || isPiACPAgentItem(item) {
+			needPiStack = true
+			if item.Status == "ready" {
+				piACPReady = true
+			}
+		}
 	}
-	if err := writeBootstrapManifest(signature); err != nil {
-		return err
+	if !needPiStack {
+		for _, item := range status.Agents {
+			if isPiACPAgentItem(item) {
+				needPiStack = true
+				if item.Status == "ready" {
+					piACPReady = true
+				}
+				break
+			}
+		}
+	}
+	if !needPiStack {
+		return nil
+	}
+
+	fmt.Println("Ensuring hostAuth patches (pi-acp + pi-coding-agent)…")
+	if installIfMissing && !piACPReady {
+		if _, err := acppatch.InstallAndPatch(opts); err != nil {
+			return err
+		}
+	} else if _, err := acppatch.EnsurePiACPPatched(opts); err != nil {
+		if installIfMissing {
+			if _, err2 := acppatch.InstallAndPatch(opts); err2 != nil {
+				return fmt.Errorf("ensure pi-acp hostAuth patch: %v (install: %v)", err, err2)
+			}
+		} else {
+			return fmt.Errorf("ensure pi-acp hostAuth patch: %w", err)
+		}
+	}
+
+	if _, err := acppatch.EnsurePiCodingAgentHostAuthPatched(opts); err != nil {
+		if !installIfMissing {
+			return fmt.Errorf("ensure pi-coding-agent hostAuth patch: %w", err)
+		}
+		if installErr := npmInstallGlobal(acppatch.PiCodingAgentPackageSpec); installErr != nil {
+			return fmt.Errorf("pi-acp patched but pi-coding-agent hostAuth patch failed: %v (install: %v)", err, installErr)
+		}
+		if _, err2 := acppatch.EnsurePiCodingAgentHostAuthPatched(opts); err2 != nil {
+			return err2
+		}
 	}
 	return nil
+}
+
+func isPiACPAgentItem(item setupcheck.DependencyItem) bool {
+	cmd := strings.ToLower(strings.TrimSpace(item.Command))
+	pkg := strings.ToLower(strings.TrimSpace(item.Package))
+	name := strings.ToLower(strings.TrimSpace(item.Name))
+	if strings.Contains(cmd, "pi-acp") || cmd == "pi" {
+		return true
+	}
+	if strings.Contains(pkg, "pi-acp") {
+		return true
+	}
+	return name == "pi" || strings.Contains(name, "pi-acp")
 }
 
 func environmentReady(items []setupcheck.DependencyItem) bool {

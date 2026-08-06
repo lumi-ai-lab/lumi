@@ -121,28 +121,25 @@ func runSetupCommand(args []string) error {
 
 	status := runSetupCheck(cfg)
 	printSetupStatus(status)
-	if status.Ready {
+
+	// Always run install path when --install, even if status.Ready: hostAuth patches
+	// must be re-ensured (bootstrap/ready used to skip them entirely).
+	if opts.Install {
+		if err := installSetupDependencies(status); err != nil {
+			return err
+		}
 		fmt.Println()
-		fmt.Println("Device setup is ready.")
-		return nil
+		fmt.Println("Rechecking setup...")
+		status = runSetupCheck(cfg)
+		printSetupStatus(status)
 	}
 
-	if !opts.Install {
-		fmt.Println()
-		fmt.Println("Device setup is not ready. Run with --install to install npm-based dependencies.")
-		return errors.New("device setup is not ready")
-	}
-
-	if err := installSetupDependencies(status); err != nil {
-		return err
-	}
-
-	fmt.Println()
-	fmt.Println("Rechecking setup...")
-	status = runSetupCheck(cfg)
-	printSetupStatus(status)
 	if !status.Ready {
-		return errors.New("device setup is still not ready")
+		if !opts.Install {
+			fmt.Println()
+			fmt.Println("Device setup is not ready. Run with --install to install npm-based dependencies.")
+		}
+		return errors.New("device setup is not ready")
 	}
 
 	fmt.Println()

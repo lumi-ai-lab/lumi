@@ -154,7 +154,7 @@ func EnsurePiCodingAgentHostAuthPatched(opts RuntimeOptions) (PatchStatus, error
 	}
 	if agentMarkerExists(pkgDir) && agentLooksPatched(pkgDir) {
 		status.Applied = true
-		status.Message = "Installed with Lumi patch: " + PiCodingAgentHostAuthID
+		status.Message = "Installed with Lumi patch: " + PiCodingAgentHostAuthID + " (rpc+session+runner)"
 		return status, nil
 	}
 
@@ -200,7 +200,7 @@ func EnsurePiCodingAgentHostAuthPatched(opts RuntimeOptions) (PatchStatus, error
 	}
 
 	if !agentLooksPatched(pkgDir) {
-		err := fmt.Errorf("pi-coding-agent@%s patches applied but hostAuth markers not found", PiCodingAgentVersion)
+		err := fmt.Errorf("pi-coding-agent@%s patches applied but hostAuth markers not found (need rpc+session+runner)", PiCodingAgentVersion)
 		status.Message = err.Error()
 		return status, err
 	}
@@ -209,7 +209,8 @@ func EnsurePiCodingAgentHostAuthPatched(opts RuntimeOptions) (PatchStatus, error
 		return status, err
 	}
 	status.Applied = true
-	status.Message = "Installed with Lumi patch: " + PiCodingAgentHostAuthID
+	status.Message = "Installed with Lumi patch: " + PiCodingAgentHostAuthID + " (rpc+session+runner)"
+	logf(opts, status.Message)
 	return status, nil
 }
 
@@ -228,13 +229,39 @@ func validatePiCodingAgentPackage(pkgDir string) error {
 	return nil
 }
 
+// agentLooksPatched requires ALL three hostAuth touchpoints.
+// Checking only runner.js was a footgun: a marker + runner patch could short-circuit
+// setup while rpc-mode.js still dropped command.hostAuth, so context never saw _auth
+// and metric-cli ran without inject (CLI: "--auth-blob is required").
 func agentLooksPatched(pkgDir string) bool {
-	runner, err := os.ReadFile(filepath.Join(pkgDir, "dist", "core", "extensions", "runner.js"))
-	if err != nil {
-		return false
+	checks := []struct {
+		rel string
+		ok  func(string) bool
+	}{
+		{
+			rel: "dist/modes/rpc/rpc-mode.js",
+			ok:  func(s string) bool { return strings.Contains(s, "hostAuth: command.hostAuth") },
+		},
+		{
+			rel: "dist/core/agent-session.js",
+			ok:  func(s string) bool { return strings.Contains(s, "setTurnHostAuth(options.hostAuth)") },
+		},
+		{
+			rel: "dist/core/extensions/runner.js",
+			ok: func(s string) bool {
+				return strings.Contains(s, "setTurnHostAuth") &&
+					strings.Contains(s, "_turnHostAuth") &&
+					strings.Contains(s, "event._auth")
+			},
+		},
 	}
-	s := string(runner)
-	return strings.Contains(s, "setTurnHostAuth") && strings.Contains(s, "_turnHostAuth") && strings.Contains(s, "event._auth")
+	for _, c := range checks {
+		data, err := os.ReadFile(filepath.Join(pkgDir, c.rel))
+		if err != nil || !c.ok(string(data)) {
+			return false
+		}
+	}
+	return true
 }
 
 func agentMarkerExists(pkgDir string) bool {
