@@ -99,10 +99,10 @@ func installSetupDependencies(status setupcheck.SetupStatus) error {
 		}
 	}
 
+	opts := acppatch.RuntimeOptions{Log: func(message string) {
+		fmt.Printf("  %s\n", message)
+	}}
 	for _, item := range status.ACPPackages {
-		if item.Status == "ready" {
-			continue
-		}
 		if item.Package == "" {
 			continue
 		}
@@ -110,17 +110,21 @@ func installSetupDependencies(status setupcheck.SetupStatus) error {
 			continue
 		}
 		seen[item.Package] = struct{}{}
-		fmt.Printf("Installing ACP dependency: %s (package: %s)\n", firstNonEmpty(item.Name, item.Package), item.Package)
 		if acppatch.IsTargetPiACP(item.Package) {
-			opts := acppatch.RuntimeOptions{Log: func(message string) {
-				fmt.Printf("  %s\n", message)
-			}}
-			if _, err := acppatch.InstallAndPatch(opts); err != nil {
-				return err
+			// Always ensure hostAuth patches even when package already reports ready.
+			fmt.Printf("Ensuring ACP dependency: %s (package: %s)\n", firstNonEmpty(item.Name, item.Package), item.Package)
+			if item.Status != "ready" {
+				if _, err := acppatch.InstallAndPatch(opts); err != nil {
+					return err
+				}
+			} else if _, err := acppatch.EnsurePiACPPatched(opts); err != nil {
+				// Re-apply if marker/dist drifted.
+				if _, err2 := acppatch.InstallAndPatch(opts); err2 != nil {
+					return err2
+				}
 			}
 			// Companion pin: pi-coding-agent must surface hostAuth on context events.
 			if _, err := acppatch.EnsurePiCodingAgentHostAuthPatched(opts); err != nil {
-				// Agent may not be installed yet in this prefix; try global install then patch.
 				if installErr := npmInstallGlobal(acppatch.PiCodingAgentPackageSpec); installErr != nil {
 					return fmt.Errorf("pi-acp patched but pi-coding-agent hostAuth patch failed: %v (install: %v)", err, installErr)
 				}
@@ -130,6 +134,10 @@ func installSetupDependencies(status setupcheck.SetupStatus) error {
 			}
 			continue
 		}
+		if item.Status == "ready" {
+			continue
+		}
+		fmt.Printf("Installing ACP dependency: %s (package: %s)\n", firstNonEmpty(item.Name, item.Package), item.Package)
 		if err := npmInstallGlobal(item.Package); err != nil {
 			return err
 		}
