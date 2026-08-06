@@ -9,7 +9,7 @@ import (
 )
 
 // ResolveManagedConfig rewrites agent commands that Lumi manages internally.
-// It currently only targets pi-acp@0.0.27, preserving non-package npx args.
+// It currently only targets pi-acp@0.0.33, preserving non-package npx args.
 func ResolveManagedConfig(agentCfg *config.AgentConfig) (*config.AgentConfig, error) {
 	if agentCfg == nil {
 		return nil, nil

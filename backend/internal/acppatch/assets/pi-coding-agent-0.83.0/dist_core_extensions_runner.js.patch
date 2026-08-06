@@ -1,0 +1,37 @@
+--- a/dist/core/extensions/runner.js
++++ b/dist/core/extensions/runner.js
+@@ -741,6 +741,21 @@
+         }
+         return undefined;
+     }
++    setTurnHostAuth(hostAuth) {
++        if (hostAuth && typeof hostAuth._auth === "string" && hostAuth._auth.startsWith("qdm1enc.") &&
++            typeof hostAuth._auth_user_id === "string" && hostAuth._auth_user_id.trim()) {
++            this._turnHostAuth = {
++                _auth: hostAuth._auth,
++                _auth_user_id: String(hostAuth._auth_user_id).trim(),
++            };
++        }
++        else {
++            this._turnHostAuth = undefined;
++        }
++    }
++    clearTurnHostAuth() {
++        this._turnHostAuth = undefined;
++    }
+     async emitContext(messages) {
+         const ctx = this.createContext();
+         let currentMessages = structuredClone(messages);
+\ No newline at end of file
+@@ -751,6 +766,10 @@
+             for (const handler of handlers) {
+                 try {
+                     const event = { type: "context", messages: currentMessages };
++                    if (this._turnHostAuth) {
++                        event._auth = this._turnHostAuth._auth;
++                        event._auth_user_id = this._turnHostAuth._auth_user_id;
++                    }
+                     const handlerResult = await handler(event, ctx);
+                     if (handlerResult && handlerResult.messages) {
+                         currentMessages = handlerResult.messages;
+\ No newline at end of file

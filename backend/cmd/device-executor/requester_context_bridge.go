@@ -23,6 +23,18 @@ func executorRequesterContextRoot() string {
 	return filepath.Join(os.TempDir(), "lumi-requester-context", strconv.Itoa(os.Getpid()))
 }
 
+// requesterContextFileEnabled is opt-in. Host auth should travel on ACP `_meta`
+// (see Lumi patches for pi-acp@0.0.33 + pi-coding-agent@0.83.0), not Agent-readable files.
+func requesterContextFileEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("LUMI_REQUESTER_CONTEXT_FILE"))
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func (r *Runner) requesterContextBridge(agentID string) (*requestercontext.FileBridge, error) {
 	workspaceID := defaultWorkspace
 	if r != nil && r.cfg != nil && strings.TrimSpace(r.cfg.WorkspaceID) != "" {
@@ -41,21 +53,30 @@ func (r *Runner) promptWithHostAuth(proc *agent.Process, sessionID string, paylo
 	if payload.HostAuth == nil {
 		return proc.Request("session/prompt", params)
 	}
+	// Primary path: ACP prompt `_meta` (pi-acp hostAuth patch → PI context → harness bind).
 	params["_meta"] = requestercontext.PromptMeta(*payload.HostAuth, payload.RequesterContext)
 
-	bridge, err := r.requesterContextBridge(payload.AgentID)
-	if err != nil {
-		return nil, err
-	}
-	_, cleanup, err := bridge.Write(sessionID, *payload.HostAuth, payload.RequesterContext)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if cleanupErr := cleanup(); cleanupErr != nil {
-			log.Printf("failed to clean requester context file: %v", cleanupErr)
+	// Optional file envelope (legacy / non-PI). Default OFF so Agent-readable disks
+	// do not hold reusable qdm1enc material. Set LUMI_REQUESTER_CONTEXT_FILE=1 to enable.
+	var cleanup func() error
+	if requesterContextFileEnabled() {
+		bridge, err := r.requesterContextBridge(payload.AgentID)
+		if err != nil {
+			return nil, err
 		}
-	}()
+		_, cleanup, err = bridge.Write(sessionID, *payload.HostAuth, payload.RequesterContext)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if cleanup == nil {
+				return
+			}
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				log.Printf("failed to clean requester context file: %v", cleanupErr)
+			}
+		}()
+	}
 	response, err := proc.Request("session/prompt", params)
 	if err != nil {
 		return nil, fmt.Errorf("request agent prompt: %w", err)

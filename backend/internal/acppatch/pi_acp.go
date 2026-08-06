@@ -1,6 +1,9 @@
 package acppatch
 
 import (
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,14 +17,22 @@ import (
 	"github.com/pengmide/lumi/internal/lumipaths"
 )
 
+// Pin matches production sandbox / Dockerfile (pi-acp@0.0.33).
 const (
-	PiACPPackage        = "pi-acp"
-	PiACPVersion        = "0.0.27"
-	PiACPPackageSpec    = PiACPPackage + "@" + PiACPVersion
-	PiACPMultiSessionID = "pi-acp-0.0.27-multi-session"
+	PiACPPackage     = "pi-acp"
+	PiACPVersion     = "0.0.33"
+	PiACPPackageSpec = PiACPPackage + "@" + PiACPVersion
+	// Host-auth + multi-session combined patch for 0.0.33.
+	PiACPHostAuthPatchID = "pi-acp-0.0.33-host-auth"
 )
 
 const piACPSourceFile = "dist/index.js"
+
+// Official npm pi-acp@0.0.33 dist/index.js sha256 (see patches/acp/pi-acp/0.0.33/).
+const piACP0033OriginalDistSHA256 = "24ff73fda6e3c76ddce2d359a79f5c4b8f292eb290e4d2ab85aac94676b2c2dc"
+
+//go:embed assets/pi-acp-0.0.33-dist-index.js
+var piACP0033PatchedDist []byte
 
 type RuntimeOptions struct {
 	Prefix   string
@@ -48,21 +59,6 @@ type markerJSON struct {
 	Version   string `json:"version"`
 	AppliedAt string `json:"appliedAt"`
 }
-
-const helperOld = `var pkg = readNearestPackageJson(import.meta.url);
-var PiAcpAgent = class {`
-
-const helperNew = `var pkg = readNearestPackageJson(import.meta.url);
-function shouldUseSingleLiveSession() {
-  return process.env.PI_ACP_SINGLE_LIVE_SESSION === "true";
-}
-var PiAcpAgent = class {`
-
-const closeAllOld = `this.sessions.closeAllExcept?.(session.sessionId);`
-
-const closeAllNew = `if (shouldUseSingleLiveSession()) {
-      this.sessions.closeAllExcept?.(session.sessionId);
-    }`
 
 func IsTargetPiACP(packageSpec string) bool {
 	return strings.TrimSpace(packageSpec) == PiACPPackageSpec
@@ -106,7 +102,7 @@ func ExecutablePath(prefix string) string {
 }
 
 func Status(opts RuntimeOptions) PatchStatus {
-	status := PatchStatus{Package: PiACPPackage, Version: PiACPVersion, PatchID: PiACPMultiSessionID}
+	status := PatchStatus{Package: PiACPPackage, Version: PiACPVersion, PatchID: PiACPHostAuthPatchID}
 	pkgDir := PackageDir(opts.Prefix)
 	if _, err := os.Stat(filepath.Join(pkgDir, "package.json")); err != nil {
 		status.Message = "Not installed"
@@ -127,7 +123,7 @@ func Status(opts RuntimeOptions) PatchStatus {
 	}
 	status.Applied = applied
 	if applied {
-		status.Message = "Installed with Lumi patch: " + PiACPMultiSessionID
+		status.Message = "Installed with Lumi patch: " + PiACPHostAuthPatchID
 	} else {
 		status.Message = "Installed but Lumi patch is not applied"
 	}
@@ -135,7 +131,7 @@ func Status(opts RuntimeOptions) PatchStatus {
 }
 
 func EnsurePiACPPatched(opts RuntimeOptions) (PatchStatus, error) {
-	status := PatchStatus{Package: PiACPPackage, Version: PiACPVersion, PatchID: PiACPMultiSessionID}
+	status := PatchStatus{Package: PiACPPackage, Version: PiACPVersion, PatchID: PiACPHostAuthPatchID}
 	pkgDir := PackageDir(opts.Prefix)
 	if err := validatePackage(pkgDir); err != nil {
 		status.Message = err.Error()
@@ -150,7 +146,7 @@ func EnsurePiACPPatched(opts RuntimeOptions) (PatchStatus, error) {
 		return status, err
 	}
 	status.Applied = true
-	status.Message = "Installed with Lumi patch: " + PiACPMultiSessionID
+	status.Message = "Installed with Lumi patch: " + PiACPHostAuthPatchID
 	return status, nil
 }
 
@@ -160,7 +156,7 @@ func InstallAndPatch(opts RuntimeOptions) (PatchStatus, error) {
 		prefix = RuntimePrefix()
 	}
 	if prefix == "" {
-		return PatchStatus{Package: PiACPPackage, Version: PiACPVersion, PatchID: PiACPMultiSessionID}, errors.New("failed to resolve Lumi npm runtime prefix")
+		return PatchStatus{Package: PiACPPackage, Version: PiACPVersion, PatchID: PiACPHostAuthPatchID}, errors.New("failed to resolve Lumi npm runtime prefix")
 	}
 	registry := strings.TrimSpace(opts.Registry)
 	args := []string{"install", "-g", "--prefix", prefix}
@@ -181,9 +177,9 @@ func InstallAndPatch(opts RuntimeOptions) (PatchStatus, error) {
 	}
 	if err != nil {
 		if outputStr != "" {
-			return PatchStatus{Package: PiACPPackage, Version: PiACPVersion, PatchID: PiACPMultiSessionID}, fmt.Errorf("failed to install %s: %s", PiACPPackageSpec, outputStr)
+			return PatchStatus{Package: PiACPPackage, Version: PiACPVersion, PatchID: PiACPHostAuthPatchID}, fmt.Errorf("failed to install %s: %s", PiACPPackageSpec, outputStr)
 		}
-		return PatchStatus{Package: PiACPPackage, Version: PiACPVersion, PatchID: PiACPMultiSessionID}, fmt.Errorf("failed to install %s: %w", PiACPPackageSpec, err)
+		return PatchStatus{Package: PiACPPackage, Version: PiACPVersion, PatchID: PiACPHostAuthPatchID}, fmt.Errorf("failed to install %s: %w", PiACPPackageSpec, err)
 	}
 	return EnsurePiACPPatched(RuntimeOptions{Prefix: prefix, Registry: opts.Registry, Log: opts.Log})
 }
@@ -221,7 +217,7 @@ func validatePackage(pkgDir string) error {
 		return fmt.Errorf("failed to read pi-acp package metadata: %w", err)
 	}
 	if pkg.Name != PiACPPackage || pkg.Version != PiACPVersion {
-		return fmt.Errorf("Lumi PI ACP patch only supports pi-acp@0.0.27, got %s@%s", pkg.Name, pkg.Version)
+		return fmt.Errorf("Lumi PI ACP patch only supports pi-acp@%s, got %s@%s", PiACPVersion, pkg.Name, pkg.Version)
 	}
 	return nil
 }
@@ -232,25 +228,22 @@ func applyPatch(pkgDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read pi-acp source: %w", err)
 	}
-	source := string(data)
-	hasNew := strings.Contains(source, helperNew) && strings.Count(source, closeAllNew) == 2
-	hasOld := strings.Contains(source, helperOld) && strings.Count(source, closeAllOld) == 2
-	switch {
-	case hasNew:
+	if isHostAuthPatchedContent(data) {
 		return writeMarker(pkgDir)
-	case hasOld:
-		source = strings.Replace(source, helperOld, helperNew, 1)
-		source = strings.ReplaceAll(source, closeAllOld, closeAllNew)
-		if strings.Count(source, closeAllNew) != 2 || strings.Count(source, helperNew) != 1 {
-			return errors.New("pi-acp@0.0.27 source does not match Lumi patch expectations")
-		}
-		if err := os.WriteFile(target, []byte(source), 0644); err != nil {
-			return fmt.Errorf("failed to write patched pi-acp source: %w", err)
-		}
-		return writeMarker(pkgDir)
-	default:
-		return errors.New("pi-acp@0.0.27 source does not match Lumi patch expectations")
 	}
+	// Only replace known official 0.0.33 dist (or re-apply over already different with marker missing).
+	sum := sha256.Sum256(data)
+	got := hex.EncodeToString(sum[:])
+	if got != piACP0033OriginalDistSHA256 && !bytesContainsHostAuth(data) {
+		return fmt.Errorf("pi-acp@%s dist/index.js sha256 %s does not match expected official %s", PiACPVersion, got, piACP0033OriginalDistSHA256)
+	}
+	if len(piACP0033PatchedDist) == 0 {
+		return errors.New("embedded pi-acp 0.0.33 patched dist is empty")
+	}
+	if err := os.WriteFile(target, piACP0033PatchedDist, 0644); err != nil {
+		return fmt.Errorf("failed to write patched pi-acp source: %w", err)
+	}
+	return writeMarker(pkgDir)
 }
 
 func isPatched(pkgDir string) (bool, error) {
@@ -258,14 +251,24 @@ func isPatched(pkgDir string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to read pi-acp source: %w", err)
 	}
-	source := string(data)
-	if strings.Contains(source, helperNew) && strings.Count(source, closeAllNew) == 2 {
+	if isHostAuthPatchedContent(data) {
 		return true, nil
 	}
-	if strings.Contains(source, helperOld) && strings.Count(source, closeAllOld) == 2 {
+	sum := sha256.Sum256(data)
+	got := hex.EncodeToString(sum[:])
+	if got == piACP0033OriginalDistSHA256 {
 		return false, nil
 	}
-	return false, errors.New("pi-acp@0.0.27 source does not match Lumi patch expectations")
+	return false, fmt.Errorf("pi-acp@%s dist/index.js is neither official nor Lumi host-auth patched", PiACPVersion)
+}
+
+func isHostAuthPatchedContent(data []byte) bool {
+	return bytesContainsHostAuth(data) && strings.Contains(string(data), "shouldUseSingleLiveSession")
+}
+
+func bytesContainsHostAuth(data []byte) bool {
+	s := string(data)
+	return strings.Contains(s, "extractHostAuthFromMeta") && strings.Contains(s, "hostAuth")
 }
 
 func writeMarker(pkgDir string) error {
@@ -274,7 +277,7 @@ func writeMarker(pkgDir string) error {
 		return fmt.Errorf("failed to create patch marker directory: %w", err)
 	}
 	marker := markerJSON{
-		ID:        PiACPMultiSessionID,
+		ID:        PiACPHostAuthPatchID,
 		Package:   PiACPPackage,
 		Version:   PiACPVersion,
 		AppliedAt: time.Now().UTC().Format(time.RFC3339),
@@ -284,14 +287,14 @@ func writeMarker(pkgDir string) error {
 		return fmt.Errorf("failed to encode patch marker: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(filepath.Join(markerDir, PiACPMultiSessionID+".json"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(markerDir, PiACPHostAuthPatchID+".json"), data, 0644); err != nil {
 		return fmt.Errorf("failed to write patch marker: %w", err)
 	}
 	return nil
 }
 
 func markerExists(pkgDir string) bool {
-	data, err := os.ReadFile(filepath.Join(pkgDir, ".lumi-patches", PiACPMultiSessionID+".json"))
+	data, err := os.ReadFile(filepath.Join(pkgDir, ".lumi-patches", PiACPHostAuthPatchID+".json"))
 	if err != nil {
 		return false
 	}
@@ -299,7 +302,7 @@ func markerExists(pkgDir string) bool {
 	if err := json.Unmarshal(data, &marker); err != nil {
 		return false
 	}
-	return marker.ID == PiACPMultiSessionID && marker.Package == PiACPPackage && marker.Version == PiACPVersion
+	return marker.ID == PiACPHostAuthPatchID && marker.Package == PiACPPackage && marker.Version == PiACPVersion
 }
 
 func ensureExecutable(prefix, pkgDir string) error {
@@ -347,8 +350,8 @@ func ensureExecutable(prefix, pkgDir string) error {
 	return nil
 }
 
-func logf(opts RuntimeOptions, message string) {
+func logf(opts RuntimeOptions, msg string) {
 	if opts.Log != nil {
-		opts.Log(message)
+		opts.Log(msg)
 	}
 }

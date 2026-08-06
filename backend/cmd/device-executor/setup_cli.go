@@ -112,10 +112,21 @@ func installSetupDependencies(status setupcheck.SetupStatus) error {
 		seen[item.Package] = struct{}{}
 		fmt.Printf("Installing ACP dependency: %s (package: %s)\n", firstNonEmpty(item.Name, item.Package), item.Package)
 		if acppatch.IsTargetPiACP(item.Package) {
-			if _, err := acppatch.InstallAndPatch(acppatch.RuntimeOptions{Log: func(message string) {
+			opts := acppatch.RuntimeOptions{Log: func(message string) {
 				fmt.Printf("  %s\n", message)
-			}}); err != nil {
+			}}
+			if _, err := acppatch.InstallAndPatch(opts); err != nil {
 				return err
+			}
+			// Companion pin: pi-coding-agent must surface hostAuth on context events.
+			if _, err := acppatch.EnsurePiCodingAgentHostAuthPatched(opts); err != nil {
+				// Agent may not be installed yet in this prefix; try global install then patch.
+				if installErr := npmInstallGlobal(acppatch.PiCodingAgentPackageSpec); installErr != nil {
+					return fmt.Errorf("pi-acp patched but pi-coding-agent hostAuth patch failed: %v (install: %v)", err, installErr)
+				}
+				if _, err2 := acppatch.EnsurePiCodingAgentHostAuthPatched(opts); err2 != nil {
+					return err2
+				}
 			}
 			continue
 		}
@@ -169,7 +180,7 @@ func setupSignature(status setupcheck.SetupStatus) string {
 	for _, item := range status.ACPPackages {
 		patchID := ""
 		if acppatch.IsTargetPiACP(item.Package) {
-			patchID = acppatch.PiACPMultiSessionID
+			patchID = acppatch.PiACPHostAuthPatchID
 		}
 		values = append(values, "acp:"+item.Name+":"+item.Command+":"+item.Package+":"+patchID)
 	}

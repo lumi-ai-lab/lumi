@@ -1,0 +1,8 @@
+.github_token
+.github_token.example
+.env
+*.secret
+.git
+.gitignore
+README.md
+build.sh

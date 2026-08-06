@@ -8,6 +8,9 @@ backend/lumi
 .lumi-uploads/
 .playwright-cli/
 docker/sandbox/bin/
+docker/sandbox-harness/.github_token
+docker/sandbox-harness/.wecom-bot.env
+docker/sandbox-harness/wecom-requesters.json
 cli/lumi-cli
 .qwen
 .qoder

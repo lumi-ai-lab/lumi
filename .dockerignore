@@ -7,3 +7,6 @@ web/tsconfig.tsbuildinfo
 docker/sandbox/bin
 backend/bin
 **/.DS_Store
+docker/sandbox-harness/.github_token
+docker/sandbox-harness/.wecom-bot.env
+docker/sandbox-harness/wecom-requesters.json

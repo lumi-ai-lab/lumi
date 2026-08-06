@@ -32,7 +32,7 @@ func newTestAPIServer(t *testing.T) *Server {
 			{ID: "claude", Name: "Claude Code", Command: "echo"},
 			{ID: "codex", Name: "Codex CLI", Command: "echo"},
 			{ID: "qwen", Name: "Qwen Code", Command: "echo", Args: []string{"@qwen-code/qwen-code"}},
-			{ID: "pi", Name: "PI", Command: "echo", Args: []string{"pi-acp@0.0.27"}},
+			{ID: "pi", Name: "PI", Command: "echo", Args: []string{"pi-acp@0.0.33"}},
 		},
 		DefaultAgent: "claude",
 		Workspaces: []config.WorkspaceConfig{

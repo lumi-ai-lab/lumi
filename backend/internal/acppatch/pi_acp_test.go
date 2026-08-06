@@ -1,6 +1,9 @@
 package acppatch
 
 import (
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,8 +12,11 @@ import (
 	"testing"
 )
 
+//go:embed assets/pi-acp-0.0.33-dist-index.original.js
+var piACP0033OriginalDist []byte
+
 func TestEnsurePiACPPatchedAppliesAndIsIdempotent(t *testing.T) {
-	pkgDir := makePackage(t, originalSource())
+	pkgDir := makePackage(t, string(piACP0033OriginalDist))
 
 	status, err := EnsurePiACPPatched(RuntimeOptions{Prefix: runtimePrefixForPackageDir(pkgDir)})
 	if err != nil {
@@ -21,16 +27,16 @@ func TestEnsurePiACPPatchedAppliesAndIsIdempotent(t *testing.T) {
 	}
 
 	source := readSource(t, pkgDir)
-	if strings.Count(source, "function shouldUseSingleLiveSession()") != 1 {
-		t.Fatalf("helper count = %d, want 1", strings.Count(source, "function shouldUseSingleLiveSession()"))
+	if !strings.Contains(source, "extractHostAuthFromMeta") {
+		t.Fatal("patched source missing extractHostAuthFromMeta")
 	}
-	if strings.Count(source, closeAllNew) != 2 {
-		t.Fatalf("patched closeAll count = %d, want 2", strings.Count(source, closeAllNew))
+	if !strings.Contains(source, "shouldUseSingleLiveSession") {
+		t.Fatal("patched source missing shouldUseSingleLiveSession")
 	}
-	if !strings.Contains(source, "var PiAcpAgent = class") {
-		t.Fatal("patched source lost PiAcpAgent class")
+	if !strings.Contains(source, "hostAuth") {
+		t.Fatal("patched source missing hostAuth")
 	}
-	if _, err := os.Stat(filepath.Join(pkgDir, ".lumi-patches", PiACPMultiSessionID+".json")); err != nil {
+	if _, err := os.Stat(filepath.Join(pkgDir, ".lumi-patches", PiACPHostAuthPatchID+".json")); err != nil {
 		t.Fatalf("marker not written: %v", err)
 	}
 
@@ -41,33 +47,29 @@ func TestEnsurePiACPPatchedAppliesAndIsIdempotent(t *testing.T) {
 	if !second.Applied {
 		t.Fatalf("second status.Applied = false, want true")
 	}
-	source = readSource(t, pkgDir)
-	if strings.Count(source, "function shouldUseSingleLiveSession()") != 1 {
-		t.Fatalf("helper duplicated after idempotent patch")
-	}
 }
 
 func TestEnsurePiACPPatchedRejectsWrongVersion(t *testing.T) {
-	pkgDir := makePackage(t, originalSource())
+	pkgDir := makePackage(t, string(piACP0033OriginalDist))
 	writePackageJSON(t, pkgDir, "pi-acp", "0.0.28")
 
 	_, err := EnsurePiACPPatched(RuntimeOptions{Prefix: runtimePrefixForPackageDir(pkgDir)})
-	if err == nil || !strings.Contains(err.Error(), "only supports pi-acp@0.0.27") {
+	if err == nil || !strings.Contains(err.Error(), "only supports pi-acp@0.0.33") {
 		t.Fatalf("EnsurePiACPPatched() error = %v, want version rejection", err)
 	}
 }
 
 func TestEnsurePiACPPatchedRejectsUnexpectedSource(t *testing.T) {
-	pkgDir := makePackage(t, "var pkg = readNearestPackageJson(import.meta.url);\n")
+	pkgDir := makePackage(t, "not-the-official-dist\n")
 
 	_, err := EnsurePiACPPatched(RuntimeOptions{Prefix: runtimePrefixForPackageDir(pkgDir)})
-	if err == nil || !strings.Contains(err.Error(), "source does not match") {
-		t.Fatalf("EnsurePiACPPatched() error = %v, want source mismatch", err)
+	if err == nil || !strings.Contains(err.Error(), "does not match expected official") {
+		t.Fatalf("EnsurePiACPPatched() error = %v, want sha mismatch", err)
 	}
 }
 
 func TestEnsurePiACPPatchedWritesMarkerWhenAlreadyPatched(t *testing.T) {
-	pkgDir := makePackage(t, strings.ReplaceAll(strings.Replace(originalSource(), helperOld, helperNew, 1), closeAllOld, closeAllNew))
+	pkgDir := makePackage(t, string(piACP0033PatchedDist))
 
 	status := Status(RuntimeOptions{Prefix: runtimePrefixForPackageDir(pkgDir)})
 	if status.Applied {
@@ -77,7 +79,7 @@ func TestEnsurePiACPPatchedWritesMarkerWhenAlreadyPatched(t *testing.T) {
 	if _, err := EnsurePiACPPatched(RuntimeOptions{Prefix: runtimePrefixForPackageDir(pkgDir)}); err != nil {
 		t.Fatalf("EnsurePiACPPatched() error = %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(pkgDir, ".lumi-patches", PiACPMultiSessionID+".json")); err != nil {
+	if _, err := os.Stat(filepath.Join(pkgDir, ".lumi-patches", PiACPHostAuthPatchID+".json")); err != nil {
 		t.Fatalf("marker not written for already patched source: %v", err)
 	}
 	status = Status(RuntimeOptions{Prefix: runtimePrefixForPackageDir(pkgDir)})
@@ -90,7 +92,7 @@ func TestEnsurePiACPPatchedReplacesCopiedExecutableWithPackageLink(t *testing.T)
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinked npm bin layout is only used on Unix")
 	}
-	pkgDir := makePackage(t, originalSource())
+	pkgDir := makePackage(t, string(piACP0033OriginalDist))
 	prefix := runtimePrefixForPackageDir(pkgDir)
 	exe := filepath.Join(prefix, "bin", "pi-acp")
 	if err := os.MkdirAll(filepath.Dir(exe), 0755); err != nil {
@@ -117,6 +119,14 @@ func TestEnsurePiACPPatchedReplacesCopiedExecutableWithPackageLink(t *testing.T)
 	}
 }
 
+func TestOriginalDistShaMatchesConstant(t *testing.T) {
+	sum := sha256.Sum256(piACP0033OriginalDist)
+	got := hex.EncodeToString(sum[:])
+	if got != piACP0033OriginalDistSHA256 {
+		t.Fatalf("embedded original sha = %s, want %s", got, piACP0033OriginalDistSHA256)
+	}
+}
+
 func TestRuntimePrefixIgnoresNonSandboxNPMConfigPrefix(t *testing.T) {
 	home := t.TempDir()
 	userPrefix := filepath.Join(t.TempDir(), "user-npm")
@@ -137,17 +147,6 @@ func TestRuntimePrefixAllowsSandboxNPMConfigPrefix(t *testing.T) {
 	if got := RuntimePrefix(); got != "/lumi/runtime/npm" {
 		t.Fatalf("RuntimePrefix() = %q, want /lumi/runtime/npm", got)
 	}
-}
-
-func originalSource() string {
-	return helperOld + `
-  async newSession(params) {
-    this.sessions.closeAllExcept?.(session.sessionId);
-  }
-  async loadSession(params) {
-    this.sessions.closeAllExcept?.(session.sessionId);
-  }
-};`
 }
 
 func makePackage(t *testing.T, source string) string {

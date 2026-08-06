@@ -193,7 +193,7 @@ func DefaultConfig() *Config {
 				ID:      "pi",
 				Name:    "PI",
 				Command: "npx",
-				Args:    []string{"-y", "pi-acp@0.0.27"},
+				Args:    []string{"-y", "pi-acp@0.0.33"},
 			},
 		},
 		DefaultAgent: "claude",
@@ -257,7 +257,7 @@ func defaultPiAgent() AgentConfig {
 		ID:          "pi",
 		Name:        "PI",
 		Command:     "npx",
-		Args:        []string{"-y", "pi-acp@0.0.27"},
+		Args:        []string{"-y", "pi-acp@0.0.33"},
 		SessionMode: "default",
 	}
 }

@@ -1,0 +1,20 @@
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -790,6 +790,16 @@
+      * @throws Error if no model selected or no API key available (when not streaming)
+      */
+     async prompt(text, options) {
++        // Lumi hostAuth: bind encrypted auth for this turn onto the extension runner
++        // so context handlers can read event._auth without a file envelope.
++        if (this._extensionRunner) {
++            if (options?.hostAuth && typeof options.hostAuth._auth === "string") {
++                this._extensionRunner.setTurnHostAuth(options.hostAuth);
++            }
++            else {
++                this._extensionRunner.clearTurnHostAuth();
++            }
++        }
+         const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+         const preflightResult = options?.preflightResult;
+         let messages;
+\ No newline at end of file

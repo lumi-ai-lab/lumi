@@ -1,0 +1,11 @@
+--- a/dist/modes/rpc/rpc-mode.js
++++ b/dist/modes/rpc/rpc-mode.js
+@@ -303,6 +303,7 @@
+                     images: command.images,
+                     streamingBehavior: command.streamingBehavior,
+                     source: "rpc",
++                    hostAuth: command.hostAuth,
+                     preflightResult: (didSucceed) => {
+                         if (didSucceed) {
+                             preflightSucceeded = true;
+\ No newline at end of file

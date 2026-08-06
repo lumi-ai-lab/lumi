@@ -171,7 +171,7 @@ func TestServerWithMigratedConfigExposesBuiltInAgentsAndSetup(t *testing.T) {
 	if !strings.Contains(setupRec.Body.String(), `@qwen-code/qwen-code`) {
 		t.Fatalf("/api/setup/status missing qwen package: %s", setupRec.Body.String())
 	}
-	if !strings.Contains(setupRec.Body.String(), `pi-acp@0.0.27`) || !strings.Contains(setupRec.Body.String(), `"command":"pi"`) {
+	if !strings.Contains(setupRec.Body.String(), `pi-acp@0.0.33`) || !strings.Contains(setupRec.Body.String(), `"command":"pi"`) {
 		t.Fatalf("/api/setup/status missing pi setup items: %s", setupRec.Body.String())
 	}
 }

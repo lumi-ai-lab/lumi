@@ -43,15 +43,15 @@ func TestInitialStatusIncludesPiACPAndCLI(t *testing.T) {
 			ID:      "pi",
 			Name:    "PI",
 			Command: "npx",
-			Args:    []string{"-y", "pi-acp@0.0.27"},
+			Args:    []string{"-y", "pi-acp@0.0.33"},
 		},
 	})
 
 	if len(status.ACPPackages) != 1 {
 		t.Fatalf("len(ACPPackages) = %d, want 1", len(status.ACPPackages))
 	}
-	if got := status.ACPPackages[0].Package; got != "pi-acp@0.0.27" {
-		t.Fatalf("PI ACP package = %q, want pi-acp@0.0.27", got)
+	if got := status.ACPPackages[0].Package; got != "pi-acp@0.0.33" {
+		t.Fatalf("PI ACP package = %q, want pi-acp@0.0.33", got)
 	}
 	if len(status.Agents) != 1 {
 		t.Fatalf("len(Agents) = %d, want 1", len(status.Agents))

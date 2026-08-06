@@ -1,0 +1,5 @@
+.github_token
+.wecom-bot.env
+wecom-requesters.json
+.env
+*.secret

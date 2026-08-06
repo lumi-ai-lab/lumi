@@ -16,14 +16,14 @@ import (
 func TestNpxPackageArg(t *testing.T) {
 	t.Parallel()
 
-	index, pkg := npxPackageArg("npx", []string{"-y", "pi-acp@0.0.27", "--flag"})
-	if index != 1 || pkg != "pi-acp@0.0.27" {
-		t.Fatalf("npxPackageArg() = (%d, %q), want (1, pi-acp@0.0.27)", index, pkg)
+	index, pkg := npxPackageArg("npx", []string{"-y", "pi-acp@0.0.33", "--flag"})
+	if index != 1 || pkg != "pi-acp@0.0.33" {
+		t.Fatalf("npxPackageArg() = (%d, %q), want (1, pi-acp@0.0.33)", index, pkg)
 	}
 }
 
 func TestResolveManagedConfigUsesPatchedPiACPExecutable(t *testing.T) {
-	prefix := makePiRuntime(t)
+	prefix := makePiRuntime(t, false)
 	t.Setenv("LUMI_NPM_RUNTIME_PREFIX", prefix)
 	t.Setenv("NPM_CONFIG_PREFIX", "")
 
@@ -52,7 +52,7 @@ func TestProcessStartUsesManagedPiACPExecutable(t *testing.T) {
 		t.Skip("uses POSIX shell script")
 	}
 
-	prefix := makePiRuntime(t)
+	prefix := makePiRuntime(t, true)
 	t.Setenv("LUMI_NPM_RUNTIME_PREFIX", prefix)
 	t.Setenv("NPM_CONFIG_PREFIX", "")
 
@@ -80,7 +80,10 @@ func TestProcessStartUsesManagedPiACPExecutable(t *testing.T) {
 	t.Fatalf("managed pi-acp executable did not write marker at %s", marker)
 }
 
-func makePiRuntime(t *testing.T) string {
+// makePiRuntime installs an official-looking pi-acp@0.0.33 package and applies the Lumi patch.
+// When runnable is true, replaces dist/index.js with a shell stub that still looks patched
+// (so Ensure is idempotent) and can write MARKER for process start tests.
+func makePiRuntime(t *testing.T, runnable bool) string {
 	t.Helper()
 
 	prefix := t.TempDir()
@@ -98,47 +101,49 @@ func makePiRuntime(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(pkgDir, "package.json"), data, 0644); err != nil {
 		t.Fatalf("WriteFile(package.json) error = %v", err)
 	}
+
+	// Official 0.0.33 dist so EnsurePiACPPatched can replace with embedded host-auth build.
+	originalPath := filepath.Join("..", "acppatch", "assets", "pi-acp-0.0.33-dist-index.original.js")
+	original, err := os.ReadFile(originalPath)
+	if err != nil {
+		// Fallback when tests run from module root differently.
+		original, err = os.ReadFile(filepath.Join("internal", "acppatch", "assets", "pi-acp-0.0.33-dist-index.original.js"))
+	}
+	if err != nil {
+		t.Fatalf("ReadFile(original dist) error = %v", err)
+	}
 	index := filepath.Join(pkgDir, "dist", "index.js")
-	if err := os.WriteFile(index, []byte(piACPOriginalSource()), 0755); err != nil {
+	if err := os.WriteFile(index, original, 0644); err != nil {
 		t.Fatalf("WriteFile(index.js) error = %v", err)
 	}
-	if err := os.Chmod(index, 0755); err != nil {
-		t.Fatalf("Chmod(index.js) error = %v", err)
+
+	if _, err := acppatch.EnsurePiACPPatched(acppatch.RuntimeOptions{Prefix: prefix}); err != nil {
+		t.Fatalf("EnsurePiACPPatched() error = %v", err)
 	}
 
-	binDir := filepath.Join(prefix, "bin")
-	if err := os.MkdirAll(binDir, 0755); err != nil {
-		t.Fatalf("MkdirAll(bin) error = %v", err)
-	}
-	bin := filepath.Join(binDir, "pi-acp")
-	script := "#!/bin/sh\nprintf started > \"$MARKER\"\ntrap 'exit 0' INT TERM\nsleep 30\n"
-	if err := os.WriteFile(bin, []byte(script), 0755); err != nil {
-		t.Fatalf("WriteFile(pi-acp) error = %v", err)
-	}
-	if err := os.Chmod(bin, 0755); err != nil {
-		t.Fatalf("Chmod(pi-acp) error = %v", err)
+	if runnable {
+		// Keep host-auth markers so later Ensure is a no-op rewrite, but make dist executable as sh.
+		stub := "#!/bin/sh\n# extractHostAuthFromMeta shouldUseSingleLiveSession hostAuth\nprintf started > \"$MARKER\"\ntrap 'exit 0' INT TERM\nsleep 30\n"
+		if err := os.WriteFile(index, []byte(stub), 0755); err != nil {
+			t.Fatalf("WriteFile(stub index) error = %v", err)
+		}
+		if err := os.Chmod(index, 0755); err != nil {
+			t.Fatalf("Chmod(stub index) error = %v", err)
+		}
+		// Re-link bin → dist without changing content (Ensure sees already patched markers).
+		if _, err := acppatch.EnsurePiACPPatched(acppatch.RuntimeOptions{Prefix: prefix}); err != nil {
+			t.Fatalf("EnsurePiACPPatched(stub) error = %v", err)
+		}
+		// Symlink itself is not +x on some FS; ensure bin path is executable via chmod -h not always available.
+		// Replace symlink with a tiny launcher that execs the stub script.
+		bin := filepath.Join(prefix, "bin", "pi-acp")
+		launcher := "#!/bin/sh\nexec \"" + index + "\" \"$@\"\n"
+		_ = os.Remove(bin)
+		if err := os.WriteFile(bin, []byte(launcher), 0755); err != nil {
+			t.Fatalf("WriteFile(bin launcher) error = %v", err)
+		}
 	}
 	return prefix
-}
-
-func piACPOriginalSource() string {
-	return `#!/bin/sh
-printf started > "$MARKER"
-trap 'exit 0' INT TERM
-sleep 30
-exit 0
-: <<'PI_ACP_SOURCE'
-var pkg = readNearestPackageJson(import.meta.url);
-var PiAcpAgent = class {
-  async newSession(params) {
-    this.sessions.closeAllExcept?.(session.sessionId);
-  }
-  async loadSession(params) {
-    this.sessions.closeAllExcept?.(session.sessionId);
-  }
-};
-PI_ACP_SOURCE
-`
 }
 
 func TestResolveManagedConfigLeavesOtherAgentsUnchanged(t *testing.T) {

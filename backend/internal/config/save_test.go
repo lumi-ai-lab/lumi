@@ -92,8 +92,8 @@ func TestLoadAddsBuiltInAgentDefaultsToExistingConfig(t *testing.T) {
 	if pi == nil {
 		t.Fatal("FindAgent(pi) = nil, want built-in PI")
 	}
-	if pi.Command != "npx" || strings.Join(pi.Args, " ") != "-y pi-acp@0.0.27" {
-		t.Fatalf("pi config = %+v, want npx pi-acp@0.0.27", pi)
+	if pi.Command != "npx" || strings.Join(pi.Args, " ") != "-y pi-acp@0.0.33" {
+		t.Fatalf("pi config = %+v, want npx pi-acp@0.0.33", pi)
 	}
 	if cfg.Routing == nil || cfg.Routing.Keywords["@pi"] != "pi" {
 		t.Fatalf("routing keywords = %+v, want @pi route", cfg.Routing)

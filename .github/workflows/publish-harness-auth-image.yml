@@ -1,0 +1,84 @@
+name: Publish Harness Auth Image
+
+# Builds and pushes ghcr.io/lumi-ai-lab/lumi-harness-auth (linux/amd64).
+# Requires repo secret HARNESS_DATA_GITHUB_TOKEN: a PAT that can read private
+# harness-data / harness-data-wikis and qdm-metric-cli release assets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to publish (in addition to sha-*), e.g. latest, v0.0.1, 20260806'
+        required: true
+        default: 'latest'
+      push_latest:
+        description: 'Also tag as latest (when image_tag is not latest)'
+        type: boolean
+        required: false
+        default: false
+      base_image:
+        description: 'Base sandbox image'
+        required: false
+        default: 'ghcr.io/lumi-ai-lab/lumi-sandbox:latest'
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: lumi-ai-lab/lumi-harness-auth
+
+jobs:
+  build:
+    name: Build and publish harness-auth image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Require harness install token
+        env:
+          HARNESS_DATA_GITHUB_TOKEN: ${{ secrets.HARNESS_DATA_GITHUB_TOKEN }}
+        run: |
+          if [ -z "${HARNESS_DATA_GITHUB_TOKEN}" ]; then
+            echo "Missing repo secret HARNESS_DATA_GITHUB_TOKEN (PAT for private harness install)." >&2
+            exit 1
+          fi
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=${{ inputs.image_tag }},enable=${{ inputs.image_tag != '' }}
+            type=raw,value=latest,enable=${{ inputs.push_latest || inputs.image_tag == 'latest' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/sandbox-harness/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BASE_IMAGE=${{ inputs.base_image }}
+          secrets: |
+            github_token=${{ secrets.HARNESS_DATA_GITHUB_TOKEN }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -92,7 +92,7 @@ func TestDetectBackendRecognizesPi(t *testing.T) {
 		args    []string
 	}{
 		{name: "id", id: "pi", command: "npx"},
-		{name: "package arg", command: "npx", args: []string{"-y", "pi-acp@0.0.27"}},
+		{name: "package arg", command: "npx", args: []string{"-y", "pi-acp@0.0.33"}},
 		{name: "global command", command: "pi-acp"},
 	}
 

@@ -1,0 +1,113 @@
+--- a/dist/index.js	1985-10-26 16:15:00
++++ b/dist/index.js	2026-08-06 16:20:12
+@@ -206,8 +206,19 @@
+     const lines = this.preludeLines.splice(0, this.preludeLines.length);
+     return lines;
+   }
+-  async prompt(message, images = []) {
+-    const res = await this.request({ type: "prompt", message, images });
++  async prompt(message, images = [], hostAuth) {
++    const req = {
++      type: "prompt",
++      message,
++      images,
++      ...hostAuth?._auth && hostAuth._auth_user_id ? {
++        hostAuth: {
++          _auth: hostAuth._auth,
++          _auth_user_id: hostAuth._auth_user_id
++        }
++      } : {}
++    };
++    const res = await this.request(req);
+     if (!res.success) throw new Error(`pi prompt failed: ${res.error ?? JSON.stringify(res.data)}`);
+   }
+   async abort() {
+\ No newline at end of file
+@@ -827,10 +838,10 @@
+       content: { type: "text", text: this.startupInfo }
+     });
+   }
+-  async prompt(message, images = []) {
++  async prompt(message, images = [], hostAuth) {
+     const expandedMessage = expandSlashCommand(message, this.fileCommands);
+     const turnPromise = new Promise((resolve4, reject) => {
+-      const queued = { message: expandedMessage, images, resolve: resolve4, reject };
++      const queued = { message: expandedMessage, images, hostAuth, resolve: resolve4, reject };
+       if (this.pendingTurn) {
+         this.turnQueue.push(queued);
+         this.emit({
+\ No newline at end of file
+@@ -924,7 +935,7 @@
+       sessionUpdate: "session_info_update",
+       _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } }
+     });
+-    this.proc.prompt(t.message, t.images).catch((err) => {
++    this.proc.prompt(t.message, t.images, t.hostAuth).catch((err) => {
+       void this.flushEmits().finally(() => {
+         const authErr = maybeAuthRequiredError(err);
+         if (authErr) {
+\ No newline at end of file
+@@ -2017,7 +2028,10 @@
+     });
+     if (preludeText)
+       session.setStartupInfo(preludeText);
+-    this.sessions.closeAllExcept?.(session.sessionId);
++    if (shouldUseSingleLiveSession()) {
++      ;
++      this.sessions.closeAllExcept?.(session.sessionId);
++    }
+     const response = {
+       sessionId: session.sessionId,
+       configOptions,
+\ No newline at end of file
+@@ -2065,6 +2079,7 @@
+   async prompt(params) {
+     const session = await this.restoreSession(params.sessionId);
+     const { message, images } = promptToPiMessage(params.prompt);
++    const hostAuth = extractHostAuthFromMeta(params._meta);
+     if (images.length === 0 && message.trimStart().startsWith("/")) {
+       const trimmed = message.trim();
+       const space = trimmed.indexOf(" ");
+\ No newline at end of file
+@@ -2431,7 +2446,7 @@
+         return { stopReason: "end_turn" };
+       }
+     }
+-    const result = await session.prompt(message, images);
++    const result = await session.prompt(message, images, hostAuth);
+     const stopReason = result === "error" ? session.wasCancelRequested() ? "cancelled" : "end_turn" : result;
+     return { stopReason };
+   }
+\ No newline at end of file
+@@ -2474,7 +2489,10 @@
+     });
+     const proc = session.proc;
+     const fileCommands = loadSlashCommands(params.cwd);
+-    this.sessions.closeAllExcept?.(session.sessionId);
++    if (shouldUseSingleLiveSession()) {
++      ;
++      this.sessions.closeAllExcept?.(session.sessionId);
++    }
+     this.store.upsert({
+       sessionId: params.sessionId,
+       cwd: params.cwd,
+\ No newline at end of file
+@@ -2977,6 +2995,17 @@
+   }
+   return { name: "pi-acp", version: "0.0.0" };
+ }
++function shouldUseSingleLiveSession() {
++  return process.env.PI_ACP_SINGLE_LIVE_SESSION === "true";
++}
++function extractHostAuthFromMeta(meta) {
++  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return void 0;
++  const record = meta;
++  const auth = typeof record._auth === "string" ? record._auth.trim() : "";
++  const userId = typeof record._auth_user_id === "string" ? record._auth_user_id.trim() : "";
++  if (!auth.startsWith("qdm1enc.") || !userId) return void 0;
++  return { _auth: auth, _auth_user_id: userId };
++}
+ 
+ // src/index.ts
+ if (process.argv.includes("--terminal-login")) {
+\ No newline at end of file
