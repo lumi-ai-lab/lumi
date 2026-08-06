@@ -726,6 +726,7 @@ func runWeChatRun(args []string, stdout, stderr *os.File) error {
 	port := fs.String("port", envOrDefault("LUMI_PORT", "3000"), "Server port")
 	idleTimeoutSec := fs.Int("idle-timeout-sec", 0, "Sandbox idle timeout in seconds for IM CLI runs; defaults to 10 years")
 	sandboxID := fs.String("sandbox-id", envOrDefault("LUMI_SANDBOX_ID", ""), "Advanced sandbox instance ID override")
+	image := fs.String("image", envOrDefault("LUMI_SANDBOX_IMAGE", ""), "Sandbox Docker image for --kind sandbox; defaults to ghcr.io/lumi-ai-lab/lumi-sandbox:latest")
 	sandboxWarmup := fs.String("sandbox-warmup", envOrDefault("LUMI_SANDBOX_WARMUP", string(sandboxWarmupWait)), "Sandbox warmup mode for sandbox workspaces: wait, async, or off")
 	loginTimeoutSec := fs.Int("login-timeout-sec", 300, "WeChat QR login timeout in seconds")
 	forceLogin := fs.Bool("force-login", false, "Force WeChat QR login even when saved credentials exist")
@@ -774,6 +775,7 @@ func runWeChatRun(args []string, stdout, stderr *os.File) error {
 		Port:           *port,
 		IdleTimeoutSec: *idleTimeoutSec,
 		SandboxID:      *sandboxID,
+		Image:          *image,
 	})
 	if err != nil {
 		return err
@@ -794,6 +796,9 @@ func runWeChatRun(args []string, stdout, stderr *os.File) error {
 	fmt.Fprintf(stdout, "Workspace kind: %s\n", strings.TrimSpace(*kind))
 	if strings.TrimSpace(*kind) == "sandbox" {
 		fmt.Fprintf(stdout, "Sandbox instance: %s\n", resolvedWorkspaceID)
+		if ws := cfg.FindWorkspace(resolvedWorkspaceID); ws != nil && strings.TrimSpace(ws.Image) != "" {
+			fmt.Fprintf(stdout, "Sandbox image: %s\n", ws.Image)
+		}
 	}
 	fmt.Fprintf(stdout, "Default agent: %s\n", *agentID)
 	fmt.Fprintf(stdout, "Workspace agents: %s\n", strings.Join(workspaceAgentIDs(cfg), ", "))
@@ -909,6 +914,8 @@ func runWeCom(args []string, _ *os.File, stdout, stderr *os.File, programName st
 	switch args[0] {
 	case "run":
 		return runWeComRun(args[1:], stdout, stderr)
+	case "policy":
+		return runWeComPolicy(args[1:], stdout, stderr, programName)
 	case "-h", "--help", "help":
 		printWeComUsage(stdout, programName)
 		return nil
@@ -928,10 +935,13 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	agentIDs := fs.String("agents", envOrDefault("LUMI_AGENTS", ""), "Comma-separated agent IDs available to this IM workspace; defaults to all configured agents")
 	botID := fs.String("bot-id", envOrDefault("LUMI_BOT_ID", ""), "WeCom bot ID")
 	botSecret := fs.String("bot-secret", envOrDefault("LUMI_BOT_SECRET", ""), "WeCom bot secret")
+	requesterConfig := fs.String("requester-config", envOrDefault("LUMI_WECOM_REQUESTER_CONFIG", ""), "WeCom requester permission JSON file")
+	requesterRefresh := fs.String("requester-config-refresh", envOrDefault("LUMI_WECOM_REQUESTER_CONFIG_REFRESH", "10m"), "Requester policy refresh interval (0 disables periodic refresh)")
 	stream := fs.Bool("stream", envBoolOrDefault("LUMI_WECOM_STREAM", false), "Enable WeCom streaming replies")
 	port := fs.String("port", envOrDefault("LUMI_PORT", "3000"), "Server port")
 	idleTimeoutSec := fs.Int("idle-timeout-sec", 0, "Sandbox idle timeout in seconds for IM CLI runs; defaults to 10 years")
 	sandboxID := fs.String("sandbox-id", envOrDefault("LUMI_SANDBOX_ID", ""), "Advanced sandbox instance ID override")
+	image := fs.String("image", envOrDefault("LUMI_SANDBOX_IMAGE", ""), "Sandbox Docker image for --kind sandbox; defaults to ghcr.io/lumi-ai-lab/lumi-sandbox:latest")
 	sandboxWarmup := fs.String("sandbox-warmup", envOrDefault("LUMI_SANDBOX_WARMUP", string(sandboxWarmupWait)), "Sandbox warmup mode for sandbox workspaces: wait, async, or off")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -955,19 +965,26 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	if err != nil {
 		return err
 	}
+	refreshDuration, err := parseRequesterRefreshDuration(*requesterRefresh)
+	if err != nil {
+		return err
+	}
 
 	cfg, workspacePath, err := lumicli.PrepareRun(state, lumicli.RunOptions{
-		ConfigPath:     *configPath,
-		Workspace:      *workspace,
-		Kind:           *kind,
-		AgentID:        *agentID,
-		AgentIDs:       parseAgentIDs(*agentIDs),
-		BotID:          *botID,
-		BotSecret:      *botSecret,
-		WeComStream:    *stream,
-		Port:           *port,
-		IdleTimeoutSec: *idleTimeoutSec,
-		SandboxID:      *sandboxID,
+		ConfigPath:             *configPath,
+		Workspace:              *workspace,
+		Kind:                   *kind,
+		AgentID:                *agentID,
+		AgentIDs:               parseAgentIDs(*agentIDs),
+		BotID:                  *botID,
+		BotSecret:              *botSecret,
+		RequesterConfigPath:    *requesterConfig,
+		RequesterConfigRefresh: refreshDuration,
+		WeComStream:            *stream,
+		Port:                   *port,
+		IdleTimeoutSec:         *idleTimeoutSec,
+		SandboxID:              *sandboxID,
+		Image:                  *image,
 	})
 	if err != nil {
 		return err
@@ -987,11 +1004,18 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 	fmt.Fprintf(stdout, "Workspace kind: %s\n", strings.TrimSpace(*kind))
 	if strings.TrimSpace(*kind) == "sandbox" {
 		fmt.Fprintf(stdout, "Sandbox instance: %s\n", resolvedWorkspaceID)
+		if ws := cfg.FindWorkspace(resolvedWorkspaceID); ws != nil && strings.TrimSpace(ws.Image) != "" {
+			fmt.Fprintf(stdout, "Sandbox image: %s\n", ws.Image)
+		}
 	}
 	fmt.Fprintf(stdout, "Default agent: %s\n", *agentID)
 	fmt.Fprintf(stdout, "Workspace agents: %s\n", strings.Join(workspaceAgentIDs(cfg), ", "))
 	fmt.Fprintf(stdout, "Server: http://localhost:%s\n", runtime.Port())
 	fmt.Fprintf(stdout, "WeCom: enabled for bot %s\n", *botID)
+	if strings.TrimSpace(*requesterConfig) != "" {
+		fmt.Fprintf(stdout, "WeCom requester config: %s\n", strings.TrimSpace(*requesterConfig))
+		fmt.Fprintf(stdout, "WeCom requester refresh: %s\n", formatRequesterRefresh(refreshDuration))
+	}
 	fmt.Fprintf(stdout, "WeCom stream: %s\n", enabledDisabled(*stream))
 	fmt.Fprintln(stdout, "Agent credentials are inherited from the current shell environment or existing config env.")
 
@@ -1001,6 +1025,93 @@ func runWeComRun(args []string, stdout, stderr *os.File) error {
 		}
 		return startSandboxWarmup(context.Background(), runtime, resolvedWorkspaceID, warmupMode, stdout)
 	})
+}
+
+func parseRequesterRefreshDuration(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil // default 10m inside store
+	}
+	if raw == "0" {
+		return -1, nil // disable periodic refresh
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --requester-config-refresh: %w", err)
+	}
+	if d < 0 {
+		return 0, errors.New("--requester-config-refresh must be non-negative")
+	}
+	if d == 0 {
+		return -1, nil
+	}
+	return d, nil
+}
+
+func formatRequesterRefresh(d time.Duration) string {
+	if d < 0 {
+		return "disabled (manual reload only)"
+	}
+	if d == 0 {
+		return "10m (default)"
+	}
+	return d.String()
+}
+
+func runWeComPolicy(args []string, stdout, stderr *os.File, programName string) error {
+	if len(args) == 0 {
+		printWeComPolicyUsage(stdout, programName)
+		return nil
+	}
+	switch args[0] {
+	case "reload":
+		return runWeComPolicyReload(args[1:], stdout, stderr)
+	case "-h", "--help", "help":
+		printWeComPolicyUsage(stdout, programName)
+		return nil
+	default:
+		return fmt.Errorf("unknown wecom policy command: %s", args[0])
+	}
+}
+
+func runWeComPolicyReload(args []string, stdout, stderr *os.File) error {
+	fs := flag.NewFlagSet("reload", flag.ContinueOnError)
+	fs.SetOutput(stdout)
+	port := fs.String("port", envOrDefault("LUMI_PORT", "3000"), "Lumi server port of the target process")
+	baseURL := fs.String("base-url", "", "Base URL of the target Lumi process (overrides --port)")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	url := strings.TrimSpace(*baseURL)
+	if url == "" {
+		url = fmt.Sprintf("http://127.0.0.1:%s", strings.TrimSpace(*port))
+	}
+	url = strings.TrimRight(url, "/") + "/api/wecom/requester-policy/reload"
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("reload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		fmt.Fprintf(stderr, "%s\n", strings.TrimSpace(string(body)))
+		return fmt.Errorf("reload failed: HTTP %d", resp.StatusCode)
+	}
+	fmt.Fprintln(stdout, strings.TrimSpace(string(body)))
+	return nil
+}
+
+func printWeComPolicyUsage(stdout *os.File, programName string) {
+	fmt.Fprintln(stdout, "Usage:")
+	fmt.Fprintf(stdout, "  %s wecom policy reload [--port <port>] [--base-url <url>]\n", programName)
 }
 
 func parseSandboxWarmupMode(value string) (sandboxWarmupMode, error) {
@@ -1224,12 +1335,13 @@ func printCronUsage(stdout *os.File, programName string) {
 
 func printWeComUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
-	fmt.Fprintf(stdout, "  %s wecom run --workspace <path> --kind local|sandbox --agent <id> --bot-id <id> --bot-secret <secret> [--stream] [--sandbox-id <id>] [--idle-timeout-sec <seconds>] [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s wecom run --workspace <path> --kind local|sandbox --agent <id> --bot-id <id> --bot-secret <secret> [--requester-config <path>] [--requester-config-refresh <duration>] [--stream] [--sandbox-id <id>] [--image <ref>] [--idle-timeout-sec <seconds>] [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s wecom policy reload [--port <port>] [--base-url <url>]\n", programName)
 }
 
 func printWeChatUsage(stdout *os.File, programName string) {
 	fmt.Fprintln(stdout, "Usage:")
-	fmt.Fprintf(stdout, "  %s wechat run --workspace <path> --kind local|sandbox --agent <id> [--base-url <url>] [--force-login] [--login-timeout-sec <seconds>] [--sandbox-id <id>] [--idle-timeout-sec <seconds>] [flags]\n", programName)
+	fmt.Fprintf(stdout, "  %s wechat run --workspace <path> --kind local|sandbox --agent <id> [--base-url <url>] [--force-login] [--login-timeout-sec <seconds>] [--sandbox-id <id>] [--image <ref>] [--idle-timeout-sec <seconds>] [flags]\n", programName)
 }
 
 func printSandboxUsage(stdout *os.File, programName string) {

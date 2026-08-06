@@ -225,6 +225,8 @@ cd ../backend && go build -o lumi ./cmd/lumi
 
 IM CLI 的 sandbox 模式会自动按 IM 身份和 workspace 绝对路径派生实例 ID，例如 `cli-sandbox-wechat-<hash>` 或 `cli-sandbox-wecom-<hash>`；相同账号/机器人和相同目录会复用实例，不同身份或目录会自动隔离。需要强制创建独立实例时，可传 `--sandbox-id <id>` 或设置 `LUMI_SANDBOX_ID`，最终实例 ID 为 `cli-sandbox-<id>`。
 
+可通过 `--image <ref>` 或环境变量 `LUMI_SANDBOX_IMAGE` 覆盖该 workspace 的 sandbox Docker 镜像；未指定时默认使用 `ghcr.io/lumi-ai-lab/lumi-sandbox:latest`。该参数仅在 `--kind sandbox` 时有效。注意：若同实例容器已在运行，新镜像会写入配置，但不会自动重建已有容器；需要切换镜像时请先 `lumi sandbox prune`（或等容器退出）后再启动。
+
 ### 5. Linux 上的 Claude ACP 运行注意事项
 
 如果你在 Linux 服务器上通过 `@agentclientprotocol/claude-agent-acp@0.30.0` 使用 Claude，且系统自带的 `glibc` 版本较老（例如部分 CentOS 7 / RHEL 7 环境），SDK 默认下载的 Linux native `claude` binary 可能无法启动。

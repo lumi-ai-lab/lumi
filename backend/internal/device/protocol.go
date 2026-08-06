@@ -3,6 +3,7 @@ package device
 import (
 	"encoding/json"
 
+	"github.com/pengmide/lumi/internal/requestercontext"
 	"github.com/pengmide/lumi/internal/setupcheck"
 )
 
@@ -123,14 +124,16 @@ type PermissionToolCall struct {
 type SetupCheckPayload struct{}
 
 type TaskExecutePayload struct {
-	ConversationID     string         `json:"conversationId"`
-	AgentID            string         `json:"agentId"`
-	SessionID          string         `json:"sessionId,omitempty"`
-	WorkspaceID        string         `json:"workspaceId,omitempty"`
-	WorkspacePath      string         `json:"workspacePath"`
-	Prompt             string         `json:"prompt"`
-	SystemPromptAppend string         `json:"systemPromptAppend,omitempty"`
-	Files              []TaskFileInfo `json:"files,omitempty"`
+	ConversationID     string                     `json:"conversationId"`
+	AgentID            string                     `json:"agentId"`
+	SessionID          string                     `json:"sessionId,omitempty"`
+	WorkspaceID        string                     `json:"workspaceId,omitempty"`
+	WorkspacePath      string                     `json:"workspacePath"`
+	Prompt             string                     `json:"prompt"`
+	SystemPromptAppend string                     `json:"systemPromptAppend,omitempty"`
+	Files              []TaskFileInfo             `json:"files,omitempty"`
+	RequesterContext   *requestercontext.Context  `json:"requesterContext,omitempty"`
+	HostAuth           *requestercontext.HostAuth `json:"hostAuth,omitempty"`
 }
 
 type TaskFileInfo struct {

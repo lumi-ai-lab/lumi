@@ -1,0 +1,249 @@
+package requestercontext
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+const DefaultTTL = 30 * time.Minute
+
+var fileBridgePathMu sync.Mutex
+
+// Envelope is the on-disk session binding read by agent hooks.
+type Envelope struct {
+	Version          int       `json:"version"`
+	WorkspaceID      string    `json:"workspaceId"`
+	AgentID          string    `json:"agentId"`
+	SessionID        string    `json:"sessionId"`
+	IssuedAt         time.Time `json:"issuedAt"`
+	ExpiresAt        time.Time `json:"expiresAt"`
+	Auth             string    `json:"_auth"`
+	AuthUserID       string    `json:"_auth_user_id"`
+	RequesterContext *Context  `json:"requesterContext,omitempty"`
+}
+
+// CleanupFunc removes a session context file. Safe to call more than once.
+type CleanupFunc func() error
+
+// FileBridge writes session-scoped host-auth envelopes.
+type FileBridge struct {
+	dir         string
+	workspaceID string
+	agentID     string
+	ttl         time.Duration
+	now         func() time.Time
+	dirMode     os.FileMode
+	fileMode    os.FileMode
+}
+
+// FileBridgeOption customizes a FileBridge.
+type FileBridgeOption func(*FileBridge) error
+
+// WithTTL changes the lifetime recorded in newly written envelopes.
+func WithTTL(ttl time.Duration) FileBridgeOption {
+	return func(bridge *FileBridge) error {
+		if ttl <= 0 {
+			return fmt.Errorf("requester context TTL must be positive")
+		}
+		bridge.ttl = ttl
+		return nil
+	}
+}
+
+// WithClock replaces the wall clock used by FileBridge (tests).
+func WithClock(now func() time.Time) FileBridgeOption {
+	return func(bridge *FileBridge) error {
+		if now == nil {
+			return fmt.Errorf("requester context clock must not be nil")
+		}
+		bridge.now = now
+		return nil
+	}
+}
+
+// NewFileBridge constructs a bridge without touching the filesystem.
+func NewFileBridge(baseRoot, workspaceID, agentID string, options ...FileBridgeOption) (*FileBridge, error) {
+	return newFileBridge(baseRoot, workspaceID, workspaceID, agentID, options...)
+}
+
+// NewFileBridgeInScope uses directoryScope for the path while envelopes keep workspaceID.
+func NewFileBridgeInScope(baseRoot, directoryScope, workspaceID, agentID string, options ...FileBridgeOption) (*FileBridge, error) {
+	return newFileBridge(baseRoot, directoryScope, workspaceID, agentID, options...)
+}
+
+func newFileBridge(baseRoot, directoryScope, workspaceID, agentID string, options ...FileBridgeOption) (*FileBridge, error) {
+	if err := validatePathSegment("workspace ID", workspaceID); err != nil {
+		return nil, err
+	}
+	if err := validatePathSegment("directory scope", directoryScope); err != nil {
+		return nil, err
+	}
+	dir, err := SessionDir(baseRoot, directoryScope, agentID)
+	if err != nil {
+		return nil, err
+	}
+	bridge := &FileBridge{
+		dir:         dir,
+		workspaceID: workspaceID,
+		agentID:     agentID,
+		ttl:         DefaultTTL,
+		now:         time.Now,
+		dirMode:     0o755,
+		fileMode:    0o644,
+	}
+	for _, option := range options {
+		if option == nil {
+			return nil, fmt.Errorf("requester context bridge option must not be nil")
+		}
+		if err := option(bridge); err != nil {
+			return nil, err
+		}
+	}
+	return bridge, nil
+}
+
+// Dir returns the absolute directory containing this bridge's session files.
+func (bridge *FileBridge) Dir() string {
+	return bridge.dir
+}
+
+// SessionDir returns a safe absolute directory rooted beneath baseRoot.
+func SessionDir(baseRoot, workspaceID, agentID string) (string, error) {
+	if strings.TrimSpace(baseRoot) == "" {
+		return "", fmt.Errorf("requester context base root must not be empty")
+	}
+	if err := validatePathSegment("workspace ID", workspaceID); err != nil {
+		return "", err
+	}
+	if err := validatePathSegment("agent ID", agentID); err != nil {
+		return "", err
+	}
+	root, err := filepath.Abs(baseRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve requester context base root: %w", err)
+	}
+	root = filepath.Clean(root)
+	dir := filepath.Join(root, workspaceID, agentID)
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return "", fmt.Errorf("verify requester context directory: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("requester context directory escapes base root")
+	}
+	return dir, nil
+}
+
+// SessionFileName returns the deterministic, path-safe filename for an ACP session ID.
+func SessionFileName(sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", fmt.Errorf("ACP session ID must not be empty")
+	}
+	sum := sha256.Sum256([]byte(sessionID))
+	return hex.EncodeToString(sum[:]) + ".json", nil
+}
+
+// Write atomically writes an envelope for sessionID.
+func (bridge *FileBridge) Write(sessionID string, auth HostAuth, requester *Context) (string, CleanupFunc, error) {
+	if bridge == nil {
+		return "", nil, fmt.Errorf("requester context file bridge must not be nil")
+	}
+	if strings.TrimSpace(auth.Auth) == "" || strings.TrimSpace(auth.AuthUserID) == "" {
+		return "", nil, fmt.Errorf("host auth requires _auth and _auth_user_id")
+	}
+	filename, err := SessionFileName(sessionID)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := bridge.ensureDir(); err != nil {
+		return "", nil, err
+	}
+
+	issuedAt := bridge.now().UTC()
+	envelope := Envelope{
+		Version:     CurrentEnvelopeVersion,
+		WorkspaceID: bridge.workspaceID,
+		AgentID:     bridge.agentID,
+		SessionID:   sessionID,
+		IssuedAt:    issuedAt,
+		ExpiresAt:   issuedAt.Add(bridge.ttl),
+		Auth:        auth.Auth,
+		AuthUserID:  auth.AuthUserID,
+	}
+	if requester != nil {
+		cloned := *requester
+		cloned.Authorization = requester.Authorization.Clone()
+		envelope.RequesterContext = &cloned
+	}
+	data, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		return "", nil, fmt.Errorf("encode requester context envelope: %w", err)
+	}
+	data = append(data, '\n')
+
+	path := filepath.Join(bridge.dir, filename)
+	temporary, err := os.CreateTemp(bridge.dir, ".requester-context-*.tmp")
+	if err != nil {
+		return "", nil, fmt.Errorf("create requester context temporary file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	keepTemporary := true
+	defer func() {
+		if keepTemporary {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+
+	if err := temporary.Chmod(bridge.fileMode); err != nil {
+		_ = temporary.Close()
+		return "", nil, fmt.Errorf("set requester context temporary file permissions: %w", err)
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return "", nil, fmt.Errorf("write requester context temporary file: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return "", nil, fmt.Errorf("sync requester context temporary file: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return "", nil, fmt.Errorf("close requester context temporary file: %w", err)
+	}
+	writtenInfo, err := bridge.publishFile(temporaryPath, path)
+	if err != nil {
+		return "", nil, err
+	}
+	keepTemporary = false
+
+	var once sync.Once
+	var cleanupErr error
+	cleanup := CleanupFunc(func() error {
+		once.Do(func() {
+			fileBridgePathMu.Lock()
+			defer fileBridgePathMu.Unlock()
+			currentInfo, statErr := os.Stat(path)
+			switch {
+			case errors.Is(statErr, os.ErrNotExist):
+				return
+			case statErr != nil:
+				cleanupErr = fmt.Errorf("inspect requester context file for cleanup: %w", statErr)
+				return
+			case !os.SameFile(writtenInfo, currentInfo):
+				return
+			}
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				cleanupErr = fmt.Errorf("remove requester context file: %w", removeErr)
+			}
+		})
+		return cleanupErr
+	})
+	return path, cleanup, nil
+}

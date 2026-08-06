@@ -8,9 +8,10 @@ import (
 	"strings"
 
 	"github.com/pengmide/lumi/internal/config"
+	"github.com/pengmide/lumi/internal/requestercontext"
 )
 
-func buildLumiRuntimeEnv(server string, cfg *ExecutorConfig) map[string]string {
+func buildLumiRuntimeEnv(server string, cfg *ExecutorConfig, agentID string) map[string]string {
 	env := make(map[string]string)
 	if apiBase := lumiAPIBaseForServer(server); apiBase != "" {
 		env["LUMI_API_BASE"] = apiBase
@@ -25,6 +26,11 @@ func buildLumiRuntimeEnv(server string, cfg *ExecutorConfig) map[string]string {
 	}
 	if cliPath := resolveExecutorLumiCLI(env["LUMI_WORKSPACE_PATH"]); cliPath != "" {
 		env["LUMI_CLI"] = cliPath
+	}
+	if strings.TrimSpace(agentID) != "" {
+		if dir, err := requestercontext.SessionDir(executorRequesterContextRoot(), workspaceID, agentID); err == nil {
+			env[requestercontext.EnvRequesterContextDir] = dir
+		}
 	}
 	return env
 }
@@ -55,7 +61,7 @@ func mergeAgentEnv(agentCfg *config.AgentConfig, runtimeEnv map[string]string) *
 
 func isLumiRuntimeEnvKey(key string) bool {
 	switch key {
-	case "LUMI_API_BASE", "LUMI_WORKSPACE_ID", "LUMI_WORKSPACE_PATH", "LUMI_CLI":
+	case "LUMI_API_BASE", "LUMI_WORKSPACE_ID", "LUMI_WORKSPACE_PATH", "LUMI_CLI", requestercontext.EnvRequesterContextDir:
 		return true
 	default:
 		return false

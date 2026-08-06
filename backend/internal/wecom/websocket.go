@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pengmide/lumi/internal/requestercontext"
 )
 
 const (
@@ -379,8 +381,26 @@ func (rt *wsRuntime) handleMsgCallback(ctx context.Context, frame wsFrame) {
 		return
 	}
 
+	msgID := strings.TrimSpace(body.MsgID)
 	userID := strings.TrimSpace(body.From.UserID)
-	if !allowUser(rt.cfg.AllowFrom, userID) {
+	aibotID := strings.TrimSpace(body.AibotID)
+	policyStore := rt.service.PolicyStore()
+	if policyStore != nil {
+		switch {
+		case msgID == "":
+			log.Printf("wecom requester callback rejected: missing msgid")
+			return
+		case userID == "":
+			log.Printf("wecom requester callback rejected: requestId=%s missing userid", msgID)
+			return
+		case aibotID == "":
+			log.Printf("wecom requester callback rejected: requestId=%s missing aibotid", msgID)
+			return
+		case aibotID != strings.TrimSpace(rt.cfg.BotID):
+			log.Printf("wecom requester callback rejected: requestId=%s aibotid mismatch", msgID)
+			return
+		}
+	} else if !allowUser(rt.cfg.AllowFrom, userID) {
 		return
 	}
 
@@ -396,6 +416,27 @@ func (rt *wsRuntime) handleMsgCallback(ctx context.Context, frame wsFrame) {
 		UserID:   userID,
 	}
 
+	var resolvedContext *requestercontext.Context
+	var resolvedAuth *requestercontext.HostAuth
+	if policyStore != nil {
+		ctxAuth, hostAuth, allowed, err := resolveRequesterTurn(policyStore, userID, msgID, chatID, body.ChatType)
+		if err != nil {
+			log.Printf("wecom requester resolve failed: requestId=%s err=%v", msgID, err)
+			rt.replyRequesterUnauthorized(ctx, msgID, rctx)
+			return
+		}
+		if !allowed {
+			rt.replyRequesterUnauthorized(ctx, msgID, rctx)
+			return
+		}
+		resolvedContext = ctxAuth
+		authCopy := hostAuth
+		resolvedAuth = &authCopy
+		userID = resolvedContext.Principal.CanonicalUserID
+		rctx.UserID = userID
+		sessionKey = fmt.Sprintf("wecom:%s:%s", chatID, userID)
+	}
+
 	texts, imgRefs, fileRefs := wsCollectInboundParts(&body)
 	if body.MsgType == "voice" {
 		vt := stripWeComAtMentions(wsVoiceText(body.Voice), rt.cfg.BotID, body.AibotID)
@@ -409,13 +450,15 @@ func (rt *wsRuntime) handleMsgCallback(ctx context.Context, frame wsFrame) {
 
 	go func() {
 		msg := WeComInboundMessage{
-			ConversationKey: sessionKey,
-			MessageID:       body.MsgID,
-			ChatID:          chatID,
-			UserID:          userID,
-			Text:            stripWeComAtMentions(strings.Join(texts, "\n"), rt.cfg.BotID, body.AibotID),
-			ReplyContext:    rctx,
-			ReceivedAt:      time.Now().UnixMilli(),
+			ConversationKey:  sessionKey,
+			MessageID:        body.MsgID,
+			ChatID:           chatID,
+			UserID:           userID,
+			Text:             stripWeComAtMentions(strings.Join(texts, "\n"), rt.cfg.BotID, body.AibotID),
+			ReplyContext:     rctx,
+			ReceivedAt:       time.Now().UnixMilli(),
+			RequesterContext: resolvedContext,
+			HostAuth:         resolvedAuth,
 		}
 		if len(imgRefs) > 0 || len(fileRefs) > 0 {
 			attachments := rt.downloadAttachments(context.Background(), imgRefs, fileRefs)
@@ -430,6 +473,20 @@ func (rt *wsRuntime) handleMsgCallback(ctx context.Context, frame wsFrame) {
 				state.LastError = handleErr.Error()
 			} else {
 				state.LastError = ""
+			}
+		})
+	}()
+}
+
+func (rt *wsRuntime) replyRequesterUnauthorized(ctx context.Context, msgID string, rctx replyContext) {
+	go func() {
+		err := rt.Reply(ctx, rctx, requesterUnauthorizedReplyText)
+		rt.markProcessed(msgID)
+		_ = rt.service.updateRuntime(func(state *RuntimeState) {
+			state.LastMessageAt = time.Now().UnixMilli()
+			state.ProcessedMessageIDs = append(state.ProcessedMessageIDs, msgID)
+			if err != nil {
+				state.LastError = err.Error()
 			}
 		})
 	}()

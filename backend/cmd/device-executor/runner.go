@@ -97,12 +97,7 @@ func (r *Runner) Execute(ctx context.Context, env Envelope) {
 		}
 	}
 
-	resp, err := proc.Request("session/prompt", map[string]any{
-		"sessionId": sessionID,
-		"prompt": []map[string]string{
-			{"type": "text", "text": payload.Prompt},
-		},
-	})
+	resp, err := r.promptWithHostAuth(proc, sessionID, payload)
 	if err != nil {
 		if shouldRecoverUnknownSession(err) && payload.SessionID != "" {
 			log.Printf("remote session %s is no longer valid for task %s; creating a replacement session", payload.SessionID, env.TaskID)
@@ -112,12 +107,7 @@ func (r *Runner) Execute(ctx context.Context, env Envelope) {
 				return
 			}
 			sessionID = newSessionID
-			resp, err = proc.Request("session/prompt", map[string]any{
-				"sessionId": sessionID,
-				"prompt": []map[string]string{
-					{"type": "text", "text": payload.Prompt},
-				},
-			})
+			resp, err = r.promptWithHostAuth(proc, sessionID, payload)
 			if err == nil {
 				if err := r.client.Send(MsgTaskDone, env.TaskID, TaskDonePayload{Result: resp.Result}); err != nil {
 					log.Printf("failed to send task.done for %s: %v", env.TaskID, err)
@@ -357,7 +347,7 @@ func (r *Runner) getOrStartAgent(agentID, workspacePath string) (*agent.Process,
 		if agentCfg == nil {
 			return nil, fmt.Errorf("agent not found: %s", agentID)
 		}
-		runtimeEnv := buildLumiRuntimeEnv(r.client.server, r.cfg)
+		runtimeEnv := buildLumiRuntimeEnv(r.client.server, r.cfg, agentID)
 		resolvedAgentCfg, err := agent.ResolveManagedConfig(agentCfg)
 		if err != nil {
 			return nil, err

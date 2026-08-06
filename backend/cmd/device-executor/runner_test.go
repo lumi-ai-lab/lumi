@@ -127,7 +127,7 @@ func TestBuildLumiRuntimeEnv(t *testing.T) {
 	env := buildLumiRuntimeEnv("http://host.docker.internal:3000", &ExecutorConfig{
 		WorkspaceID: "cli-sandbox-wecom-d9c429b4",
 		Workspace:   workspace,
-	})
+	}, "")
 
 	if env["LUMI_API_BASE"] != "http://host.docker.internal:3000/api" {
 		t.Fatalf("LUMI_API_BASE = %q", env["LUMI_API_BASE"])

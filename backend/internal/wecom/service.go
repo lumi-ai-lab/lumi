@@ -11,6 +11,7 @@ import (
 	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/imagent"
 	"github.com/pengmide/lumi/internal/imdebug"
+	"github.com/pengmide/lumi/internal/requesterpolicy"
 )
 
 type Status struct {
@@ -36,6 +37,7 @@ type Service struct {
 	runtime       *wsRuntime
 	locks         *conversationLocks
 	runs          *imagent.RunRegistry
+	policyStore   *requesterpolicy.Store
 }
 
 func NewService(cfg *config.Config, runner ChatRunner) *Service {
@@ -76,10 +78,18 @@ func (s *Service) Start() error {
 	if err := s.validateConfigForRuntime(cfg); err != nil {
 		return err
 	}
+	cfg = normalizeConfig(cfg)
+	policyStore, err := openRequesterPolicyStore(cfg)
+	if err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.running {
+		if policyStore != nil {
+			policyStore.Close()
+		}
 		return nil
 	}
 
@@ -89,6 +99,7 @@ func (s *Service) Start() error {
 	s.monitorCancel = cancel
 	s.monitorDone = done
 	s.runtime = nil
+	s.policyStore = policyStore
 	if err := s.updateRuntime(func(state *RuntimeState) {
 		state.Running = true
 		state.LastError = ""
@@ -97,11 +108,15 @@ func (s *Service) Start() error {
 		s.monitorCancel = nil
 		s.monitorDone = nil
 		s.runtime = nil
+		if s.policyStore != nil {
+			s.policyStore.Close()
+			s.policyStore = nil
+		}
 		cancel()
 		return err
 	}
 
-	go s.runWebSocketLoop(ctx, normalizeConfig(cfg), done)
+	go s.runWebSocketLoop(ctx, cfg, done)
 	return nil
 }
 
@@ -119,6 +134,8 @@ func (s *Service) Stop() error {
 	s.monitorDone = nil
 	rt := s.runtime
 	s.runtime = nil
+	policyStore := s.policyStore
+	s.policyStore = nil
 	s.running = false
 	s.mu.Unlock()
 
@@ -131,7 +148,35 @@ func (s *Service) Stop() error {
 	if done != nil {
 		<-done
 	}
+	if policyStore != nil {
+		policyStore.Close()
+	}
 	return nil
+}
+
+// PolicyStore returns the process-local requester policy store when enabled.
+func (s *Service) PolicyStore() *requesterpolicy.Store {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.policyStore
+}
+
+// ReloadRequesterPolicy reloads the in-memory permission list for this process.
+func (s *Service) ReloadRequesterPolicy() (requesterpolicy.Info, error) {
+	store := s.PolicyStore()
+	if store == nil {
+		return requesterpolicy.Info{}, errors.New("requester policy is not enabled")
+	}
+	return store.Reload()
+}
+
+// RequesterPolicyInfo returns a safe diagnostic view of the loaded policy.
+func (s *Service) RequesterPolicyInfo() (requesterpolicy.Info, error) {
+	store := s.PolicyStore()
+	if store == nil {
+		return requesterpolicy.Info{}, errors.New("requester policy is not enabled")
+	}
+	return store.Info()
 }
 
 func (s *Service) IsRunning() bool {
@@ -187,6 +232,9 @@ func (s *Service) RunCronJob(ctx context.Context, job lumicron.Job) (string, err
 		return job.ConversationID, err
 	}
 	cfg = normalizeConfig(cfg)
+	if cfg.RequesterConfigPath != "" || s.PolicyStore() != nil {
+		return job.ConversationID, errors.New("wecom cron jobs are disabled while requester permissions are enabled")
+	}
 	workspace := s.config.FindWorkspace(job.WorkspaceID)
 	if workspace == nil {
 		return job.ConversationID, errors.New("workspace not found")
@@ -365,6 +413,32 @@ func (s *Service) validateConfigForRuntime(cfg Config) error {
 	if strings.TrimSpace(cfg.BotSecret) == "" {
 		return errors.New("botSecret is required")
 	}
+	if err := validateRequesterPolicyConfig(cfg); err != nil {
+		return err
+	}
+	workspace := s.config.FindWorkspace(cfg.WorkspaceID)
+	if workspace != nil && workspace.Kind == "sandbox" {
+		if err := ValidateRequesterConfigOutsideWorkspace(cfg.RequesterConfigPath, workspace.Path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRequesterPolicyConfig(cfg Config) error {
+	if strings.TrimSpace(cfg.RequesterConfigPath) == "" {
+		return nil
+	}
+	// Validate by a one-shot load without starting the refresh loop.
+	store, err := requesterpolicy.NewStore(requesterpolicy.Options{
+		Path:            cfg.RequesterConfigPath,
+		RuntimeBotID:    cfg.BotID,
+		RefreshInterval: 0,
+	})
+	if err != nil {
+		return err
+	}
+	store.Close()
 	return nil
 }
 

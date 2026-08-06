@@ -21,6 +21,7 @@ import (
 	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/imagent"
 	"github.com/pengmide/lumi/internal/imdebug"
+	"github.com/pengmide/lumi/internal/requestercontext"
 	"github.com/pengmide/lumi/internal/storage"
 )
 
@@ -64,14 +65,16 @@ type replyContext struct {
 }
 
 type WeComInboundMessage struct {
-	ConversationKey string            `json:"conversationKey"`
-	MessageID       string            `json:"messageId"`
-	ChatID          string            `json:"chatId"`
-	UserID          string            `json:"userId"`
-	Text            string            `json:"text"`
-	Attachments     []WeComAttachment `json:"attachments"`
-	ReplyContext    replyContext      `json:"replyContext"`
-	ReceivedAt      int64             `json:"receivedAt"`
+	ConversationKey  string                     `json:"conversationKey"`
+	MessageID        string                     `json:"messageId"`
+	ChatID           string                     `json:"chatId"`
+	UserID           string                     `json:"userId"`
+	Text             string                     `json:"text"`
+	Attachments      []WeComAttachment          `json:"attachments"`
+	ReplyContext     replyContext               `json:"replyContext"`
+	ReceivedAt       int64                      `json:"receivedAt"`
+	RequesterContext *requestercontext.Context  `json:"-"`
+	HostAuth         *requestercontext.HostAuth `json:"-"`
 }
 
 type wsMessageSender interface {
@@ -472,6 +475,8 @@ func (s *Service) handleInboundMessage(ctx context.Context, cfg Config, msg WeCo
 		SessionModeOverride: deriveSessionMode(agentID),
 		NewSession:          newSession,
 		ConversationStore:   s.convStore,
+		RequesterContext:    msg.RequesterContext,
+		HostAuth:            msg.HostAuth,
 		CronTarget: lumicron.Target{WeCom: &lumicron.WeComTarget{
 			ReqID:    msg.ReplyContext.ReqID,
 			ChatID:   msg.ReplyContext.ChatID,

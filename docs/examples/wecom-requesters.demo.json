@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "users": [
+    {
+      "userId": "pengmingde01",
+      "displayName": "彭明德",
+      "enabled": true,
+      "authorization": {
+        "capabilities": ["qdm.metric.query"],
+        "claims": {
+          "qdm.scope": {
+            "schemaVersion": 1,
+            "manageAreaIds": ["CN01"],
+            "dcManageAreaIds": ["CN01"],
+            "categoryLevel1Ids": ["10", "11"]
+          }
+        }
+      }
+    },
+    {
+      "userId": "disabled-user",
+      "displayName": "停用用户",
+      "enabled": false,
+      "authorization": {
+        "capabilities": [],
+        "claims": {}
+      }
+    }
+  ]
+}

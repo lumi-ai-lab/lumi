@@ -21,6 +21,10 @@ func (s *Service) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleEnable(w, r)
 	case r.URL.Path == "/api/wecom/disable" && r.Method == http.MethodPost:
 		s.handleDisable(w, r)
+	case r.URL.Path == "/api/wecom/requester-policy" && r.Method == http.MethodGet:
+		s.handleRequesterPolicyInfo(w, r)
+	case r.URL.Path == "/api/wecom/requester-policy/reload" && r.Method == http.MethodPost:
+		s.handleRequesterPolicyReload(w, r)
 	default:
 		writeError(w, "Not found", http.StatusNotFound)
 	}
@@ -37,17 +41,19 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Service) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	var data struct {
-		Enabled             bool    `json:"enabled"`
-		Mode                string  `json:"mode"`
-		BotID               string  `json:"botId"`
-		BotSecret           *string `json:"botSecret"`
-		WorkspaceID         string  `json:"workspaceId"`
-		AgentID             string  `json:"agentId"`
-		AllowFrom           string  `json:"allowFrom"`
-		Stream              bool    `json:"stream"`
-		ConnectTimeoutMs    int     `json:"connectTimeoutMs"`
-		HeartbeatIntervalMs int     `json:"heartbeatIntervalMs"`
-		MessageAckTimeoutMs int     `json:"messageAckTimeoutMs"`
+		Enabled                  bool    `json:"enabled"`
+		Mode                     string  `json:"mode"`
+		BotID                    string  `json:"botId"`
+		BotSecret                *string `json:"botSecret"`
+		WorkspaceID              string  `json:"workspaceId"`
+		AgentID                  string  `json:"agentId"`
+		AllowFrom                string  `json:"allowFrom"`
+		RequesterConfigPath      *string `json:"requesterConfigPath"`
+		RequesterConfigRefreshMs *int    `json:"requesterConfigRefreshMs"`
+		Stream                   bool    `json:"stream"`
+		ConnectTimeoutMs         int     `json:"connectTimeoutMs"`
+		HeartbeatIntervalMs      int     `json:"heartbeatIntervalMs"`
+		MessageAckTimeoutMs      int     `json:"messageAckTimeoutMs"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
 		writeError(w, "Invalid request", http.StatusBadRequest)
@@ -73,6 +79,12 @@ func (s *Service) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	next.MessageAckTimeoutMs = data.MessageAckTimeoutMs
 	if data.BotSecret != nil {
 		next.BotSecret = *data.BotSecret
+	}
+	if data.RequesterConfigPath != nil {
+		next.RequesterConfigPath = *data.RequesterConfigPath
+	}
+	if data.RequesterConfigRefreshMs != nil {
+		next.RequesterConfigRefreshMs = *data.RequesterConfigRefreshMs
 	}
 
 	sanitized, err := s.SaveConfig(r.Context(), next)
@@ -125,6 +137,31 @@ func (s *Service) handleDisable(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"success": true})
+}
+
+func (s *Service) handleRequesterPolicyInfo(w http.ResponseWriter, _ *http.Request) {
+	info, err := s.RequesterPolicyInfo()
+	if err != nil {
+		writeError(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, info)
+}
+
+func (s *Service) handleRequesterPolicyReload(w http.ResponseWriter, _ *http.Request) {
+	info, err := s.ReloadRequesterPolicy()
+	if err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "requester policy is not enabled" {
+			status = http.StatusNotFound
+		}
+		writeError(w, err.Error(), status)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"success": true,
+		"policy":  info,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, data any) {

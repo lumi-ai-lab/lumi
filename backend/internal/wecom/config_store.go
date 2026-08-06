@@ -19,32 +19,36 @@ const (
 )
 
 type Config struct {
-	Enabled             bool   `json:"enabled"`
-	Mode                string `json:"mode"`
-	BotID               string `json:"botId"`
-	BotSecret           string `json:"botSecret"`
-	WorkspaceID         string `json:"workspaceId"`
-	AgentID             string `json:"agentId"`
-	AllowFrom           string `json:"allowFrom"`
-	Stream              bool   `json:"stream"`
-	ConnectTimeoutMs    int    `json:"connectTimeoutMs"`
-	HeartbeatIntervalMs int    `json:"heartbeatIntervalMs"`
-	MessageAckTimeoutMs int    `json:"messageAckTimeoutMs"`
+	Enabled                  bool   `json:"enabled"`
+	Mode                     string `json:"mode"`
+	BotID                    string `json:"botId"`
+	BotSecret                string `json:"botSecret"`
+	WorkspaceID              string `json:"workspaceId"`
+	AgentID                  string `json:"agentId"`
+	AllowFrom                string `json:"allowFrom"`
+	RequesterConfigPath      string `json:"requesterConfigPath,omitempty"`
+	RequesterConfigRefreshMs int    `json:"requesterConfigRefreshMs,omitempty"`
+	Stream                   bool   `json:"stream"`
+	ConnectTimeoutMs         int    `json:"connectTimeoutMs"`
+	HeartbeatIntervalMs      int    `json:"heartbeatIntervalMs"`
+	MessageAckTimeoutMs      int    `json:"messageAckTimeoutMs"`
 }
 
 type SanitizedConfig struct {
-	Enabled             bool   `json:"enabled"`
-	Mode                string `json:"mode"`
-	BotID               string `json:"botId"`
-	WorkspaceID         string `json:"workspaceId"`
-	AgentID             string `json:"agentId"`
-	AllowFrom           string `json:"allowFrom"`
-	Stream              bool   `json:"stream"`
-	ConnectTimeoutMs    int    `json:"connectTimeoutMs"`
-	HeartbeatIntervalMs int    `json:"heartbeatIntervalMs"`
-	MessageAckTimeoutMs int    `json:"messageAckTimeoutMs"`
-	HasSecret           bool   `json:"hasSecret"`
-	MaskedSecret        string `json:"maskedSecret,omitempty"`
+	Enabled                  bool   `json:"enabled"`
+	Mode                     string `json:"mode"`
+	BotID                    string `json:"botId"`
+	WorkspaceID              string `json:"workspaceId"`
+	AgentID                  string `json:"agentId"`
+	AllowFrom                string `json:"allowFrom"`
+	RequesterConfigPath      string `json:"requesterConfigPath,omitempty"`
+	RequesterConfigRefreshMs int    `json:"requesterConfigRefreshMs,omitempty"`
+	Stream                   bool   `json:"stream"`
+	ConnectTimeoutMs         int    `json:"connectTimeoutMs"`
+	HeartbeatIntervalMs      int    `json:"heartbeatIntervalMs"`
+	MessageAckTimeoutMs      int    `json:"messageAckTimeoutMs"`
+	HasSecret                bool   `json:"hasSecret"`
+	MaskedSecret             string `json:"maskedSecret,omitempty"`
 }
 
 type ConfigStore struct {
@@ -116,23 +120,29 @@ func normalizeConfig(cfg Config) Config {
 		cfg.MessageAckTimeoutMs = defaultMessageAckTimeoutMs
 	}
 	cfg.AllowFrom = strings.TrimSpace(cfg.AllowFrom)
+	cfg.RequesterConfigPath = strings.TrimSpace(cfg.RequesterConfigPath)
+	if cfg.RequesterConfigRefreshMs < 0 {
+		cfg.RequesterConfigRefreshMs = 0
+	}
 	return cfg
 }
 
 func SanitizeConfig(cfg Config) SanitizedConfig {
 	cfg = normalizeConfig(cfg)
 	sanitized := SanitizedConfig{
-		Enabled:             cfg.Enabled,
-		Mode:                cfg.Mode,
-		BotID:               cfg.BotID,
-		WorkspaceID:         cfg.WorkspaceID,
-		AgentID:             cfg.AgentID,
-		AllowFrom:           cfg.AllowFrom,
-		Stream:              cfg.Stream,
-		ConnectTimeoutMs:    cfg.ConnectTimeoutMs,
-		HeartbeatIntervalMs: cfg.HeartbeatIntervalMs,
-		MessageAckTimeoutMs: cfg.MessageAckTimeoutMs,
-		HasSecret:           strings.TrimSpace(cfg.BotSecret) != "",
+		Enabled:                  cfg.Enabled,
+		Mode:                     cfg.Mode,
+		BotID:                    cfg.BotID,
+		WorkspaceID:              cfg.WorkspaceID,
+		AgentID:                  cfg.AgentID,
+		AllowFrom:                cfg.AllowFrom,
+		RequesterConfigPath:      cfg.RequesterConfigPath,
+		RequesterConfigRefreshMs: cfg.RequesterConfigRefreshMs,
+		Stream:                   cfg.Stream,
+		ConnectTimeoutMs:         cfg.ConnectTimeoutMs,
+		HeartbeatIntervalMs:      cfg.HeartbeatIntervalMs,
+		MessageAckTimeoutMs:      cfg.MessageAckTimeoutMs,
+		HasSecret:                strings.TrimSpace(cfg.BotSecret) != "",
 	}
 	if sanitized.HasSecret {
 		sanitized.MaskedSecret = maskSecret(cfg.BotSecret)

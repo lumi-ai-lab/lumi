@@ -17,6 +17,7 @@ import (
 	"github.com/pengmide/lumi/internal/imdebug"
 	"github.com/pengmide/lumi/internal/jsonrpc"
 	"github.com/pengmide/lumi/internal/mcpstore"
+	"github.com/pengmide/lumi/internal/requestercontext"
 	"github.com/pengmide/lumi/internal/storage"
 	"github.com/pengmide/lumi/internal/wecom"
 )
@@ -148,11 +149,31 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 	defer close(stopCancelWatcher)
 
 	promptText := input.Message
-
-	response, err := agentProc.Request("session/prompt", map[string]any{
+	promptParams := map[string]any{
 		"sessionId": sessionID,
 		"prompt":    []map[string]string{{"type": "text", "text": promptText}},
-	})
+	}
+	var hostAuthCleanup requestercontext.CleanupFunc
+	if input.HostAuth != nil {
+		if err := injectLocalRequesterContextEnv(r.config, input.WorkspaceID, input.AgentID); err != nil {
+			return r.emitError(sink, err.Error())
+		}
+		cleanup, bridgeErr := publishLocalHostAuth(sessionID, input.WorkspaceID, input.AgentID, *input.HostAuth, input.RequesterContext)
+		if bridgeErr != nil {
+			return r.emitError(sink, bridgeErr.Error())
+		}
+		hostAuthCleanup = cleanup
+		promptParams["_meta"] = requestercontext.PromptMeta(*input.HostAuth, input.RequesterContext)
+	}
+	if hostAuthCleanup != nil {
+		defer func() {
+			if cleanupErr := hostAuthCleanup(); cleanupErr != nil {
+				// best-effort cleanup
+			}
+		}()
+	}
+
+	response, err := agentProc.Request("session/prompt", promptParams)
 	if err != nil {
 		if autoPermissionErr != "" {
 			return nil

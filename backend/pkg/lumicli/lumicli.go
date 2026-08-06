@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pengmide/lumi/internal/api"
 	"github.com/pengmide/lumi/internal/config"
@@ -26,17 +27,20 @@ const SandboxWorkspaceID = "cli-sandbox"
 const IMSandboxIdleTimeoutSec = 10 * 365 * 24 * 60 * 60
 
 type RunOptions struct {
-	ConfigPath     string
-	Workspace      string
-	Kind           string
-	AgentID        string
-	AgentIDs       []string
-	BotID          string
-	BotSecret      string
-	WeComStream    bool
-	Port           string
-	IdleTimeoutSec int
-	SandboxID      string
+	ConfigPath             string
+	Workspace              string
+	Kind                   string
+	AgentID                string
+	AgentIDs               []string
+	BotID                  string
+	BotSecret              string
+	RequesterConfigPath    string
+	RequesterConfigRefresh time.Duration // 0 = default 10m; negative = disable periodic
+	WeComStream            bool
+	Port                   string
+	IdleTimeoutSec         int
+	SandboxID              string
+	Image                  string
 }
 
 type WeChatRunOptions struct {
@@ -51,6 +55,7 @@ type WeChatRunOptions struct {
 	Port           string
 	IdleTimeoutSec int
 	SandboxID      string
+	Image          string
 }
 
 type ConfigState struct {
@@ -194,28 +199,48 @@ func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, er
 		Channel:        "wecom",
 		Identity:       opts.BotID,
 		SandboxID:      opts.SandboxID,
+		Image:          opts.Image,
 	})
 	if err != nil {
 		return nil, "", err
 	}
 
-	wecomCfg := wecom.Config{
-		Enabled:             true,
-		Mode:                "websocket",
-		BotID:               strings.TrimSpace(opts.BotID),
-		BotSecret:           strings.TrimSpace(opts.BotSecret),
-		WorkspaceID:         workspaceID,
-		AgentID:             agentID,
-		Stream:              opts.WeComStream,
-		ConnectTimeoutMs:    15000,
-		HeartbeatIntervalMs: 30000,
-		MessageAckTimeoutMs: 5000,
+	requesterConfigPath, err := resolveRequesterConfigPath(opts.RequesterConfigPath)
+	if err != nil {
+		return nil, "", err
 	}
-	if strings.TrimSpace(wecomCfg.BotID) == "" {
+	botID := strings.TrimSpace(opts.BotID)
+	botSecret := strings.TrimSpace(opts.BotSecret)
+	if botID == "" {
 		return nil, "", errors.New("bot id is required")
 	}
-	if strings.TrimSpace(wecomCfg.BotSecret) == "" {
+	if botSecret == "" {
 		return nil, "", errors.New("bot secret is required")
+	}
+	if requesterConfigPath != "" {
+		if err := wecom.OpenRequesterPolicyPreview(requesterConfigPath, botID); err != nil {
+			return nil, "", err
+		}
+	}
+	if workspaceKind(opts.Kind) == "sandbox" {
+		if err := wecom.ValidateRequesterConfigOutsideWorkspace(requesterConfigPath, workspacePath); err != nil {
+			return nil, "", err
+		}
+	}
+
+	wecomCfg := wecom.Config{
+		Enabled:                  true,
+		Mode:                     "websocket",
+		BotID:                    botID,
+		BotSecret:                botSecret,
+		WorkspaceID:              workspaceID,
+		AgentID:                  agentID,
+		RequesterConfigPath:      requesterConfigPath,
+		RequesterConfigRefreshMs: requesterRefreshMs(opts.RequesterConfigRefresh),
+		Stream:                   opts.WeComStream,
+		ConnectTimeoutMs:         15000,
+		HeartbeatIntervalMs:      30000,
+		MessageAckTimeoutMs:      5000,
 	}
 	store := wecom.NewConfigStore()
 	if workspaceKind(opts.Kind) == "sandbox" {
@@ -226,6 +251,29 @@ func PrepareRun(state *ConfigState, opts RunOptions) (*config.Config, string, er
 	}
 
 	return cfg, workspacePath, nil
+}
+
+func resolveRequesterConfigPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	resolved, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve requester config path: %w", err)
+	}
+	return filepath.Clean(resolved), nil
+}
+
+// requesterRefreshMs maps CLI duration: 0 => default (0 ms sentinel), negative => -1 disable.
+func requesterRefreshMs(d time.Duration) int {
+	if d < 0 {
+		return -1
+	}
+	if d == 0 {
+		return 0 // store uses default 10m
+	}
+	return int(d / time.Millisecond)
 }
 
 func PrepareWeChatRun(state *ConfigState, opts WeChatRunOptions) (*config.Config, string, error) {
@@ -239,6 +287,7 @@ func PrepareWeChatRun(state *ConfigState, opts WeChatRunOptions) (*config.Config
 		Channel:        "wechat",
 		Identity:       opts.AccountID,
 		SandboxID:      opts.SandboxID,
+		Image:          opts.Image,
 	})
 	if err != nil {
 		return nil, "", err
@@ -280,6 +329,7 @@ type imRunWorkspaceOptions struct {
 	Channel        string
 	Identity       string
 	SandboxID      string
+	Image          string
 }
 
 func prepareIMRunWorkspace(state *ConfigState, opts imRunWorkspaceOptions) (*config.Config, string, string, string, error) {
@@ -308,6 +358,10 @@ func prepareIMRunWorkspace(state *ConfigState, opts imRunWorkspaceOptions) (*con
 	}
 	if opts.IdleTimeoutSec < 0 {
 		return nil, "", "", "", errors.New("idle timeout sec must be non-negative")
+	}
+	image := strings.TrimSpace(opts.Image)
+	if image != "" && strings.ContainsAny(image, " \t\n\r") {
+		return nil, "", "", "", errors.New("sandbox image must not contain whitespace")
 	}
 
 	agentID := strings.TrimSpace(opts.AgentID)
@@ -343,11 +397,14 @@ func prepareIMRunWorkspace(state *ConfigState, opts imRunWorkspaceOptions) (*con
 		Agents: workspaceAgents,
 	}
 	if kind == "sandbox" {
+		workspace.Image = image
 		workspace.Image = sandbox.ResolveImage(workspace)
 		workspace.IdleTimeoutSec = IMSandboxIdleTimeoutSec
 		if opts.IdleTimeoutSec > 0 {
 			workspace.IdleTimeoutSec = opts.IdleTimeoutSec
 		}
+	} else if image != "" {
+		return nil, "", "", "", errors.New("image is only valid with --kind sandbox")
 	}
 	upsertWorkspace(cfg, workspace)
 	cfg.DefaultWorkspace = workspaceID

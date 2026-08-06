@@ -365,6 +365,167 @@ func TestPrepareRunUsesSandboxIdleTimeoutOverride(t *testing.T) {
 	}
 }
 
+func TestPrepareRunUsesSandboxImageOverrideAndDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	state, err := ResolveConfigState("")
+	if err != nil {
+		t.Fatalf("ResolveConfigState() error = %v", err)
+	}
+	if err := EnsureConfigFile(state); err != nil {
+		t.Fatalf("EnsureConfigFile() error = %v", err)
+	}
+	state.Config.Agents = []config.AgentConfig{
+		{ID: "claude", Name: "Claude Code", Command: "npx"},
+	}
+	state.Config.DefaultAgent = "claude"
+	if err := saveConfig(state.Config, state.Path); err != nil {
+		t.Fatalf("saveConfig() error = %v", err)
+	}
+	state.HasAgents = true
+
+	cfg, _, err := PrepareRun(state, RunOptions{
+		Workspace: workspace,
+		Kind:      "sandbox",
+		AgentID:   "claude",
+		BotID:     "bot-123",
+		BotSecret: "secret-456",
+	})
+	if err != nil {
+		t.Fatalf("PrepareRun(default image) error = %v", err)
+	}
+	wantWorkspaceID, err := resolveSandboxWorkspaceID("wecom", "bot-123", workspace, "")
+	if err != nil {
+		t.Fatalf("resolveSandboxWorkspaceID() error = %v", err)
+	}
+	ws := cfg.FindWorkspace(wantWorkspaceID)
+	if ws == nil {
+		t.Fatalf("workspace %s not found", wantWorkspaceID)
+	}
+	if ws.Image != sandbox.DefaultImage {
+		t.Fatalf("default sandbox image = %q, want %q", ws.Image, sandbox.DefaultImage)
+	}
+
+	const customImage = "myregistry/lumi-sandbox:dev"
+	cfg, _, err = PrepareRun(state, RunOptions{
+		Workspace: workspace,
+		Kind:      "sandbox",
+		AgentID:   "claude",
+		BotID:     "bot-123",
+		BotSecret: "secret-456",
+		Image:     customImage,
+	})
+	if err != nil {
+		t.Fatalf("PrepareRun(custom image) error = %v", err)
+	}
+	ws = cfg.FindWorkspace(wantWorkspaceID)
+	if ws == nil {
+		t.Fatalf("workspace %s not found after image override", wantWorkspaceID)
+	}
+	if ws.Image != customImage {
+		t.Fatalf("sandbox image = %q, want %q", ws.Image, customImage)
+	}
+
+	const nextImage = "ghcr.io/example/lumi-sandbox:v2"
+	cfg, _, err = PrepareRun(state, RunOptions{
+		Workspace: workspace,
+		Kind:      "sandbox",
+		AgentID:   "claude",
+		BotID:     "bot-123",
+		BotSecret: "secret-456",
+		Image:     nextImage,
+	})
+	if err != nil {
+		t.Fatalf("PrepareRun(updated image) error = %v", err)
+	}
+	ws = cfg.FindWorkspace(wantWorkspaceID)
+	if ws == nil {
+		t.Fatalf("workspace %s not found after image update", wantWorkspaceID)
+	}
+	if ws.Image != nextImage {
+		t.Fatalf("updated sandbox image = %q, want %q", ws.Image, nextImage)
+	}
+}
+
+func TestPrepareRunRejectsImageForLocalKind(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	state, err := ResolveConfigState("")
+	if err != nil {
+		t.Fatalf("ResolveConfigState() error = %v", err)
+	}
+	if err := EnsureConfigFile(state); err != nil {
+		t.Fatalf("EnsureConfigFile() error = %v", err)
+	}
+	state.Config.Agents = []config.AgentConfig{
+		{ID: "claude", Name: "Claude Code", Command: "npx"},
+	}
+	state.Config.DefaultAgent = "claude"
+	if err := saveConfig(state.Config, state.Path); err != nil {
+		t.Fatalf("saveConfig() error = %v", err)
+	}
+	state.HasAgents = true
+
+	_, _, err = PrepareRun(state, RunOptions{
+		Workspace: workspace,
+		Kind:      "local",
+		AgentID:   "claude",
+		BotID:     "bot-123",
+		BotSecret: "secret-456",
+		Image:     "myregistry/lumi-sandbox:dev",
+	})
+	if err == nil || !strings.Contains(err.Error(), "image is only valid with --kind sandbox") {
+		t.Fatalf("PrepareRun(local+image) error = %v, want image-only-for-sandbox error", err)
+	}
+}
+
+func TestPrepareRunRejectsWhitespaceSandboxImage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	state, err := ResolveConfigState("")
+	if err != nil {
+		t.Fatalf("ResolveConfigState() error = %v", err)
+	}
+	if err := EnsureConfigFile(state); err != nil {
+		t.Fatalf("EnsureConfigFile() error = %v", err)
+	}
+	state.Config.Agents = []config.AgentConfig{
+		{ID: "claude", Name: "Claude Code", Command: "npx"},
+	}
+	state.Config.DefaultAgent = "claude"
+	if err := saveConfig(state.Config, state.Path); err != nil {
+		t.Fatalf("saveConfig() error = %v", err)
+	}
+	state.HasAgents = true
+
+	_, _, err = PrepareRun(state, RunOptions{
+		Workspace: workspace,
+		Kind:      "sandbox",
+		AgentID:   "claude",
+		BotID:     "bot-123",
+		BotSecret: "secret-456",
+		Image:     "bad image",
+	})
+	if err == nil || !strings.Contains(err.Error(), "must not contain whitespace") {
+		t.Fatalf("PrepareRun(whitespace image) error = %v, want whitespace error", err)
+	}
+}
+
 func TestPrepareRunSandboxIDDerivationAndOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

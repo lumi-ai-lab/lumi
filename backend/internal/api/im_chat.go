@@ -14,6 +14,7 @@ import (
 	lumicron "github.com/pengmide/lumi/internal/cron"
 	"github.com/pengmide/lumi/internal/device"
 	"github.com/pengmide/lumi/internal/jsonrpc"
+	"github.com/pengmide/lumi/internal/requestercontext"
 	"github.com/pengmide/lumi/internal/storage"
 	"github.com/pengmide/lumi/internal/wechat"
 	"github.com/pengmide/lumi/internal/wecom"
@@ -36,6 +37,8 @@ type imRunInput struct {
 	Files              []device.TaskFileInfo
 	ConversationStore  imHiddenConversationStore
 	NewSession         bool
+	RequesterContext   *requestercontext.Context
+	HostAuth           *requestercontext.HostAuth
 }
 
 type imEventSink interface {
@@ -127,6 +130,8 @@ func (s *Server) RunWeComChat(ctx context.Context, input wecom.ChatRunInput, sin
 		Files:             wecomTaskFiles(input.Files),
 		ConversationStore: input.ConversationStore,
 		NewSession:        input.NewSession,
+		RequesterContext:  input.RequesterContext,
+		HostAuth:          input.HostAuth,
 	}, wecomSinkAdapter{sink: sink})
 }
 
@@ -239,6 +244,8 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 		Prompt:             prompt,
 		SystemPromptAppend: input.SystemPromptAppend,
 		Files:              input.Files,
+		RequesterContext:   input.RequesterContext,
+		HostAuth:           input.HostAuth,
 	}
 	if err := s.devices.SendToDevice(taskCtx, deviceID, device.MsgTaskExecute, task.ID, payload); err != nil {
 		_ = sink.Emit("error", map[string]string{"message": err.Error()})
