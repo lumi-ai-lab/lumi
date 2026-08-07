@@ -115,12 +115,12 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 	toolCallMap := make(map[string]int)
 	autoPermissionErr := ""
 
-	cleanupNotification := agentProc.OnNotification(func(msg *jsonrpc.Message) {
+	cleanupNotification := agentProc.OnNotification(sessionID, func(msg *jsonrpc.Message) {
 		_ = r.handleWeComNotification(msg, sink, &streamItems, accumulator, toolCallMap, input.AgentID)
 	})
 	defer cleanupNotification()
 
-	cleanupPermission := agentProc.OnPermission(func(req *agent.PermissionRequest) {
+	cleanupPermission := agentProc.OnPermission(sessionID, func(req *agent.PermissionRequest) {
 		_ = sink.Emit(wecom.ChatEvent{Name: "permission_request", Data: req})
 
 		optionID := firstAllowOption(req.Options)
