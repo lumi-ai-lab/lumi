@@ -454,28 +454,6 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 	}
 	agentProc.SetWorkingDir(ctx.Prepared.WorkspacePath)
 
-	streamItems := make([]streamItem, 0)
-	accumulator := &streamAccumulator{}
-	toolCallMap := make(map[string]int)
-
-	cleanupNotification := agentProc.OnNotification(func(msg *jsonrpc.Message) {
-		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID)
-	})
-	defer cleanupNotification()
-
-	cleanupPermission := agentProc.OnPermission(func(req *agent.PermissionRequest) {
-		if s.shouldAutoApproveAgent(ctx.Prepared.AgentID) {
-			if optionID, ok := selectLocalPermissionOption(req); ok {
-				agentProc.ConfirmPermission(req.ToolCall.ToolCallID, optionID)
-				return
-			}
-		}
-		payload := pendingPermissionFromAgent(ctx.Prepared.ConvID, ctx.Prepared.AgentID, req)
-		s.setPendingPermission(payload)
-		ctx.SendEvent("permission_request", payload)
-	})
-	defer cleanupPermission()
-
 	sessionsMap := s.agentSessions[ctx.Prepared.ConvID]
 	if sessionsMap == nil {
 		sessionsMap = make(map[string]string)
@@ -498,6 +476,28 @@ func (s *Server) handleLocalChat(ctx chatRuntimeContext) {
 			sessionsMap[ctx.Prepared.AgentID] = sessionID
 		}
 	}
+
+	streamItems := make([]streamItem, 0)
+	accumulator := &streamAccumulator{}
+	toolCallMap := make(map[string]int)
+
+	cleanupNotification := agentProc.OnNotification(sessionID, func(msg *jsonrpc.Message) {
+		s.handleNotification(msg, ctx.SendEvent, &streamItems, accumulator, toolCallMap, ctx.Prepared.AgentID)
+	})
+	defer cleanupNotification()
+
+	cleanupPermission := agentProc.OnPermission(sessionID, func(req *agent.PermissionRequest) {
+		if s.shouldAutoApproveAgent(ctx.Prepared.AgentID) {
+			if optionID, ok := selectLocalPermissionOption(req); ok {
+				agentProc.ConfirmPermission(req.ToolCall.ToolCallID, optionID)
+				return
+			}
+		}
+		payload := pendingPermissionFromAgent(ctx.Prepared.ConvID, ctx.Prepared.AgentID, req)
+		s.setPendingPermission(payload)
+		ctx.SendEvent("permission_request", payload)
+	})
+	defer cleanupPermission()
 
 	s.addChatUserMessage(ctx)
 	s.conversations.SetSessionID(ctx.Prepared.ConvID, sessionID)

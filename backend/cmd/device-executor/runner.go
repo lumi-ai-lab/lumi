@@ -64,7 +64,7 @@ func (r *Runner) Execute(ctx context.Context, env Envelope) {
 	}
 	defer r.finishTask(env.TaskID)
 
-	cleanupNotification := proc.OnNotification(func(msg *jsonrpc.Message) {
+	cleanupNotification := proc.OnNotification("", func(msg *jsonrpc.Message) {
 		if err := r.client.Send(MsgTaskEvent, env.TaskID, TaskEventPayload{
 			SessionID:    r.sessionForTask(env.TaskID),
 			Notification: toACPNotification(msg),
@@ -74,7 +74,7 @@ func (r *Runner) Execute(ctx context.Context, env Envelope) {
 	})
 	defer cleanupNotification()
 
-	cleanupPermission := proc.OnPermission(func(req *agent.PermissionRequest) {
+	cleanupPermission := proc.OnPermission("", func(req *agent.PermissionRequest) {
 		if err := r.client.Send(MsgPermissionRequest, env.TaskID, toPermissionRequestPayload(req)); err != nil {
 			log.Printf("failed to forward permission request for task %s: %v", env.TaskID, err)
 		}

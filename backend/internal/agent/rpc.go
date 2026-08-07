@@ -155,10 +155,14 @@ func (p *Process) handleMessage(msg *jsonrpc.Message) {
 
 	// Notification from agent
 	if msg.IsNotification() {
+		notifSessionID := extractSessionIDFromParams(msg.Params)
+
 		p.mu.Lock()
-		handlers := make([]func(*jsonrpc.Message), len(p.notificationHandlers))
-		for i, h := range p.notificationHandlers {
-			handlers[i] = h.handler
+		handlers := make([]func(*jsonrpc.Message), 0, len(p.notificationHandlers))
+		for _, h := range p.notificationHandlers {
+			if shouldDispatch(h.sessionID, notifSessionID) {
+				handlers = append(handlers, h.handler)
+			}
 		}
 		p.mu.Unlock()
 
@@ -204,14 +208,16 @@ func (p *Process) handlePermissionRequest(msg *jsonrpc.Message) {
 		RequestID: decodeAnyID(msg.ID),
 		Response:  respCh,
 	}
-	permHandlers := make([]func(*PermissionRequest), len(p.permissionHandlers))
-	for i, h := range p.permissionHandlers {
-		permHandlers[i] = h.handler
+	permHandlers := make([]func(*PermissionRequest), 0, len(p.permissionHandlers))
+	for _, h := range p.permissionHandlers {
+		if shouldDispatch(h.sessionID, req.SessionID) {
+			permHandlers = append(permHandlers, h.handler)
+		}
 	}
 	stopCh := p.stopCh
 	p.mu.Unlock()
 
-	// Emit permission request to all registered handlers
+	// Emit permission request to matching handlers
 	for _, handler := range permHandlers {
 		handler(&req)
 	}
@@ -272,4 +278,34 @@ func decodeAnyID(raw json.RawMessage) any {
 		return text
 	}
 	return string(raw)
+}
+
+// extractSessionIDFromParams parses the sessionId field from notification or
+// request params. ACP session/update notifications and session/request_permission
+// requests both carry sessionId at the top level of their params object.
+// Returns "" when the field is absent (triggers catch-all fallback in shouldDispatch).
+func extractSessionIDFromParams(params json.RawMessage) string {
+	if len(params) == 0 {
+		return ""
+	}
+	var p struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return ""
+	}
+	return p.SessionID
+}
+
+// shouldDispatch decides whether a handler registered with handlerSessionID
+// should receive a notification/permission whose sessionId is notifSessionID.
+//
+//   - handlerSessionID == ""  → catch-all, always receives (backward compatible)
+//   - notifSessionID == ""   → notification lacks sessionId, deliver to all (graceful degradation)
+//   - otherwise              → exact match required
+func shouldDispatch(handlerSessionID, notifSessionID string) bool {
+	if handlerSessionID == "" || notifSessionID == "" {
+		return true
+	}
+	return handlerSessionID == notifSessionID
 }

@@ -680,6 +680,7 @@ func testTextSessionUpdate(t *testing.T, text string) *jsonrpc.Message {
 func testTextSessionUpdateKind(t *testing.T, kind, text string) *jsonrpc.Message {
 	t.Helper()
 	params := map[string]any{
+		"sessionId": "test-session",
 		"update": map[string]any{
 			"sessionUpdate": kind,
 			"content": map[string]any{

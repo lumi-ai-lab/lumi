@@ -52,16 +52,21 @@ type PendingPermission struct {
 	Response  chan string // optionId
 }
 
-// notificationCallback is a registered notification callback with cleanup support
+// notificationCallback is a registered notification callback with cleanup support.
+// sessionID scopes dispatch: "" means catch-all (receives all notifications),
+// a non-empty value means only notifications for that session are delivered.
 type notificationCallback struct {
-	id      int
-	handler func(msg *jsonrpc.Message)
+	id        int
+	sessionID string
+	handler   func(msg *jsonrpc.Message)
 }
 
-// permissionCallback is a registered permission callback with cleanup support
+// permissionCallback is a registered permission callback with cleanup support.
+// sessionID scopes dispatch the same way as notificationCallback.
 type permissionCallback struct {
-	id      int
-	handler func(req *PermissionRequest)
+	id        int
+	sessionID string
+	handler   func(req *PermissionRequest)
 }
 
 // Process wraps a backend ACP process
@@ -117,12 +122,14 @@ func (p *Process) SetWorkingDir(dir string) {
 	p.workingDir = dir
 }
 
-// OnNotification registers a notification handler and returns a cleanup function
-func (p *Process) OnNotification(fn func(*jsonrpc.Message)) func() {
+// OnNotification registers a notification handler scoped to sessionID and
+// returns a cleanup function. Pass "" for sessionID to register a catch-all
+// handler that receives all notifications (backward compatible).
+func (p *Process) OnNotification(sessionID string, fn func(*jsonrpc.Message)) func() {
 	p.mu.Lock()
 	p.handlerID++
 	id := p.handlerID
-	p.notificationHandlers = append(p.notificationHandlers, notificationCallback{id: id, handler: fn})
+	p.notificationHandlers = append(p.notificationHandlers, notificationCallback{id: id, sessionID: sessionID, handler: fn})
 	p.mu.Unlock()
 
 	// Return cleanup function
@@ -138,12 +145,14 @@ func (p *Process) OnNotification(fn func(*jsonrpc.Message)) func() {
 	}
 }
 
-// OnPermission registers a permission request handler and returns a cleanup function
-func (p *Process) OnPermission(fn func(*PermissionRequest)) func() {
+// OnPermission registers a permission request handler scoped to sessionID and
+// returns a cleanup function. Pass "" for sessionID to register a catch-all
+// handler that receives all permission requests (backward compatible).
+func (p *Process) OnPermission(sessionID string, fn func(*PermissionRequest)) func() {
 	p.mu.Lock()
 	p.handlerID++
 	id := p.handlerID
-	p.permissionHandlers = append(p.permissionHandlers, permissionCallback{id: id, handler: fn})
+	p.permissionHandlers = append(p.permissionHandlers, permissionCallback{id: id, sessionID: sessionID, handler: fn})
 	p.mu.Unlock()
 
 	// Return cleanup function
