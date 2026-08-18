@@ -22,8 +22,8 @@ const (
 	PiACPPackage     = "pi-acp"
 	PiACPVersion     = "0.0.33"
 	PiACPPackageSpec = PiACPPackage + "@" + PiACPVersion
-	// Host-auth + multi-session combined patch for 0.0.33.
-	PiACPHostAuthPatchID = "pi-acp-0.0.33-host-auth"
+	// Host-auth + multi-session + Local Session env patch for 0.0.33.
+	PiACPHostAuthPatchID = "pi-acp-0.0.33-host-auth-session-env"
 )
 
 const piACPSourceFile = "dist/index.js"
@@ -228,7 +228,7 @@ func applyPatch(pkgDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read pi-acp source: %w", err)
 	}
-	if isHostAuthPatchedContent(data) {
+	if isLumiPatchedContent(data) {
 		return writeMarker(pkgDir)
 	}
 	// Only replace known official 0.0.33 dist (or re-apply over already different with marker missing).
@@ -251,7 +251,7 @@ func isPatched(pkgDir string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to read pi-acp source: %w", err)
 	}
-	if isHostAuthPatchedContent(data) {
+	if isLumiPatchedContent(data) {
 		return true, nil
 	}
 	sum := sha256.Sum256(data)
@@ -259,11 +259,12 @@ func isPatched(pkgDir string) (bool, error) {
 	if got == piACP0033OriginalDistSHA256 {
 		return false, nil
 	}
-	return false, fmt.Errorf("pi-acp@%s dist/index.js is neither official nor Lumi host-auth patched", PiACPVersion)
+	return false, fmt.Errorf("pi-acp@%s dist/index.js is neither official nor fully Lumi patched", PiACPVersion)
 }
 
-func isHostAuthPatchedContent(data []byte) bool {
-	return bytesContainsHostAuth(data) && strings.Contains(string(data), "shouldUseSingleLiveSession")
+func isLumiPatchedContent(data []byte) bool {
+	s := string(data)
+	return bytesContainsHostAuth(data) && strings.Contains(s, "shouldUseSingleLiveSession") && strings.Contains(s, "extractLumiSessionEnvFromMeta") && strings.Contains(s, "...params.sessionEnv")
 }
 
 func bytesContainsHostAuth(data []byte) bool {

@@ -36,6 +36,9 @@ func TestEnsurePiACPPatchedAppliesAndIsIdempotent(t *testing.T) {
 	if !strings.Contains(source, "hostAuth") {
 		t.Fatal("patched source missing hostAuth")
 	}
+	if !strings.Contains(source, "extractLumiSessionEnvFromMeta") || !strings.Contains(source, "...params.sessionEnv") {
+		t.Fatal("patched source missing Local Session env support")
+	}
 	if _, err := os.Stat(filepath.Join(pkgDir, ".lumi-patches", PiACPHostAuthPatchID+".json")); err != nil {
 		t.Fatalf("marker not written: %v", err)
 	}
@@ -85,6 +88,18 @@ func TestEnsurePiACPPatchedWritesMarkerWhenAlreadyPatched(t *testing.T) {
 	status = Status(RuntimeOptions{Prefix: runtimePrefixForPackageDir(pkgDir)})
 	if !status.Applied {
 		t.Fatalf("Status().Applied = false after marker write: %s", status.Message)
+	}
+}
+
+func TestEnsurePiACPPatchedUpgradesPreviousLumiPatch(t *testing.T) {
+	previous := strings.ReplaceAll(string(piACP0033PatchedDist), "extractLumiSessionEnvFromMeta", "extractPreviousSessionEnvFromMeta")
+	pkgDir := makePackage(t, previous)
+
+	if _, err := EnsurePiACPPatched(RuntimeOptions{Prefix: runtimePrefixForPackageDir(pkgDir)}); err != nil {
+		t.Fatalf("EnsurePiACPPatched() error = %v", err)
+	}
+	if got := readSource(t, pkgDir); got != string(piACP0033PatchedDist) {
+		t.Fatal("previous Lumi patch was not upgraded")
 	}
 }
 

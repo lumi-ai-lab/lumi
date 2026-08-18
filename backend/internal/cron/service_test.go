@@ -235,6 +235,73 @@ func TestCreateRejectsInvalidCronExpression(t *testing.T) {
 	}
 }
 
+func TestCreateAndUpdateRejectMissingWeComTarget(t *testing.T) {
+	service := NewService(NewStore(filepath.Join(t.TempDir(), "jobs.json")), testRunner{}, nil)
+	job := Job{
+		ID:             "job-wecom",
+		Name:           "WeCom",
+		Channel:        ChannelWeCom,
+		WorkspaceID:    "default",
+		AgentID:        "pi",
+		ConversationID: "wecom:chat:user",
+		Prompt:         "hello",
+		Schedule:       Schedule{Type: ScheduleInterval, EverySeconds: 60},
+	}
+	if _, err := service.Create(job); err == nil || !strings.Contains(err.Error(), "chatId is required") {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	job.Target.WeCom = &WeComTarget{ChatID: " chat "}
+	created, err := service.Create(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Target.WeCom.ChatID != "chat" {
+		t.Fatalf("ChatID = %q, want trimmed", created.Target.WeCom.ChatID)
+	}
+	_, err = service.Update(created.ID, func(job Job) (Job, error) {
+		job.Target.WeCom = &WeComTarget{ChatID: " "}
+		return job, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "chatId is required") {
+		t.Fatalf("Update() error = %v", err)
+	}
+}
+
+func TestStartDisablesMissingWeComTarget(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "jobs.json"))
+	jobs := []Job{
+		{
+			ID: "bad", Name: "Bad", Enabled: true, Channel: ChannelWeCom,
+			WorkspaceID: "default", AgentID: "pi", ConversationID: "wecom:bad:user",
+			Prompt: "bad", Schedule: Schedule{Type: ScheduleInterval, EverySeconds: 60},
+		},
+		{
+			ID: "good", Name: "Good", Enabled: true, Channel: ChannelWeCom,
+			WorkspaceID: "default", AgentID: "pi", ConversationID: "wecom:good:user",
+			Prompt: "good", Target: Target{WeCom: &WeComTarget{ChatID: "good-chat"}},
+			Schedule: Schedule{Type: ScheduleInterval, EverySeconds: 60},
+		},
+	}
+	if err := store.SaveAll(jobs); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store, testRunner{}, nil)
+	if err := service.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer service.Stop()
+
+	bad, _ := service.Get("bad")
+	if bad.Enabled || bad.State.NextRunAt != 0 || bad.State.LastError != "wecom cron target chatId is required" {
+		t.Fatalf("bad job = %#v", bad)
+	}
+	good, _ := service.Get("good")
+	if !good.Enabled || good.State.NextRunAt == 0 {
+		t.Fatalf("good job = %#v", good)
+	}
+}
+
 func TestUpdateCronExpressionMuteAndResume(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "jobs.json"))
 	service := NewService(store, testRunner{}, nil)
