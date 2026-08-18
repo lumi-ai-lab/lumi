@@ -1,5 +1,14 @@
---- a/dist/index.js	1985-10-26 16:15:00
-+++ b/dist/index.js	2026-08-06 16:20:12
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -137,7 +137,7 @@
+     const child = spawn(cmd, args, {
+       cwd: params.cwd,
+       stdio: "pipe",
+-      env: process.env,
++      env: { ...process.env, ...params.sessionEnv },
+       shell: shouldUseShellForPiCommand(cmd)
+     });
+     try {
 @@ -206,8 +206,19 @@
      const lines = this.preludeLines.splice(0, this.preludeLines.length);
      return lines;
@@ -22,8 +31,17 @@
      if (!res.success) throw new Error(`pi prompt failed: ${res.error ?? JSON.stringify(res.data)}`);
    }
    async abort() {
-\ No newline at end of file
-@@ -827,10 +838,10 @@
+@@ -714,7 +725,8 @@
+     try {
+       proc = await PiRpcProcess.spawn({
+         cwd: params.cwd,
+-        piCommand: params.piCommand
++        piCommand: params.piCommand,
++        sessionEnv: params.sessionEnv
+       });
+     } catch (e) {
+       if (e instanceof PiRpcSpawnError) {
+@@ -827,10 +839,10 @@
        content: { type: "text", text: this.startupInfo }
      });
    }
@@ -36,8 +54,7 @@
        if (this.pendingTurn) {
          this.turnQueue.push(queued);
          this.emit({
-\ No newline at end of file
-@@ -924,7 +935,7 @@
+@@ -924,7 +936,7 @@
        sessionUpdate: "session_info_update",
        _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } }
      });
@@ -46,8 +63,35 @@
        void this.flushEmits().finally(() => {
          const authErr = maybeAuthRequiredError(err);
          if (authErr) {
-\ No newline at end of file
-@@ -2017,7 +2028,10 @@
+@@ -1889,7 +1901,8 @@
+         proc = await PiRpcProcess.spawn({
+           cwd,
+           sessionPath: stored.sessionFile,
+-          piCommand: process.env.PI_ACP_PI_COMMAND
++          piCommand: process.env.PI_ACP_PI_COMMAND,
++          sessionEnv: opts?.sessionEnv
+         });
+       } catch (e) {
+         if (e?.name === "PiRpcSpawnError") {
+@@ -1952,6 +1965,7 @@
+     if (!isAbsolute3(params.cwd)) {
+       throw RequestError3.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
+     }
++    const sessionEnv = extractLumiSessionEnvFromMeta(params._meta);
+     this.lastSessionCwd = params.cwd;
+     const fileCommands = loadSlashCommands(params.cwd);
+     const enableSkillCommands = getEnableSkillCommands(params.cwd);
+@@ -1960,7 +1974,8 @@
+       mcpServers: params.mcpServers,
+       conn: this.conn,
+       fileCommands,
+-      piCommand: process.env.PI_ACP_PI_COMMAND
++      piCommand: process.env.PI_ACP_PI_COMMAND,
++      sessionEnv
+     });
+     let state = null;
+     let availableModels = null;
+@@ -2017,7 +2032,10 @@
      });
      if (preludeText)
        session.setStartupInfo(preludeText);
@@ -59,17 +103,19 @@
      const response = {
        sessionId: session.sessionId,
        configOptions,
-\ No newline at end of file
-@@ -2065,6 +2079,7 @@
+@@ -2063,8 +2081,10 @@
+     return;
+   }
    async prompt(params) {
-     const session = await this.restoreSession(params.sessionId);
+-    const session = await this.restoreSession(params.sessionId);
++    const sessionEnv = extractLumiSessionEnvFromMeta(params._meta);
++    const session = await this.restoreSession(params.sessionId, { sessionEnv });
      const { message, images } = promptToPiMessage(params.prompt);
 +    const hostAuth = extractHostAuthFromMeta(params._meta);
      if (images.length === 0 && message.trimStart().startsWith("/")) {
        const trimmed = message.trim();
        const space = trimmed.indexOf(" ");
-\ No newline at end of file
-@@ -2431,7 +2446,7 @@
+@@ -2431,7 +2451,7 @@
          return { stopReason: "end_turn" };
        }
      }
@@ -78,8 +124,7 @@
      const stopReason = result === "error" ? session.wasCancelRequested() ? "cancelled" : "end_turn" : result;
      return { stopReason };
    }
-\ No newline at end of file
-@@ -2474,7 +2489,10 @@
+@@ -2474,7 +2494,10 @@
      });
      const proc = session.proc;
      const fileCommands = loadSlashCommands(params.cwd);
@@ -91,13 +136,42 @@
      this.store.upsert({
        sessionId: params.sessionId,
        cwd: params.cwd,
-\ No newline at end of file
-@@ -2977,6 +2995,17 @@
+@@ -2977,6 +3000,47 @@
    }
    return { name: "pi-acp", version: "0.0.0" };
  }
 +function shouldUseSingleLiveSession() {
 +  return process.env.PI_ACP_SINGLE_LIVE_SESSION === "true";
++}
++var LUMI_SESSION_ENV_KEYS = /* @__PURE__ */ new Set([
++  "LUMI_CHANNEL",
++  "LUMI_CONVERSATION_ID",
++  "LUMI_AGENT_ID",
++  "LUMI_WORKSPACE_ID",
++  "LUMI_WORKSPACE_PATH",
++  "LUMI_WECOM_CHAT_ID"
++]);
++function extractLumiSessionEnvFromMeta(meta) {
++  const raw = meta?.lumi?.sessionEnv;
++  if (raw === void 0) return void 0;
++  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
++    throw RequestError3.invalidParams("Lumi sessionEnv must be an object");
++  }
++  const env = {};
++  for (const [key, value] of Object.entries(raw)) {
++    if (!LUMI_SESSION_ENV_KEYS.has(key)) {
++      throw RequestError3.invalidParams(`Lumi sessionEnv key is not allowed: ${key}`);
++    }
++    if (typeof value !== "string") {
++      throw RequestError3.invalidParams(`Lumi sessionEnv value must be a string: ${key}`);
++    }
++    if (value.trim()) env[key] = value.trim();
++  }
++  for (const key of LUMI_SESSION_ENV_KEYS) {
++    if (!env[key]) throw RequestError3.invalidParams(`${key} is required`);
++  }
++  if (env.LUMI_CHANNEL !== "wecom") throw RequestError3.invalidParams("LUMI_CHANNEL must be wecom");
++  return env;
 +}
 +function extractHostAuthFromMeta(meta) {
 +  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return void 0;
@@ -110,4 +184,10 @@
  
  // src/index.ts
  if (process.argv.includes("--terminal-login")) {
+@@ -3042,4 +3106,4 @@
+   } catch {
+   }
+ });
+-//# sourceMappingURL=index.js.map
 \ No newline at end of file
++//# sourceMappingURL=index.js.map

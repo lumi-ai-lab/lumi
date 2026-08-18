@@ -6,6 +6,7 @@ Maintained **in the Lumi repo** (same model as `patches/acp/pi-acp/0.0.27`).
 
 1. **multi-session**: upstream closes all sessions after `session/new` / `session/load`, which breaks Lumi IM (one ACP sessionId per conversation). Only call `closeAllExcept` when `PI_ACP_SINGLE_LIVE_SESSION=true`.
 2. **hostAuth**: Lumi sends ACP `session/prompt` with `_meta._auth` / `_meta._auth_user_id`. Upstream drops `_meta` and only forwards message/images to PI. This patch forwards Host auth into the PI RPC so harness extensions can bind **without a file envelope**.
+3. **Local Session env**: Local WeCom sends an allowlisted `_meta.lumi.sessionEnv` on `session/new` and `session/prompt`. The patch applies it only to the corresponding PI child process, including restored Sessions, without mutating the shared `pi-acp` environment.
 
 ## Pin
 
@@ -61,6 +62,7 @@ shasum -a 256 patched/dist/index.js | awk '{print $1}' \
 Upstream pi-acp:
 
 - keeps multiple live sessions by default (or equivalent config), and
-- forwards ACP prompt `_meta._auth` into PI for extensions,
+- forwards ACP prompt `_meta._auth` into PI for extensions, and
+- supports allowlisted per-Session child process env on create and restore,
 
 and Lumi has upgraded past 0.0.33 with those behaviors.

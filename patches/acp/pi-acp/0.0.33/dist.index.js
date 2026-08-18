@@ -137,7 +137,7 @@ var PiRpcProcess = class _PiRpcProcess {
     const child = spawn(cmd, args, {
       cwd: params.cwd,
       stdio: "pipe",
-      env: process.env,
+      env: { ...process.env, ...params.sessionEnv },
       shell: shouldUseShellForPiCommand(cmd)
     });
     try {
@@ -725,7 +725,8 @@ var SessionManager = class {
     try {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
-        piCommand: params.piCommand
+        piCommand: params.piCommand,
+        sessionEnv: params.sessionEnv
       });
     } catch (e) {
       if (e instanceof PiRpcSpawnError) {
@@ -1900,7 +1901,8 @@ var PiAcpAgent = class {
         proc = await PiRpcProcess.spawn({
           cwd,
           sessionPath: stored.sessionFile,
-          piCommand: process.env.PI_ACP_PI_COMMAND
+          piCommand: process.env.PI_ACP_PI_COMMAND,
+          sessionEnv: opts?.sessionEnv
         });
       } catch (e) {
         if (e?.name === "PiRpcSpawnError") {
@@ -1963,6 +1965,7 @@ var PiAcpAgent = class {
     if (!isAbsolute3(params.cwd)) {
       throw RequestError3.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
     }
+    const sessionEnv = extractLumiSessionEnvFromMeta(params._meta);
     this.lastSessionCwd = params.cwd;
     const fileCommands = loadSlashCommands(params.cwd);
     const enableSkillCommands = getEnableSkillCommands(params.cwd);
@@ -1971,7 +1974,8 @@ var PiAcpAgent = class {
       mcpServers: params.mcpServers,
       conn: this.conn,
       fileCommands,
-      piCommand: process.env.PI_ACP_PI_COMMAND
+      piCommand: process.env.PI_ACP_PI_COMMAND,
+      sessionEnv
     });
     let state = null;
     let availableModels = null;
@@ -2077,7 +2081,8 @@ var PiAcpAgent = class {
     return;
   }
   async prompt(params) {
-    const session = await this.restoreSession(params.sessionId);
+    const sessionEnv = extractLumiSessionEnvFromMeta(params._meta);
+    const session = await this.restoreSession(params.sessionId, { sessionEnv });
     const { message, images } = promptToPiMessage(params.prompt);
     const hostAuth = extractHostAuthFromMeta(params._meta);
     if (images.length === 0 && message.trimStart().startsWith("/")) {
@@ -2997,6 +3002,36 @@ function readNearestPackageJson(metaUrl) {
 }
 function shouldUseSingleLiveSession() {
   return process.env.PI_ACP_SINGLE_LIVE_SESSION === "true";
+}
+var LUMI_SESSION_ENV_KEYS = /* @__PURE__ */ new Set([
+  "LUMI_CHANNEL",
+  "LUMI_CONVERSATION_ID",
+  "LUMI_AGENT_ID",
+  "LUMI_WORKSPACE_ID",
+  "LUMI_WORKSPACE_PATH",
+  "LUMI_WECOM_CHAT_ID"
+]);
+function extractLumiSessionEnvFromMeta(meta) {
+  const raw = meta?.lumi?.sessionEnv;
+  if (raw === void 0) return void 0;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw RequestError3.invalidParams("Lumi sessionEnv must be an object");
+  }
+  const env = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!LUMI_SESSION_ENV_KEYS.has(key)) {
+      throw RequestError3.invalidParams(`Lumi sessionEnv key is not allowed: ${key}`);
+    }
+    if (typeof value !== "string") {
+      throw RequestError3.invalidParams(`Lumi sessionEnv value must be a string: ${key}`);
+    }
+    if (value.trim()) env[key] = value.trim();
+  }
+  for (const key of LUMI_SESSION_ENV_KEYS) {
+    if (!env[key]) throw RequestError3.invalidParams(`${key} is required`);
+  }
+  if (env.LUMI_CHANNEL !== "wecom") throw RequestError3.invalidParams("LUMI_CHANNEL must be wecom");
+  return env;
 }
 function extractHostAuthFromMeta(meta) {
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return void 0;

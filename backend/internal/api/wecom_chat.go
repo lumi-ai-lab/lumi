@@ -153,6 +153,7 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 		"sessionId": sessionID,
 		"prompt":    []map[string]string{{"type": "text", "text": promptText}},
 	}
+	var promptMeta map[string]any
 	var hostAuthCleanup requestercontext.CleanupFunc
 	if input.HostAuth != nil {
 		if err := injectLocalRequesterContextEnv(r.config, input.WorkspaceID, input.AgentID); err != nil {
@@ -163,8 +164,9 @@ func (r *wecomChatRuntime) RunWeComChat(ctx context.Context, input wecom.ChatRun
 			return r.emitError(sink, bridgeErr.Error())
 		}
 		hostAuthCleanup = cleanup
-		promptParams["_meta"] = requestercontext.PromptMeta(*input.HostAuth, input.RequesterContext)
+		promptMeta = requestercontext.PromptMeta(*input.HostAuth, input.RequesterContext)
 	}
+	promptParams["_meta"] = withWeComSessionEnv(promptMeta, input)
 	if hostAuthCleanup != nil {
 		defer func() {
 			if cleanupErr := hostAuthCleanup(); cleanupErr != nil {
@@ -358,7 +360,7 @@ func (r *wecomChatRuntime) ensureAgentSession(input wecom.ChatRunInput, sink wec
 	result, err := r.agents.Request(input.AgentID, "session/new", map[string]any{
 		"cwd":        input.WorkspacePath,
 		"mcpServers": AgentMCPServersFor(r.config.Agents, input.AgentID, r.mcpStore),
-		"_meta": map[string]any{
+		"_meta": withWeComSessionEnv(map[string]any{
 			"systemPrompt": map[string]string{
 				"append": buildIMSystemPromptAppend(input.PromptPrefix, lumicron.ToolContext{
 					APIBase:        lumiAPIBaseForWorkspace(r.config, input.WorkspaceID),
@@ -370,7 +372,7 @@ func (r *wecomChatRuntime) ensureAgentSession(input wecom.ChatRunInput, sink wec
 					Target:         input.CronTarget,
 				}),
 			},
-		},
+		}, input),
 	})
 	if err != nil {
 		return "", false, r.emitError(sink, err.Error())
@@ -405,6 +407,30 @@ func (r *wecomChatRuntime) ensureAgentSession(input wecom.ChatRunInput, sink wec
 	}
 	r.mu.Unlock()
 	return sessionID, true, nil
+}
+
+func withWeComSessionEnv(meta map[string]any, input wecom.ChatRunInput) map[string]any {
+	if meta == nil {
+		meta = make(map[string]any)
+	}
+	lumi, _ := meta["lumi"].(map[string]any)
+	if lumi == nil {
+		lumi = make(map[string]any)
+	}
+	chatID := ""
+	if target := input.CronTarget.WeCom; target != nil {
+		chatID = target.ChatID
+	}
+	lumi["sessionEnv"] = map[string]string{
+		"LUMI_CHANNEL":         lumicron.ChannelWeCom,
+		"LUMI_CONVERSATION_ID": input.ConversationID,
+		"LUMI_AGENT_ID":        input.AgentID,
+		"LUMI_WORKSPACE_ID":    input.WorkspaceID,
+		"LUMI_WORKSPACE_PATH":  input.WorkspacePath,
+		"LUMI_WECOM_CHAT_ID":   chatID,
+	}
+	meta["lumi"] = lumi
+	return meta
 }
 
 func (r *wecomChatRuntime) shouldSetSessionMode(agentID string, sessionMode string) bool {

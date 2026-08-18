@@ -122,17 +122,12 @@ func makePiRuntime(t *testing.T, runnable bool) string {
 	}
 
 	if runnable {
-		// Keep host-auth markers so later Ensure is a no-op rewrite, but make dist executable as sh.
-		stub := "#!/bin/sh\n# extractHostAuthFromMeta shouldUseSingleLiveSession hostAuth\nprintf started > \"$MARKER\"\ntrap 'exit 0' INT TERM\nsleep 30\n"
+		stub := "#!/bin/sh\n# extractHostAuthFromMeta shouldUseSingleLiveSession hostAuth extractLumiSessionEnvFromMeta ...params.sessionEnv\nprintf started > \"$MARKER\"\ntrap 'exit 0' INT TERM\nsleep 30\n"
 		if err := os.WriteFile(index, []byte(stub), 0755); err != nil {
 			t.Fatalf("WriteFile(stub index) error = %v", err)
 		}
 		if err := os.Chmod(index, 0755); err != nil {
 			t.Fatalf("Chmod(stub index) error = %v", err)
-		}
-		// Re-link bin → dist without changing content (Ensure sees already patched markers).
-		if _, err := acppatch.EnsurePiACPPatched(acppatch.RuntimeOptions{Prefix: prefix}); err != nil {
-			t.Fatalf("EnsurePiACPPatched(stub) error = %v", err)
 		}
 		// Symlink itself is not +x on some FS; ensure bin path is executable via chmod -h not always available.
 		// Replace symlink with a tiny launcher that execs the stub script.

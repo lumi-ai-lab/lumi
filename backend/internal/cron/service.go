@@ -74,11 +74,17 @@ func (s *Service) Start() error {
 		if job.Enabled {
 			job.State.NextRunAt = nextRunAt(job.Schedule, now)
 		}
-		if job.Enabled && isOrphanScopedJob(job) {
+		invalidReason := ""
+		if isOrphanScopedJob(job) {
+			invalidReason = "missing conversation binding"
+		} else if missingWeComTarget(job) {
+			invalidReason = "wecom cron target chatId is required"
+		}
+		if job.Enabled && invalidReason != "" {
 			job.Enabled = false
 			job.State.NextRunAt = 0
 			job.State.LastStatus = "error"
-			job.State.LastError = "missing conversation binding"
+			job.State.LastError = invalidReason
 		}
 		s.jobs[job.ID] = job
 		if job.Enabled {
@@ -450,6 +456,9 @@ func validate(job Job) error {
 	if job.ID == "" || job.Name == "" || job.AgentID == "" || job.WorkspaceID == "" || job.Channel == "" || job.ConversationID == "" {
 		return errors.New("missing required job fields")
 	}
+	if missingWeComTarget(job) {
+		return errors.New("wecom cron target chatId is required")
+	}
 	if strings.TrimSpace(job.Prompt) == "" && strings.TrimSpace(job.Exec) == "" {
 		return errors.New("prompt or exec is required")
 	}
@@ -494,6 +503,11 @@ func normalizeJob(job Job) Job {
 	job.Mode = strings.TrimSpace(job.Mode)
 	job.Schedule.Type = strings.TrimSpace(job.Schedule.Type)
 	job.Schedule.CronExpr = strings.TrimSpace(job.Schedule.CronExpr)
+	if job.Target.WeCom != nil {
+		target := *job.Target.WeCom
+		target.ChatID = strings.TrimSpace(target.ChatID)
+		job.Target.WeCom = &target
+	}
 	job.SessionMode = NormalizeSessionMode(job.SessionMode)
 	if job.Description == "" {
 		job.Description = job.Name
@@ -533,6 +547,10 @@ func normalizeChannel(channel string) string {
 
 func isOrphanScopedJob(job Job) bool {
 	return job.ConversationID == ""
+}
+
+func missingWeComTarget(job Job) bool {
+	return job.Channel == ChannelWeCom && (job.Target.WeCom == nil || strings.TrimSpace(job.Target.WeCom.ChatID) == "")
 }
 
 func nextRunAt(schedule Schedule, now int64) int64 {
