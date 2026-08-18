@@ -1,11 +1,24 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestExampleConfigUsesManagedPiACPVersion(t *testing.T) {
+	var raw rawConfig
+	if err := json.Unmarshal(exampleConfigData, &raw); err != nil {
+		t.Fatalf("Unmarshal(exampleConfigData) error = %v", err)
+	}
+	cfg := raw.normalize()
+	pi := cfg.FindAgent("pi")
+	if pi == nil || pi.Command != "npx" || strings.Join(pi.Args, " ") != "-y pi-acp@0.0.33" {
+		t.Fatalf("example PI config = %+v, want npx -y pi-acp@0.0.33", pi)
+	}
+}
 
 func TestLoadAndSavePublicServerURL(t *testing.T) {
 	t.Parallel()
@@ -100,6 +113,46 @@ func TestLoadAddsBuiltInAgentDefaultsToExistingConfig(t *testing.T) {
 	}
 	if !cfg.BuiltInDefaultsChanged() {
 		t.Fatal("BuiltInDefaultsChanged() = false, want true")
+	}
+}
+
+func TestLoadUpgradesOnlyLegacyBuiltInPiAgent(t *testing.T) {
+	tests := []struct {
+		name        string
+		pi          string
+		wantCommand string
+		wantArgs    string
+	}{
+		{
+			name:        "legacy built-in",
+			pi:          `{"id":"pi","name":"PI","command":"npx","args":["-y","pi-acp@0.0.27"],"sessionMode":"default"}`,
+			wantCommand: "npx",
+			wantArgs:    "-y pi-acp@0.0.33",
+		},
+		{
+			name:        "custom PI",
+			pi:          `{"id":"pi","name":"Custom PI","command":"pi-wrapper","args":["--acp"],"env":{"KEEP":"1"}}`,
+			wantCommand: "pi-wrapper",
+			wantArgs:    "--acp",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "lumi.config.json")
+			data := `{"agents":[{"id":"claude","name":"Claude","command":"npx"},` + tt.pi + `],"defaultAgent":"claude"}`
+			if err := os.WriteFile(configPath, []byte(data), 0644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			pi := cfg.FindAgent("pi")
+			if pi == nil || pi.Command != tt.wantCommand || strings.Join(pi.Args, " ") != tt.wantArgs {
+				t.Fatalf("PI config = %+v, want command=%q args=%q", pi, tt.wantCommand, tt.wantArgs)
+			}
+		})
 	}
 }
 
