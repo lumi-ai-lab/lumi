@@ -41,7 +41,9 @@ func newTestAPIServer(t *testing.T) *Server {
 		DefaultWorkspace: "default",
 	}
 
-	return NewServer(cfg, nil)
+	server := NewServer(cfg, nil)
+	t.Cleanup(func() { _ = server.Shutdown() })
+	return server
 }
 
 func setTestInterfaceAddrs(t *testing.T, values ...string) {

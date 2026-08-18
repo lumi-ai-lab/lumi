@@ -148,6 +148,7 @@ func TestServerWithMigratedConfigExposesBuiltInAgentsAndSetup(t *testing.T) {
 	}
 	cfg.EnsureBuiltInDefaults()
 	server := NewServer(cfg, nil)
+	t.Cleanup(func() { _ = server.Shutdown() })
 
 	agentsRec := httptest.NewRecorder()
 	agentsReq := httptest.NewRequest(http.MethodGet, "/api/agents", nil)

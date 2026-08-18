@@ -82,6 +82,7 @@ type Server struct {
 	// Setup status cache
 	setupStatus *setupcheck.SetupStatus
 	setupMu     sync.RWMutex
+	setupChecks sync.WaitGroup
 	setupSubs   map[chan setupcheck.SetupStatus]struct{}
 	setupSubsMu sync.RWMutex
 }
@@ -160,7 +161,7 @@ func NewServer(cfg *config.Config, staticFS fs.FS) *Server {
 	if err := s.cron.Start(); err != nil {
 		log.Printf("failed to start cron service: %v", err)
 	}
-	go s.checkDependenciesAsync()
+	s.checkDependenciesAsync(append([]config.AgentConfig(nil), cfg.Agents...))
 	return s
 }
 
@@ -271,6 +272,8 @@ func (s *Server) Handler() http.Handler {
 
 // Shutdown stops all services while preserving sandbox containers for recovery.
 func (s *Server) Shutdown() error {
+	s.setupChecks.Wait()
+
 	steps := []struct {
 		name    string
 		visible func() bool

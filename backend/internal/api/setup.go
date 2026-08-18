@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/pengmide/lumi/internal/config"
 	"github.com/pengmide/lumi/internal/setupcheck"
 )
 
@@ -45,12 +46,16 @@ func (s *Server) initSetupStatus() {
 }
 
 // checkDependenciesAsync checks all dependencies asynchronously
-func (s *Server) checkDependenciesAsync() {
-	status := setupcheck.Check(s.config.Agents)
-	s.setupMu.Lock()
-	s.setupStatus = &status
-	s.setupMu.Unlock()
-	s.broadcastSetupStatus()
+func (s *Server) checkDependenciesAsync(agents []config.AgentConfig) {
+	s.setupChecks.Add(1)
+	go func() {
+		defer s.setupChecks.Done()
+		status := setupcheck.Check(agents)
+		s.setupMu.Lock()
+		s.setupStatus = &status
+		s.setupMu.Unlock()
+		s.broadcastSetupStatus()
+	}()
 }
 
 // broadcastSetupStatus sends current status to all subscribers
@@ -117,7 +122,7 @@ func (s *Server) handleSetupSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	// Re-initialize and re-check dependencies on each subscribe
 	s.initSetupStatus()
-	go s.checkDependenciesAsync()
+	s.checkDependenciesAsync(append([]config.AgentConfig(nil), s.config.Agents...))
 
 	// Send current status (checking state)
 	s.setupMu.RLock()
