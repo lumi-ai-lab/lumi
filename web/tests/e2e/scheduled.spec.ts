@@ -91,7 +91,9 @@ test('keeps cron streamed result visible until persisted session catches up', as
     },
   })
 
+  const cronEventsReady = page.waitForResponse('**/api/cron/events')
   await page.goto('/c/sess-1')
+  await cronEventsReady
   await expect(page.getByText('Project Chat')).toBeVisible()
 
   await page.evaluate(() => {

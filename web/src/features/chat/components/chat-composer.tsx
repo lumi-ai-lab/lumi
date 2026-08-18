@@ -46,6 +46,7 @@ export function ChatComposer({
   const [isDragging, setIsDragging] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const cursorPositionRef = useRef(0)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -125,13 +126,14 @@ export function ChatComposer({
     const textarea = textareaRef.current
     if (!textarea) return
 
-    const cursorPosition = textarea.selectionStart
+    const cursorPosition = cursorPositionRef.current
     const before = message.slice(0, cursorPosition)
     const after = message.slice(cursorPosition)
     const pattern = trigger === '/' ? /(?:^|\n)\/[\w\-:]*$/ : /@[\w\-/\.]*$/
     const nextBefore = before.replace(pattern, '')
 
     setMessage(nextBefore + after)
+    cursorPositionRef.current = nextBefore.length
     setMentionQuery('')
     setCommandQuery('')
 
@@ -145,12 +147,13 @@ export function ChatComposer({
     const textarea = textareaRef.current
     if (!textarea) return
 
-    const cursorPosition = textarea.selectionStart
+    const cursorPosition = cursorPositionRef.current
     const before = message.slice(0, cursorPosition)
     const after = message.slice(cursorPosition)
     const nextBefore = before.replace(/@[\w\-/\.]*$/, `@${agent.id} `)
 
     setMessage(nextBefore + after)
+    cursorPositionRef.current = nextBefore.length
     resetDropdowns()
 
     window.setTimeout(() => {
@@ -163,12 +166,13 @@ export function ChatComposer({
     const textarea = textareaRef.current
     if (!textarea) return
 
-    const cursorPosition = textarea.selectionStart
+    const cursorPosition = cursorPositionRef.current
     const before = message.slice(0, cursorPosition)
     const after = message.slice(cursorPosition)
     const nextBefore = before.replace(/(?:^|\n)\/[\w\-:]*$/, `/${command.name} `)
 
     setMessage(nextBefore + after)
+    cursorPositionRef.current = nextBefore.length
     resetDropdowns()
 
     window.setTimeout(() => {
@@ -181,12 +185,13 @@ export function ChatComposer({
     const textarea = textareaRef.current
     if (!textarea) return
 
-    const cursorPosition = textarea.selectionStart
+    const cursorPosition = cursorPositionRef.current
     const before = message.slice(0, cursorPosition)
     const after = message.slice(cursorPosition)
     const nextBefore = before.replace(/@[\w\-/\.]*$/, `@${file.path} `)
 
     setMessage(nextBefore + after)
+    cursorPositionRef.current = nextBefore.length
     resetDropdowns()
     setWorkspaceFiles([])
 
@@ -215,6 +220,7 @@ export function ChatComposer({
   }
 
   const handleInput = (value: string, cursorPosition: number) => {
+    cursorPositionRef.current = cursorPosition
     setMessage(value)
     const before = value.slice(0, cursorPosition)
 
@@ -416,6 +422,9 @@ export function ChatComposer({
           disabled={disabled}
           onChange={(event) => handleInput(event.target.value, event.target.selectionStart)}
           onKeyDown={(event) => void handleKeyDown(event)}
+          onSelect={(event) => {
+            cursorPositionRef.current = event.currentTarget.selectionStart
+          }}
           placeholder={t('input.placeholder')}
           ref={textareaRef}
           rows={1}

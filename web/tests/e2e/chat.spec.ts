@@ -107,7 +107,8 @@ test('creates a session and renders streamed tool activity plus assistant output
 
   await expect(page).toHaveURL(/\/c\/sess-1$/)
   await expect(page.getByText('Run the regression suite')).toBeVisible()
-  await expect(page.getByText('exec_command')).toBeVisible()
+  await page.getByRole('button', { name: /View Steps/ }).click()
+  await page.getByRole('button', { name: /exec_command/ }).click()
   await expect(page.getByText('All tests passed')).toBeVisible()
   await expect(page.getByText('Regression suite is green.')).toBeVisible()
 
@@ -249,6 +250,8 @@ test('hides the code preview header for yaml files', async ({ page }) => {
 
   await page.goto('/c')
 
+  await page.getByRole('button', { name: 'Open workspace panel' }).click()
+  await page.getByRole('button', { name: 'config' }).click()
   await page.getByRole('button', { name: 'app.yml' }).click()
 
   await expect(page.getByText('name: preview-test')).toBeVisible()
