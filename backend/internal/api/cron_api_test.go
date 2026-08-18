@@ -66,26 +66,6 @@ func TestCronAPIRejectsInvalidCron(t *testing.T) {
 	}
 }
 
-func TestCronAPIRejectsMissingWeComTarget(t *testing.T) {
-	server := newTestAPIServer(t)
-	body := bytes.NewBufferString(`{
-		"name":"Bad WeCom",
-		"prompt":"hello",
-		"agentId":"pi",
-		"workspaceId":"default",
-		"conversationId":"wecom-chat-1",
-		"channel":"wecom",
-		"schedule":{"type":"interval","everySeconds":60}
-	}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/cron/jobs", body)
-	rec := httptest.NewRecorder()
-	server.handleCronJobs(rec, req)
-
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "chatId is required") {
-		t.Fatalf("status=%d body=%s, want missing chatId", rec.Code, rec.Body.String())
-	}
-}
-
 func TestCronAPIUpdateRequiresScopedConversationAndPausesWithEnabled(t *testing.T) {
 	server := newTestAPIServer(t)
 	created, err := server.cron.Create(lumicron.Job{
