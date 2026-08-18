@@ -3,7 +3,9 @@ package device
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -184,6 +186,53 @@ func TestTaskLifecycleAndMappings(t *testing.T) {
 	device, _ := registry.GetDevice("dev-1")
 	if device.Status != StatusOnline {
 		t.Fatalf("device.Status after FinishTask = %q, want %q", device.Status, StatusOnline)
+	}
+}
+
+func TestTaskSessionCanBeReadWhileEventsUpdateIt(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	registerReadyTestDevice(t, registry, "dev-1")
+	task := NewTaskRun("task-1", "dev-1", "conv-1", "claude", "ws-1", "/tmp/project")
+	if err := registry.StartTask(task); err != nil {
+		t.Fatalf("StartTask() error = %v", err)
+	}
+
+	const eventCount = 32
+	events := make([]Envelope, eventCount)
+	for i := range events {
+		env, err := NewEnvelope(MsgTaskSession, fmt.Sprintf("message-%d", i), "dev-1", task.ID, TaskSessionPayload{
+			SessionID: fmt.Sprintf("session-%d", i),
+		})
+		if err != nil {
+			t.Fatalf("NewEnvelope() error = %v", err)
+		}
+		events[i] = env
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for range 10_000 {
+			_ = task.SessionID()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for _, env := range events {
+			registry.forwardTaskEvent(env)
+		}
+	}()
+	close(start)
+	wg.Wait()
+
+	if got, want := task.SessionID(), "session-31"; got != want {
+		t.Fatalf("SessionID() = %q, want %q", got, want)
 	}
 }
 

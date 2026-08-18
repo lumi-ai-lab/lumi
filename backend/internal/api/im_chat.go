@@ -220,7 +220,7 @@ func (s *Server) runIMDeviceChat(ctx context.Context, input imRunInput, sink imE
 		remoteSessionID = ""
 	}
 	task := device.NewTaskRun(taskID, deviceID, input.ConversationID, input.AgentID, input.WorkspaceID, input.WorkspacePath)
-	task.SessionID = remoteSessionID
+	task.SetSessionID(remoteSessionID)
 	if err := s.devices.WaitStartTask(ctx, task, remoteDeviceTaskQueueMaxWait); err != nil {
 		_ = sink.Emit("error", map[string]string{"message": deviceErrorMessage(err)})
 		return nil
@@ -265,14 +265,15 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
 	pendingNotifications := make([]device.DeviceEvent, 0)
-	sessionReady := task.SessionID != ""
+	sessionID := task.SessionID()
+	sessionReady := sessionID != ""
 	sessionAnnounced := false
 	sessionTimer := time.NewTimer(30 * time.Second)
 	defer sessionTimer.Stop()
 
 	sendCancel := func(reason string) {
 		_ = s.devices.SendToDevice(contextWithoutCancel(ctx), task.DeviceID, device.MsgTaskCancel, task.ID, device.TaskCancelPayload{
-			SessionID: task.SessionID,
+			SessionID: sessionID,
 			Reason:    reason,
 		})
 	}
@@ -306,7 +307,7 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 			default:
 			}
 		}
-		announceSession(task.SessionID)
+		announceSession(sessionID)
 	}
 
 	for {
@@ -334,7 +335,7 @@ func (s *Server) consumeIMDeviceTaskEvents(ctx context.Context, input imRunInput
 					sendCancel("invalid_session")
 					return nil, errors.New("device returned an invalid session")
 				}
-				task.SessionID = payload.SessionID
+				sessionID = payload.SessionID
 				s.setRemoteSessionForPromptVersion(input.ConversationID, task.DeviceID, input.AgentID, payload.SessionID, imSystemPromptVersion)
 				sessionReady = true
 				if !sessionTimer.Stop() {

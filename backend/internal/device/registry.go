@@ -60,10 +60,12 @@ type TaskRun struct {
 	DeviceID       string
 	ConversationID string
 	AgentID        string
-	SessionID      string
 	WorkspaceID    string
 	WorkspacePath  string
 	StartedAt      int64
+
+	sessionMu sync.RWMutex
+	sessionID string
 
 	Events chan DeviceEvent
 	Done   chan struct{}
@@ -157,6 +159,18 @@ func NewTaskRun(id, deviceID, conversationID, agentID, workspaceID, workspacePat
 		Events:         make(chan DeviceEvent, 64),
 		Done:           make(chan struct{}),
 	}
+}
+
+func (t *TaskRun) SessionID() string {
+	t.sessionMu.RLock()
+	defer t.sessionMu.RUnlock()
+	return t.sessionID
+}
+
+func (t *TaskRun) SetSessionID(sessionID string) {
+	t.sessionMu.Lock()
+	t.sessionID = sessionID
+	t.sessionMu.Unlock()
 }
 
 func (r *Registry) SetDeviceResetHook(fn func(string)) {
@@ -570,8 +584,8 @@ func (r *Registry) FinishTask(taskID string) {
 	log.Printf("device FinishTask called: deviceID=%s taskID=%s age=%s", task.DeviceID, task.ID, taskAgeString(task, time.Now().UnixMilli()))
 
 	delete(r.tasks, taskID)
-	if task.SessionID != "" {
-		delete(r.sessionToTask, task.SessionID)
+	if sessionID := task.SessionID(); sessionID != "" {
+		delete(r.sessionToTask, sessionID)
 	}
 	releasedCurrent := r.deviceCurrentTask[task.DeviceID] == taskID
 	if releasedCurrent {
@@ -813,7 +827,7 @@ func (r *Registry) setTaskSession(taskID, sessionID string) {
 	if task == nil {
 		return
 	}
-	task.SessionID = sessionID
+	task.SetSessionID(sessionID)
 	if sessionID != "" {
 		r.sessionToTask[sessionID] = taskID
 	}
@@ -824,8 +838,8 @@ func (r *Registry) releaseTaskRoutingLocked(taskID string) {
 	if task == nil {
 		return
 	}
-	if task.SessionID != "" {
-		delete(r.sessionToTask, task.SessionID)
+	if sessionID := task.SessionID(); sessionID != "" {
+		delete(r.sessionToTask, sessionID)
 	}
 	releasedCurrent := r.deviceCurrentTask[task.DeviceID] == taskID
 	if releasedCurrent {

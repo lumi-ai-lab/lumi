@@ -569,7 +569,7 @@ func (s *Server) handleDeviceChat(ctx chatRuntimeContext) {
 		ctx.Prepared.WorkspaceID,
 		ctx.Prepared.WorkspacePath,
 	)
-	task.SessionID = remoteSessionID
+	task.SetSessionID(remoteSessionID)
 	if err := s.devices.WaitStartTask(ctx.requestContext(), task, remoteDeviceTaskQueueMaxWait); err != nil {
 		ctx.setError(err)
 		ctx.SendEvent("error", map[string]string{"message": deviceErrorMessage(err)})
@@ -733,7 +733,8 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 	accumulator := &streamAccumulator{}
 	toolCallMap := make(map[string]int)
 	pendingNotifications := make([]device.DeviceEvent, 0)
-	sessionReady := task.SessionID != ""
+	sessionID := task.SessionID()
+	sessionReady := sessionID != ""
 	sessionAnnounced := false
 	sessionTimer := time.NewTimer(30 * time.Second)
 	defer sessionTimer.Stop()
@@ -763,7 +764,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 		}
 		ctx.SendEvent("session", map[string]any{
 			"conversationId": ctx.Prepared.ConvID,
-			"sessionId":      task.SessionID,
+			"sessionId":      sessionID,
 			"agent":          ctx.Prepared.AgentID,
 			"isNew":          ctx.Prepared.IsNew,
 		})
@@ -773,7 +774,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 
 	sendCancel := func(reason string) {
 		_ = s.devices.SendToDevice(contextWithoutCancel(ctx.requestContext()), task.DeviceID, device.MsgTaskCancel, task.ID, device.TaskCancelPayload{
-			SessionID: task.SessionID,
+			SessionID: sessionID,
 			Reason:    reason,
 		})
 	}
@@ -803,7 +804,7 @@ func (s *Server) consumeDeviceTaskEvents(ctx chatRuntimeContext, task *device.Ta
 					return
 				}
 
-				task.SessionID = payload.SessionID
+				sessionID = payload.SessionID
 				s.setRemoteSession(ctx.Prepared.ConvID, task.DeviceID, task.AgentID, payload.SessionID)
 				s.conversations.SetSessionID(ctx.Prepared.ConvID, payload.SessionID)
 				s.persistConversation(ctx.Prepared.ConvID)
