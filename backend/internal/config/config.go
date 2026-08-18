@@ -219,8 +219,11 @@ func (c *Config) EnsureBuiltInDefaults() bool {
 		c.Agents = append(c.Agents, defaultQwenAgent())
 		changed = true
 	}
-	if c.FindAgent("pi") == nil {
+	if pi := c.FindAgent("pi"); pi == nil {
 		c.Agents = append(c.Agents, defaultPiAgent())
+		changed = true
+	} else if pi.Command == "npx" && len(pi.Args) == 2 && pi.Args[0] == "-y" && pi.Args[1] == "pi-acp@0.0.27" {
+		pi.Args[1] = "pi-acp@0.0.33"
 		changed = true
 	}
 	if c.Routing == nil {
